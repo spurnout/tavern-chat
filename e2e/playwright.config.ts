@@ -3,16 +3,20 @@ import { defineConfig, devices } from '@playwright/test';
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3000';
 
 /**
- * Playwright config for Tavern's golden-path smoke tests.
+ * Playwright config for Tavern's E2E suites.
  *
- * The tests assume a running stack: docker compose up + api + web + worker.
- * They use the dev seed (DEV-INVITE / admin user). For CI, a `start-stack.sh`
- * helper is the obvious extension; we keep this config lean so contributors
- * can run it against their already-running dev stack.
+ * Two projects:
+ *   chromium     — fast smoke tests (golden-path.spec.ts).
+ *   walkthrough  — runs walkthrough.spec.ts at a relaxed pace and always
+ *                  records video. Output lands under
+ *                  `test-results/<test>-walkthrough/video.webm`.
+ *
+ * Both projects assume a running dev stack (`pnpm docker:up && pnpm dev`).
+ * The walkthrough additionally needs the seed: `pnpm db:seed`.
  */
 export default defineConfig({
   testDir: './tests',
-  timeout: 60_000,
+  timeout: 5 * 60_000,
   expect: { timeout: 10_000 },
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? [['github'], ['line']] : 'list',
@@ -24,7 +28,18 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: /walkthrough\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'walkthrough',
+      testMatch: /walkthrough\.spec\.ts$/,
+      timeout: 5 * 60_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1280, height: 800 },
+        video: { mode: 'on', size: { width: 1280, height: 800 } },
+      },
     },
   ],
 });

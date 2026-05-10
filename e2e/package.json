@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "test": "node -e \"console.log('e2e tests are opt-in. Start the dev stack and run: pnpm --filter @tavern/e2e test:e2e')\"",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:headed": "playwright test --project=chromium --headed",
+    "test:walkthrough": "playwright test --project=walkthrough",
+    "test:walkthrough:headed": "playwright test --project=walkthrough --headed",
     "install-browsers": "playwright install --with-deps chromium",
     "typecheck": "tsc --noEmit"
   },
