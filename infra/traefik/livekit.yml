@@ -1,0 +1,33 @@
+# Example LiveKit routing for Traefik.
+# Note: LiveKit's UDP TURN port (default 7882) cannot be proxied through
+# Traefik — it must be reachable directly from clients via your firewall.
+
+http:
+  routers:
+    livekit-signal:
+      rule: "Host(`livekit.tavern.example.com`)"
+      entryPoints: ["websecure"]
+      service: livekit-signal
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    livekit-signal:
+      loadBalancer:
+        servers:
+          - url: "http://tavern-livekit:7880"
+
+tcp:
+  routers:
+    livekit-tcp:
+      rule: "HostSNI(`livekit.tavern.example.com`)"
+      entryPoints: ["livekit-tcp"]
+      service: livekit-tcp
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    livekit-tcp:
+      loadBalancer:
+        servers:
+          - address: "tavern-livekit:7881"

@@ -1,0 +1,39 @@
+{
+  "name": "tavern",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tavern — self-hosted Discord-shaped community app for gaming groups, tabletop RPGs, and board gamers",
+  "license": "MIT",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" build",
+    "dev": "pnpm -r --parallel --filter \"./apps/*\" dev",
+    "dev:api": "pnpm --filter @tavern/api dev",
+    "dev:web": "pnpm --filter @tavern/web dev",
+    "dev:worker": "pnpm --filter @tavern/worker dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @tavern/db generate",
+    "db:migrate": "pnpm --filter @tavern/db migrate",
+    "db:seed": "pnpm --filter @tavern/db seed",
+    "db:reset": "pnpm --filter @tavern/db reset",
+    "docker:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f infra/docker/docker-compose.yml down",
+    "docker:logs": "docker compose -f infra/docker/docker-compose.yml logs -f"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
+    "eslint": "^9.14.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  }
+}

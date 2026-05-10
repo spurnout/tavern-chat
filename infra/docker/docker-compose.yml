@@ -1,0 +1,113 @@
+# Tavern — local development stack
+#
+# Bring up:    pnpm docker:up
+# Tear down:   pnpm docker:down
+# Tail logs:   pnpm docker:logs
+#
+# All services bind only to 127.0.0.1 to keep dev environments off the LAN.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tavern-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tavern}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tavern-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-tavern}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - tavern_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tavern} -d ${POSTGRES_DB:-tavern}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: tavern-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - tavern_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: tavern-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-tavern}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-tavern-dev-secret}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - tavern_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-bootstrap:
+    image: minio/mc:latest
+    container_name: tavern-minio-bootstrap
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-tavern} ${S3_SECRET_KEY:-tavern-dev-secret} &&
+      mc mb -p local/${S3_BUCKET:-tavern-media} || true &&
+      mc mb -p local/${S3_QUARANTINE_BUCKET:-tavern-quarantine} || true &&
+      mc anonymous set download local/${S3_BUCKET:-tavern-media} || true &&
+      echo 'tavern: minio buckets ready' &&
+      tail -f /dev/null
+      "
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: tavern-clamav
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - tavern_clamav_db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "echo PING | nc -w 2 localhost 3310 | grep -q PONG"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  # LiveKit — enabled via the `livekit` profile.
+  # Requires:    docker compose --profile livekit up -d
+  # Phase 3 wires the API to issue tokens for this service.
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: tavern-livekit
+    profiles: ["livekit"]
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    ports:
+      - "127.0.0.1:7880:7880"   # signal/HTTP
+      - "127.0.0.1:7881:7881"   # TCP
+      - "7882:7882/udp"         # TURN/UDP — must be reachable from clients
+    volumes:
+      - ../livekit/livekit.yaml:/etc/livekit.yaml:ro
+
+volumes:
+  tavern_postgres:
+  tavern_redis:
+  tavern_minio:
+  tavern_clamav_db:

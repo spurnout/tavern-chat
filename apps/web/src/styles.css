@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-md bg-tavern-stone border border-tavern-oak px-3 py-2 text-tavern-parchment placeholder:text-tavern-mist focus:outline-none focus:ring-2 focus:ring-tavern-ember;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-tavern-ember text-tavern-ink hover:bg-tavern-flame focus:outline-none focus:ring-2 focus:ring-tavern-mead;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-tavern-parchment hover:bg-tavern-oak;
+  }
+
+  .card {
+    @apply rounded-lg border border-tavern-oak bg-tavern-stone p-6 shadow-lg;
+  }
+
+  .panel {
+    @apply rounded-md border border-tavern-oak bg-tavern-stone;
+  }
+}

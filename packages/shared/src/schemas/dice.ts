@@ -1,0 +1,69 @@
+import { z } from 'zod';
+import { idSchema } from './ids.js';
+import { DICE_LIMITS } from '../constants.js';
+
+export const diceVisibilitySchema = z.enum(['public', 'gm_only', 'private']);
+
+/** Result of a single die: face value plus whether it was kept after kh/kl. */
+export const dieResultSchema = z.object({
+  value: z.number().int().nonnegative(),
+  kept: z.boolean(),
+});
+
+/** Result of one term in a notation, e.g. "4d6kh3" or "+5". */
+export const diceTermResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('dice'),
+    count: z.number().int().positive(),
+    faces: z.number().int().positive(),
+    keep: z
+      .object({
+        mode: z.enum(['kh', 'kl']),
+        amount: z.number().int().positive(),
+      })
+      .nullable(),
+    rolls: z.array(dieResultSchema),
+    sign: z.union([z.literal(1), z.literal(-1)]),
+    subtotal: z.number().int(),
+  }),
+  z.object({
+    kind: z.literal('modifier',),
+    value: z.number().int(),
+    sign: z.union([z.literal(1), z.literal(-1)]),
+    subtotal: z.number().int(),
+  }),
+]);
+
+export const diceRollResultSchema = z.object({
+  notation: z.string().max(DICE_LIMITS.MAX_NOTATION_LENGTH),
+  terms: z.array(diceTermResultSchema),
+  total: z.number().int(),
+});
+
+export const diceRollSchema = z.object({
+  id: idSchema,
+  serverId: idSchema,
+  channelId: idSchema,
+  messageId: idSchema.nullable(),
+  userId: idSchema,
+  notation: z.string().max(DICE_LIMITS.MAX_NOTATION_LENGTH),
+  label: z.string().max(120).nullable(),
+  result: diceRollResultSchema,
+  total: z.number().int(),
+  visibility: diceVisibilitySchema,
+  createdAt: z.string().datetime(),
+});
+
+export const rollDiceRequestSchema = z.object({
+  channelId: idSchema,
+  notation: z.string().min(1).max(DICE_LIMITS.MAX_NOTATION_LENGTH),
+  label: z.string().max(120).optional(),
+  visibility: diceVisibilitySchema.default('public'),
+});
+
+export type DiceVisibility = z.infer<typeof diceVisibilitySchema>;
+export type DieResult = z.infer<typeof dieResultSchema>;
+export type DiceTermResult = z.infer<typeof diceTermResultSchema>;
+export type DiceRollResult = z.infer<typeof diceRollResultSchema>;
+export type DiceRoll = z.infer<typeof diceRollSchema>;
+export type RollDiceRequest = z.infer<typeof rollDiceRequestSchema>;

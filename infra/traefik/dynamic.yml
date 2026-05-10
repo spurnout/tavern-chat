@@ -1,0 +1,35 @@
+# Example Traefik dynamic config for Tavern.
+# Adjust hostnames + service URLs to match your deployment.
+
+http:
+  routers:
+    tavern-web:
+      rule: "Host(`tavern.example.com`)"
+      entryPoints: ["websecure"]
+      service: tavern-web
+      tls:
+        certResolver: letsencrypt
+
+    tavern-api:
+      rule: "Host(`tavern.example.com`) && PathPrefix(`/api`)"
+      entryPoints: ["websecure"]
+      service: tavern-api
+      tls:
+        certResolver: letsencrypt
+
+    tavern-gateway:
+      rule: "Host(`tavern.example.com`) && PathPrefix(`/gateway`)"
+      entryPoints: ["websecure"]
+      service: tavern-api
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    tavern-web:
+      loadBalancer:
+        servers:
+          - url: "http://tavern-web:3000"
+    tavern-api:
+      loadBalancer:
+        servers:
+          - url: "http://tavern-api:3001"

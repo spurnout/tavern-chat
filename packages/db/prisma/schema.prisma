@@ -1,0 +1,828 @@
+// Tavern — Prisma schema
+//
+// IDs: ULID strings (26 chars, Crockford base32) generated in app code.
+// Permissions: stored as Decimal(20,0) so a 64-bit BigInt fits without overflow.
+//             We serialize them as strings on the wire. Decimal(20,0) is enough
+//             for an unsigned 64-bit value.
+// JSON fields use Postgres `jsonb`.
+//
+// Phases marked in section comments — every model is part of the initial
+// migration so we don't churn migrations as features land.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// AUTH / USERS  (Phase 0)
+// ============================================================================
+
+model User {
+  id                  String    @id
+  username            String    @unique
+  usernameLower       String    @unique
+  displayName         String
+  email               String    @unique
+  emailLower          String    @unique
+  passwordHash        String
+  avatarAttachmentId  String?
+  bio                 String?
+  isInstanceAdmin     Boolean   @default(false)
+  postingLockedUntil  DateTime?
+  uploadsLockedUntil  DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  sessions             Session[]
+  ownedServers         Server[]              @relation("ServerOwner")
+  memberships          ServerMember[]
+  roleAssignments      ServerMemberRole[]
+  authoredMessages     Message[]             @relation("MessageAuthor")
+  uploadedAttachments  Attachment[]          @relation("AttachmentUploader")
+  reactions            MessageReaction[]
+  diceRolls            DiceRoll[]
+  campaignMemberships  CampaignMember[]
+  campaignsAsGm        Campaign[]            @relation("CampaignGm")
+  authoredHandouts     Handout[]             @relation("HandoutAuthor")
+  authoredNotes        CampaignNote[]        @relation("NoteAuthor")
+  rsvps                CampaignSessionRsvp[]
+  gameNightRsvps       GameNightRsvp[]
+  proposedGames        GameNightCandidate[]
+  votes                GameNightVote[]
+  reports              Report[]              @relation("Reporter")
+  moderationActions    ModerationAction[]    @relation("Moderator")
+  auditLogActor        AuditLogEntry[]       @relation("AuditActor")
+  voiceStates          VoiceState[]
+  invitesCreated       Invite[]              @relation("InviteCreator")
+  customEmojisCreated  CustomEmoji[]         @relation("EmojiCreator")
+  ownedBoardGames      BoardGame[]           @relation("BoardGameOwner")
+  createdGameNights    GameNight[]           @relation("GameNightCreator")
+  handoutAccess        HandoutVisibleUser[]
+}
+
+model Session {
+  id                String   @id
+  userId            String
+  refreshTokenHash  String   @unique
+  deviceName        String?
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime
+  revokedAt         DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ============================================================================
+// INVITES  (Phase 0/2)
+// ============================================================================
+
+enum InviteScope {
+  instance
+  server
+}
+
+model Invite {
+  id            String      @id
+  code          String      @unique
+  scope         InviteScope
+  serverId      String?
+  channelId     String?
+  createdById   String?
+  maxUses       Int?
+  uses          Int         @default(0)
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+  createdAt     DateTime    @default(now())
+
+  server     Server?  @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  channel    Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  createdBy  User?    @relation("InviteCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([serverId])
+  @@index([code])
+}
+
+// ============================================================================
+// SERVERS / MEMBERS / ROLES  (Phase 1/2)
+// ============================================================================
+
+model Server {
+  id                  String   @id
+  ownerUserId         String
+  name                String
+  description         String?
+  iconAttachmentId    String?
+  defaultRoleId       String?  @unique
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  owner          User                @relation("ServerOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  defaultRole    Role?               @relation("ServerEveryoneRole", fields: [defaultRoleId], references: [id], onDelete: SetNull)
+  members        ServerMember[]
+  roles          Role[]              @relation("ServerRoles")
+  channels       Channel[]
+  invites        Invite[]
+  campaigns      Campaign[]
+  boardGames     BoardGame[]
+  gameNights     GameNight[]
+  customEmojis   CustomEmoji[]
+  reports        Report[]
+  auditEntries   AuditLogEntry[]
+  safetyPolicy   SafetyPolicy?
+
+  @@index([ownerUserId])
+}
+
+model ServerMember {
+  serverId      String
+  userId        String
+  nickname      String?
+  joinedAt      DateTime  @default(now())
+  timeoutUntil  DateTime?
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles  ServerMemberRole[]
+
+  @@id([serverId, userId])
+  @@index([userId])
+}
+
+model Role {
+  id            String  @id
+  serverId      String
+  name          String
+  color         Int     @default(0)
+  position      Int     @default(0)
+  permissions   Decimal @default(0) @db.Decimal(20, 0)
+  mentionable   Boolean @default(false)
+  hoist         Boolean @default(false)
+  isEveryone    Boolean @default(false)
+  createdAt     DateTime @default(now())
+
+  server                  Server                @relation("ServerRoles", fields: [serverId], references: [id], onDelete: Cascade)
+  serverAsDefault         Server?               @relation("ServerEveryoneRole")
+  memberAssignments       ServerMemberRole[]
+  channelOverwrites       PermissionOverwrite[]
+
+  @@unique([serverId, name])
+  @@index([serverId])
+}
+
+model ServerMemberRole {
+  serverId String
+  userId   String
+  roleId   String
+  assignedAt DateTime @default(now())
+
+  member ServerMember @relation(fields: [serverId, userId], references: [serverId, userId], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, userId, roleId])
+  @@index([roleId])
+}
+
+// ============================================================================
+// CHANNELS / OVERWRITES  (Phase 1/2)
+// ============================================================================
+
+enum ChannelType {
+  category
+  text
+  voice
+  campaign
+  session
+  board_game
+}
+
+model Channel {
+  id            String       @id
+  serverId      String
+  parentId      String?
+  campaignId    String?
+  gameNightId   String?
+  type          ChannelType
+  name          String
+  topic         String?
+  position      Int          @default(0)
+  nsfw          Boolean      @default(false)
+  videoEnabled  Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  server      Server                @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  parent      Channel?              @relation("ChannelParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Channel[]             @relation("ChannelParent")
+  campaign    Campaign?             @relation("CampaignChannels", fields: [campaignId], references: [id], onDelete: SetNull)
+  gameNight   GameNight?            @relation("GameNightChannels", fields: [gameNightId], references: [id], onDelete: SetNull)
+  messages    Message[]
+  overwrites  PermissionOverwrite[]
+  invites     Invite[]
+  voiceStates VoiceState[]
+  diceRolls   DiceRoll[]
+  campaignTextSessions    CampaignSession[] @relation("SessionTextChannel")
+  campaignVoiceSessions   CampaignSession[] @relation("SessionVoiceChannel")
+  gameNightTextSessions   GameNight[]       @relation("GameNightTextChannel")
+  gameNightVoiceSessions  GameNight[]       @relation("GameNightVoiceChannel")
+  campaignDefaultLink     Campaign?         @relation("CampaignDefaultChannel")
+
+  @@index([serverId, position])
+  @@index([parentId])
+}
+
+enum OverwriteTargetType {
+  role
+  user
+}
+
+model PermissionOverwrite {
+  id          String              @id
+  channelId   String
+  targetType  OverwriteTargetType
+  targetId    String
+  allow       Decimal             @default(0) @db.Decimal(20, 0)
+  deny        Decimal             @default(0) @db.Decimal(20, 0)
+  createdAt   DateTime            @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  role    Role?   @relation(fields: [targetId], references: [id], onDelete: Cascade, map: "PermissionOverwrite_role_fkey")
+
+  @@unique([channelId, targetType, targetId])
+  @@index([channelId])
+}
+
+// ============================================================================
+// MESSAGES / ATTACHMENTS / REACTIONS  (Phase 1/2/3)
+// ============================================================================
+
+enum MessageType {
+  default
+  system
+  voice
+  dice_roll
+  session_event
+}
+
+enum SafetyState {
+  allowed
+  labeled
+  warning
+  blurred
+  held
+  quarantined
+  blocked
+}
+
+model Message {
+  id                 String      @id
+  serverId           String
+  channelId          String
+  authorId           String
+  type               MessageType @default(default)
+  content            String      @default("")
+  replyToMessageId   String?
+  editedAt           DateTime?
+  deletedAt          DateTime?
+  safetyState        SafetyState @default(allowed)
+  diceRollId         String?     @unique
+  nonce              String?
+  createdAt          DateTime    @default(now())
+
+  channel       Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author        User              @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  replyTo       Message?          @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies       Message[]         @relation("MessageReplies")
+  attachments   Attachment[]
+  reactions     MessageReaction[]
+  diceRoll      DiceRoll?         @relation("DiceRollMessage", fields: [diceRollId], references: [id])
+
+  @@index([channelId, createdAt])
+  @@index([authorId])
+  @@unique([channelId, nonce])
+}
+
+enum AttachmentKind {
+  image
+  gif
+  video
+  audio
+  voice_message
+  map
+  handout
+  character_asset
+  file
+}
+
+enum AttachmentStatus {
+  pending
+  uploaded
+  processing
+  ready
+  failed
+  blocked
+  quarantined
+}
+
+model Attachment {
+  id                  String           @id
+  uploaderId          String
+  serverId            String?
+  channelId           String?
+  messageId           String?
+  kind                AttachmentKind
+  filename            String
+  mimeType            String
+  sizeBytes           BigInt
+  width               Int?
+  height              Int?
+  durationMs          Int?
+  waveform            Int[]            @default([])
+  storageBucket       String
+  storageKey          String
+  thumbnailKey        String?
+  status              AttachmentStatus @default(pending)
+  rejectionReason     String?
+  scanResult          Json?
+  scannedAt           DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  uploader User     @relation("AttachmentUploader", fields: [uploaderId], references: [id], onDelete: Cascade)
+  message  Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([uploaderId])
+  @@index([status])
+  @@index([messageId])
+}
+
+model MessageReaction {
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId, emoji])
+  @@index([messageId, emoji])
+}
+
+model CustomEmoji {
+  id              String   @id
+  serverId        String
+  name            String
+  attachmentId    String   @unique
+  createdById     String?
+  createdAt       DateTime @default(now())
+
+  server     Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  createdBy  User?  @relation("EmojiCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([serverId, name])
+  @@index([serverId])
+}
+
+// ============================================================================
+// VOICE STATE  (Phase 3)
+// ============================================================================
+
+model VoiceState {
+  serverId       String
+  userId         String
+  channelId      String?
+  selfMute       Boolean   @default(false)
+  selfDeaf       Boolean   @default(false)
+  serverMute     Boolean   @default(false)
+  serverDeaf     Boolean   @default(false)
+  cameraOn       Boolean   @default(false)
+  screenSharing  Boolean   @default(false)
+  joinedAt       DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
+
+  @@id([serverId, userId])
+  @@index([channelId])
+}
+
+// ============================================================================
+// CAMPAIGNS  (Phase 4)
+// ============================================================================
+
+enum CampaignStatus {
+  planning
+  active
+  paused
+  completed
+  archived
+}
+
+model Campaign {
+  id                   String         @id
+  serverId             String
+  name                 String
+  description          String?
+  gameSystem           String?
+  status               CampaignStatus @default(planning)
+  gmUserId             String
+  defaultChannelId     String?        @unique
+  rulesJson            Json?
+  safetyBoundariesJson Json?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  server          Server            @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  gm              User              @relation("CampaignGm", fields: [gmUserId], references: [id], onDelete: Restrict)
+  defaultChannel  Channel?          @relation("CampaignDefaultChannel", fields: [defaultChannelId], references: [id], onDelete: SetNull)
+  channels        Channel[]         @relation("CampaignChannels")
+  members         CampaignMember[]
+  sessions        CampaignSession[]
+  notes           CampaignNote[]
+  handouts        Handout[]
+
+  @@index([serverId])
+  @@index([gmUserId])
+}
+
+enum CampaignRole {
+  player
+  co_gm
+}
+
+model CampaignMember {
+  campaignId String
+  userId     String
+  role       CampaignRole @default(player)
+  characterName String?
+  joinedAt   DateTime     @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, userId])
+  @@index([userId])
+}
+
+enum CampaignSessionStatus {
+  planned
+  live
+  completed
+  cancelled
+}
+
+model CampaignSession {
+  id              String                @id
+  campaignId      String
+  serverId        String
+  title           String
+  description     String?
+  scheduledStart  DateTime?
+  scheduledEnd    DateTime?
+  voiceChannelId  String?
+  textChannelId   String?
+  status          CampaignSessionStatus @default(planned)
+  agenda          String?
+  recap           String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  campaign     Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  voiceChannel Channel?  @relation("SessionVoiceChannel", fields: [voiceChannelId], references: [id], onDelete: SetNull)
+  textChannel  Channel?  @relation("SessionTextChannel", fields: [textChannelId], references: [id], onDelete: SetNull)
+  rsvps        CampaignSessionRsvp[]
+
+  @@index([campaignId, scheduledStart])
+}
+
+enum RsvpStatus {
+  yes
+  no
+  maybe
+  late
+}
+
+model CampaignSessionRsvp {
+  sessionId  String
+  userId     String
+  status     RsvpStatus @default(maybe)
+  updatedAt  DateTime   @updatedAt
+
+  session CampaignSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, userId])
+}
+
+enum NoteVisibility {
+  public_to_party
+  gm_only
+}
+
+model CampaignNote {
+  id          String         @id
+  campaignId  String
+  serverId    String
+  authorId    String
+  title       String
+  body        String
+  visibility  NoteVisibility @default(public_to_party)
+  pinned      Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  author   User     @relation("NoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, pinned])
+}
+
+enum HandoutVisibility {
+  public_to_party
+  gm_only
+  specific_players
+}
+
+model Handout {
+  id           String              @id
+  campaignId   String
+  serverId     String
+  authorId     String
+  title        String
+  body         String              @default("")
+  visibility   HandoutVisibility   @default(public_to_party)
+  attachmentIds String[]           @default([])
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  campaign     Campaign             @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  author       User                 @relation("HandoutAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  visibleUsers HandoutVisibleUser[]
+
+  @@index([campaignId])
+}
+
+model HandoutVisibleUser {
+  handoutId String
+  userId    String
+
+  handout Handout @relation(fields: [handoutId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([handoutId, userId])
+}
+
+// ============================================================================
+// DICE ROLLS  (Phase 4)
+// ============================================================================
+
+enum DiceVisibility {
+  public
+  gm_only
+  private
+}
+
+model DiceRoll {
+  id          String         @id
+  serverId    String
+  channelId   String
+  userId      String
+  notation    String
+  label       String?
+  resultJson  Json
+  total       Int
+  visibility  DiceVisibility @default(public)
+  createdAt   DateTime       @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message Message? @relation("DiceRollMessage")
+
+  @@index([channelId, createdAt])
+}
+
+// ============================================================================
+// BOARD GAMES & GAME NIGHTS  (Phase 5)
+// ============================================================================
+
+model BoardGame {
+  id                  String   @id
+  serverId            String
+  name                String
+  description         String?
+  minPlayers          Int
+  maxPlayers          Int
+  playTimeMinutes     Int?
+  complexity          Float?
+  ownerUserId         String?
+  coverAttachmentId   String?
+  tags                String[] @default([])
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  server     Server                @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  owner      User?                 @relation("BoardGameOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  candidates GameNightCandidate[]
+  votes      GameNightVote[]
+  selectedAt GameNight[]           @relation("GameNightSelectedGame")
+
+  @@index([serverId, name])
+}
+
+enum GameNightStatus {
+  planning
+  scheduled
+  live
+  completed
+  cancelled
+}
+
+model GameNight {
+  id                    String          @id
+  serverId              String
+  title                 String
+  description           String?
+  scheduledStart        DateTime?
+  scheduledEnd          DateTime?
+  location              String?
+  voiceChannelId        String?
+  textChannelId         String?
+  selectedBoardGameId   String?
+  status                GameNightStatus @default(planning)
+  createdById           String
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  server         Server               @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  voiceChannel   Channel?             @relation("GameNightVoiceChannel", fields: [voiceChannelId], references: [id], onDelete: SetNull)
+  textChannel    Channel?             @relation("GameNightTextChannel", fields: [textChannelId], references: [id], onDelete: SetNull)
+  channels       Channel[]            @relation("GameNightChannels")
+  selectedGame   BoardGame?           @relation("GameNightSelectedGame", fields: [selectedBoardGameId], references: [id], onDelete: SetNull)
+  createdBy      User                 @relation("GameNightCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  candidates     GameNightCandidate[]
+  votes          GameNightVote[]
+  rsvps          GameNightRsvp[]
+
+  @@index([serverId, scheduledStart])
+}
+
+model GameNightCandidate {
+  gameNightId   String
+  boardGameId   String
+  proposedById  String
+  proposedAt    DateTime @default(now())
+
+  gameNight GameNight @relation(fields: [gameNightId], references: [id], onDelete: Cascade)
+  boardGame BoardGame @relation(fields: [boardGameId], references: [id], onDelete: Cascade)
+  proposedBy User     @relation(fields: [proposedById], references: [id], onDelete: Cascade)
+
+  @@id([gameNightId, boardGameId])
+  @@index([boardGameId])
+}
+
+model GameNightVote {
+  gameNightId  String
+  boardGameId  String
+  userId       String
+  votedAt      DateTime @default(now())
+
+  gameNight GameNight @relation(fields: [gameNightId], references: [id], onDelete: Cascade)
+  boardGame BoardGame @relation(fields: [boardGameId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([gameNightId, userId])
+  @@index([gameNightId, boardGameId])
+}
+
+model GameNightRsvp {
+  gameNightId String
+  userId      String
+  status      RsvpStatus @default(maybe)
+  updatedAt   DateTime   @updatedAt
+
+  gameNight GameNight @relation(fields: [gameNightId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([gameNightId, userId])
+}
+
+// ============================================================================
+// MODERATION / SAFETY  (Phase 2)
+// ============================================================================
+
+enum ReportTargetType {
+  message
+  attachment
+  profile
+  emoji
+  campaign_note
+  handout
+  voice_message
+}
+
+enum ReportCategory {
+  suspected_child_exploitation_or_csam
+  non_consensual_intimate_material
+  credible_threat_or_violent_coordination
+  stalking_swatting_or_targeted_harassment
+  doxxing_or_private_information
+  malware_phishing_or_credential_theft
+  illegal_marketplace_or_trafficking
+  fraud_or_scam
+  spam_or_raid
+  policy_evasion
+  other_serious_abuse
+}
+
+enum ReportStatus {
+  open
+  in_review
+  resolved
+  dismissed
+  escalated
+}
+
+model Report {
+  id              String           @id
+  serverId        String?
+  reporterId      String
+  targetType      ReportTargetType
+  targetId        String
+  category        ReportCategory
+  notes           String?
+  status          ReportStatus     @default(open)
+  resolvedById    String?
+  resolutionNotes String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  server   Server? @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  reporter User    @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([serverId, status])
+  @@index([targetType, targetId])
+}
+
+model ModerationAction {
+  id          String   @id
+  reportId    String?
+  moderatorId String
+  serverId    String?
+  targetType  String
+  targetId    String
+  action      String
+  notes       String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  moderator User @relation("Moderator", fields: [moderatorId], references: [id], onDelete: Cascade)
+
+  @@index([targetType, targetId])
+}
+
+model AuditLogEntry {
+  id          String   @id
+  serverId    String?
+  actorId     String?
+  action      String
+  targetType  String?
+  targetId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  server  Server? @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  actor   User?   @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([serverId, createdAt])
+  @@index([action])
+}
+
+model SafetyPolicy {
+  serverId               String   @id
+  sfwOnly                Boolean  @default(false)
+  allowNsfwChannels      Boolean  @default(true)
+  spoilerTagsEnabled     Boolean  @default(true)
+  profanityFilter        String   @default("off")
+  uploadDomainAllowlist  String[] @default([])
+  uploadDomainBlocklist  String[] @default([])
+  blockExecutableUploads Boolean  @default(true)
+  blockArchiveUploads    Boolean  @default(true)
+  stripImageMetadata     Boolean  @default(true)
+  updatedAt              DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+}
