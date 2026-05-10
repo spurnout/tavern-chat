@@ -1,5 +1,6 @@
 import type { Attachment, AttachmentKind, RequestUploadResponse } from '@tavern/shared';
 import { ApiError, api } from './api-client.js';
+import { decodeAudioPeaks } from './waveform.js';
 
 interface PresignArgs {
   file: File;
@@ -62,5 +63,22 @@ export async function uploadFile(
   const finalised = await api<Attachment>(`/uploads/${presigned.attachment.id}/complete`, {
     method: 'POST',
   });
+
+  // Voice messages get a client-computed waveform. The worker doesn't have
+  // ffmpeg available to decode webm/opus, so we use the browser's AudioContext.
+  if (kind === 'voice_message') {
+    try {
+      const { peaks, durationMs } = await decodeAudioPeaks(args.file, 32);
+      const updated = await api<Attachment>(`/attachments/${finalised.id}/waveform`, {
+        method: 'POST',
+        body: { peaks, durationMs },
+      });
+      return updated;
+    } catch {
+      // Fall back to the placeholder waveform written by the worker.
+      return finalised;
+    }
+  }
+
   return finalised;
 }

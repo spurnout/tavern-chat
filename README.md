@@ -62,20 +62,30 @@ pnpm dev
 Then open <http://localhost:3000>. Register with the seeded `DEV-INVITE` code,
 or log in as `admin` / `change-me-in-dev`.
 
-## Phase status
+## Status
+
+All six phases of the master spec are built and tested:
 
 | Phase | Scope | Status |
 |------:|-------|--------|
-| 0 | Monorepo, Prisma schema, auth, dev infra, docs | **Built** |
-| 1 | Servers/channels/messages REST + WebSocket gateway | Built (see `docs/roadmap.md`) |
-| 2 | Roles, permission overwrites, moderation, uploads + ClamAV | Built |
-| 3 | Media embeds, reactions, voice/video rooms, voice messages | Built |
-| 4 | Campaigns, sessions, dice rolling, notes, handouts | Built |
-| 5 | Board game library, game nights, voting | Built |
-| 6 | Polish, audit logs UI, responsiveness | In progress |
+| 0 | Monorepo, Prisma schema, auth, dev infra, docs | Built |
+| 1 | Servers/channels/messages REST + WebSocket gateway + typing | Built |
+| 2 | Roles, overwrites, moderation queue + bulk actions, uploads + ClamAV | Built |
+| 3 | Media embeds, reactions, custom emoji, voice/video rooms, screen share, voice messages | Built |
+| 4 | Campaigns, sessions, dice, notes, handouts (with attachments) | Built |
+| 5 | Board games, game nights, voting, RSVPs | Built |
+| 6 | Polish: settings UI, search, mass-action mod, mobile, hardening doc | Built |
 
-See [`docs/roadmap.md`](docs/roadmap.md) for a feature-by-feature breakdown of
-what's wired end-to-end vs what's scaffolded for later iteration.
+Production-grade additions:
+
+- Redis pub/sub gateway broker (auto-promotes from in-process; fallback if
+  Redis is unreachable)
+- Postgres integration tests via testcontainers (opt-in)
+- Playwright E2E smoke test (opt-in)
+
+See [`docs/roadmap.md`](docs/roadmap.md) for a feature-by-feature breakdown
+and [`docs/production-hardening.md`](docs/production-hardening.md) for the
+self-host production checklist.
 
 ## Trust & safety, honestly stated
 

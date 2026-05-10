@@ -1,0 +1,92 @@
+import { useEffect, useState } from 'react';
+import { Link, useParams } from '@tanstack/react-router';
+import { Search } from 'lucide-react';
+import type { Message } from '@tavern/shared';
+import { api, ApiError } from '../lib/api-client.js';
+import { useRealtime } from '../lib/store.js';
+
+export function SearchPage(): JSX.Element {
+  const { serverId } = useParams({ strict: false }) as { serverId?: string };
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<Message[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const channels = useRealtime((s) => (serverId ? (s.channelsByServer[serverId] ?? []) : []));
+
+  // Debounced search.
+  useEffect(() => {
+    if (!serverId) return;
+    if (q.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      setBusy(true);
+      setError(null);
+      try {
+        const r = await api<{ messages: Message[] }>(`/servers/${serverId}/search`, {
+          query: { q: q.trim(), limit: 30 },
+        });
+        setResults(r.messages);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Search failed');
+      } finally {
+        setBusy(false);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [q, serverId]);
+
+  if (!serverId) return <div className="p-12">Pick a server.</div>;
+
+  function channelName(id: string): string {
+    return channels.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  }
+
+  return (
+    <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
+      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
+        <Search size={16} className="text-tavern-mist" />
+        <span className="font-semibold">Search</span>
+      </header>
+      <div className="space-y-4 p-6">
+        <input
+          autoFocus
+          className="input"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search messages on this server (min 2 chars)…"
+        />
+        {error ? <p className="text-sm text-red-400">{error}</p> : null}
+        {busy ? <p className="text-sm text-tavern-mist">Searching…</p> : null}
+        {!busy && q.trim().length >= 2 && results.length === 0 ? (
+          <p className="text-sm text-tavern-mist">No matches.</p>
+        ) : null}
+        <ul className="space-y-2">
+          {results.map((m) => (
+            <li key={m.id} className="card">
+              <div className="mb-1 flex items-baseline justify-between">
+                <Link
+                  to="/app/servers/$serverId/channels/$channelId"
+                  params={{ serverId, channelId: m.channelId }}
+                  className="text-sm text-tavern-mead hover:underline"
+                >
+                  #{channelName(m.channelId)}
+                </Link>
+                <span className="text-xs text-tavern-mist">
+                  {new Date(m.createdAt).toLocaleString()}
+                </span>
+              </div>
+              <div className="whitespace-pre-wrap break-words text-sm">{m.content}</div>
+              {m.attachmentIds.length > 0 ? (
+                <div className="mt-1 text-xs text-tavern-mist">
+                  +{m.attachmentIds.length} attachment{m.attachmentIds.length === 1 ? '' : 's'}
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}

@@ -6,6 +6,7 @@ import {
   LogOut,
   Menu,
   Plus,
+  Search,
   Settings,
   Shield,
   Swords,
@@ -18,6 +19,8 @@ import { startRealtime, stopRealtime } from '../lib/realtime.js';
 import { api } from '../lib/api-client.js';
 import type { Channel, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
+import { CreateServerModal } from '../components/CreateServerModal.js';
+import { CreateChannelModal } from '../components/CreateChannelModal.js';
 
 export function AppShell(): JSX.Element {
   const me = useAuth((s) => s.me);
@@ -35,6 +38,8 @@ export function AppShell(): JSX.Element {
   };
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [createServerOpen, setCreateServerOpen] = useState(false);
+  const [createChannelOpen, setCreateChannelOpen] = useState(false);
 
   useEffect(() => {
     startRealtime();
@@ -90,6 +95,7 @@ export function AppShell(): JSX.Element {
         <ServerRail
           servers={servers}
           activeId={params.serverId}
+          onCreateServer={() => setCreateServerOpen(true)}
         />
         <ChannelSidebar
           server={activeServer ?? null}
@@ -98,6 +104,7 @@ export function AppShell(): JSX.Element {
           activeServerId={params.serverId ?? null}
           me={me}
           onLogout={() => void logout()}
+          onCreateChannel={() => setCreateChannelOpen(true)}
         />
       </div>
 
@@ -114,6 +121,15 @@ export function AppShell(): JSX.Element {
       <main className="flex min-w-0 flex-1 flex-col">
         <Outlet />
       </main>
+
+      <CreateServerModal open={createServerOpen} onOpenChange={setCreateServerOpen} />
+      {params.serverId ? (
+        <CreateChannelModal
+          serverId={params.serverId}
+          open={createChannelOpen}
+          onOpenChange={setCreateChannelOpen}
+        />
+      ) : null}
     </div>
   );
 }
@@ -121,9 +137,11 @@ export function AppShell(): JSX.Element {
 function ServerRail({
   servers,
   activeId,
+  onCreateServer,
 }: {
   servers: Server[];
   activeId: string | undefined;
+  onCreateServer: () => void;
 }): JSX.Element {
   return (
     <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-tavern-oak bg-tavern-stone py-4">
@@ -150,8 +168,9 @@ function ServerRail({
       <div className="my-1 h-px w-8 bg-tavern-oak" />
       <button
         aria-label="Add server"
+        onClick={onCreateServer}
         className="grid h-12 w-12 place-items-center rounded-2xl border border-dashed border-tavern-oak text-tavern-mist hover:bg-tavern-oak hover:rounded-xl"
-        title="Create server (use POST /api/servers)"
+        title="Create a new server"
       >
         <Plus size={18} />
       </button>
@@ -166,6 +185,7 @@ interface ChannelSidebarProps {
   activeServerId: string | null;
   me: { displayName: string; username: string } | null;
   onLogout: () => void;
+  onCreateChannel: () => void;
 }
 
 function ChannelSidebar({
@@ -175,16 +195,28 @@ function ChannelSidebar({
   activeServerId,
   me,
   onLogout,
+  onCreateChannel,
 }: ChannelSidebarProps): JSX.Element {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-tavern-oak bg-tavern-stone">
-      <div className="flex items-center justify-between border-b border-tavern-oak p-3">
+      <div className="flex items-center justify-between gap-2 border-b border-tavern-oak p-3">
         <div className="min-w-0">
           <div className="truncate font-semibold">{server?.name ?? '…'}</div>
           {server?.description ? (
             <div className="truncate text-xs text-tavern-mist">{server.description}</div>
           ) : null}
         </div>
+        {activeServerId ? (
+          <Link
+            to="/app/servers/$serverId/search"
+            params={{ serverId: activeServerId }}
+            aria-label="Search"
+            className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+            title="Search messages"
+          >
+            <Search size={14} />
+          </Link>
+        ) : null}
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto p-2 text-sm">
         {activeServerId ? (
@@ -219,9 +251,34 @@ function ChannelSidebar({
               </span>
               <span className="truncate">Moderation</span>
             </Link>
+            <Link
+              to="/app/servers/$serverId/settings"
+              params={{ serverId: activeServerId }}
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment hover:bg-tavern-oak"
+            >
+              <span className="text-tavern-mist">
+                <Settings size={16} />
+              </span>
+              <span className="truncate">Settings</span>
+            </Link>
           </SidebarSection>
         ) : null}
-        <SidebarSection title="Text">
+        <SidebarSection
+          title="Text"
+          action={
+            activeServerId ? (
+              <button
+                type="button"
+                onClick={onCreateChannel}
+                aria-label="Create channel"
+                className="rounded p-0.5 text-tavern-mist hover:bg-tavern-oak"
+                title="Create channel"
+              >
+                <Plus size={12} />
+              </button>
+            ) : null
+          }
+        >
           {channels
             .filter((c) => c.type === 'text')
             .map((c) => (
@@ -269,15 +326,18 @@ function ChannelSidebar({
 
 function SidebarSection({
   title,
+  action,
   children,
 }: {
   title: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }): JSX.Element {
   return (
     <div>
-      <div className="px-2 pb-1 pt-3 text-xs uppercase tracking-wider text-tavern-mist">
-        {title}
+      <div className="flex items-center justify-between px-2 pb-1 pt-3 text-xs uppercase tracking-wider text-tavern-mist">
+        <span>{title}</span>
+        {action}
       </div>
       <div className="space-y-0.5">{children}</div>
     </div>

@@ -16,6 +16,8 @@ interface RealtimeState {
   serversById: Record<string, Server>;
   channelsByServer: Record<string, Channel[]>;
   messagesByChannel: Record<string, Message[]>;
+  /** channelId -> map of userId -> last typing timestamp (ms) */
+  typingByChannel: Record<string, Record<string, number>>;
   ready: boolean;
   setReady: (ready: boolean) => void;
   upsertServer: (server: Server) => void;
@@ -25,6 +27,8 @@ interface RealtimeState {
   setMessages: (channelId: string, messages: Message[]) => void;
   upsertMessage: (message: Message) => void;
   removeMessage: (channelId: string, id: string) => void;
+  noteTyping: (channelId: string, userId: string, ts: number) => void;
+  expireTyping: (channelId: string, before: number) => void;
 }
 
 function uniqById<T extends { id: string }>(arr: T[]): T[] {
@@ -37,8 +41,28 @@ export const useRealtime = create<RealtimeState>((set) => ({
   serversById: {},
   channelsByServer: {},
   messagesByChannel: {},
+  typingByChannel: {},
   ready: false,
   setReady: (ready) => set({ ready }),
+
+  noteTyping: (channelId, userId, ts) =>
+    set((s) => ({
+      typingByChannel: {
+        ...s.typingByChannel,
+        [channelId]: { ...(s.typingByChannel[channelId] ?? {}), [userId]: ts },
+      },
+    })),
+  expireTyping: (channelId, before) =>
+    set((s) => {
+      const current = s.typingByChannel[channelId] ?? {};
+      const next: Record<string, number> = {};
+      for (const [uid, ts] of Object.entries(current)) {
+        if (ts >= before) next[uid] = ts;
+      }
+      return {
+        typingByChannel: { ...s.typingByChannel, [channelId]: next },
+      };
+    }),
 
   upsertServer: (server) =>
     set((s) => ({ serversById: { ...s.serversById, [server.id]: server } })),

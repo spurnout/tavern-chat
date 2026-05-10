@@ -68,6 +68,17 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
     }
   }
 
+  // Typing indicator — at most one ping per ~3 seconds.
+  const lastTypingRef = useRef(0);
+  function onContentChange(value: string): void {
+    setContent(value);
+    const now = Date.now();
+    if (now - lastTypingRef.current > 3000 && value.length > 0) {
+      lastTypingRef.current = now;
+      api(`/channels/${channelId}/typing`, { method: 'POST' }).catch(() => undefined);
+    }
+  }
+
   async function onFileChange(e: ChangeEvent<HTMLInputElement>): Promise<void> {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
@@ -203,7 +214,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           ref={textareaRef}
           className="input min-h-[2.5rem] flex-1 resize-none"
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => onContentChange(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice."
           disabled={busy}

@@ -70,6 +70,11 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
     case 'SERVER_UPDATE':
       store.upsertServer(data as Server);
       return;
+    case 'TYPING_START': {
+      const d = data as { channelId: string; userId: string };
+      store.noteTyping(d.channelId, d.userId, Date.now());
+      return;
+    }
     default:
       return;
   }

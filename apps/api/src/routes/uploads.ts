@@ -140,6 +140,42 @@ export async function registerUploadRoutes(app: FastifyInstance, cfg: Config): P
     reply.send(ok(serializeAttachment(updated as unknown as AttachmentRow, cfg.S3_PUBLIC_BASE_URL)));
   });
 
+  // Client-computed waveform for voice messages. The worker can't decode webm
+  // without ffmpeg in the image, so we let the recorder browser submit peaks
+  // it computed via Web Audio. The endpoint enforces:
+  //   * caller must be the uploader
+  //   * attachment must be of kind voice_message
+  //   * peaks must be a small array of bounded ints
+  app.post('/api/attachments/:id/waveform', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const params = z.object({ id: idSchema }).parse(req.params);
+    const body = z
+      .object({
+        peaks: z
+          .array(z.number().int().min(0).max(255))
+          .min(8)
+          .max(128),
+        durationMs: z.number().int().nonnegative().max(15 * 60 * 1000).optional(),
+      })
+      .parse(req.body);
+
+    const att = await prisma.attachment.findUnique({ where: { id: params.id } });
+    if (!att) throw TavernError.notFound();
+    if (att.uploaderId !== ctx.userId) throw TavernError.forbidden();
+    if (att.kind !== 'voice_message') {
+      throw new TavernError(ErrorCodes.VALIDATION_ERROR, 'Not a voice message', 400);
+    }
+
+    const updated = await prisma.attachment.update({
+      where: { id: params.id },
+      data: {
+        waveform: body.peaks,
+        ...(body.durationMs !== undefined ? { durationMs: body.durationMs } : {}),
+      },
+    });
+    reply.send(ok(serializeAttachment(updated as unknown as AttachmentRow, cfg.S3_PUBLIC_BASE_URL)));
+  });
+
   app.get('/api/attachments/:id', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { id } = z.object({ id: idSchema }).parse(req.params);

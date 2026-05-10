@@ -66,11 +66,7 @@ export function ModerationPage(): JSX.Element {
           reports.length === 0 ? (
             <p className="text-tavern-mist">Queue is empty. Nice and quiet.</p>
           ) : (
-            <ul className="space-y-3">
-              {reports.map((r) => (
-                <ReportRow key={r.id} report={r} onResolve={() => void refresh()} />
-              ))}
-            </ul>
+            <QueuePanel reports={reports} onChanged={() => void refresh()} />
           )
         ) : (
           <ul className="space-y-1">
@@ -123,11 +119,122 @@ function TabButton({
   );
 }
 
+function QueuePanel({
+  reports,
+  onChanged,
+}: {
+  reports: Report[];
+  onChanged: () => void;
+}): JSX.Element {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function toggle(id: string): void {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function selectAll(): void {
+    setSelected(new Set(reports.map((r) => r.id)));
+  }
+  function clearAll(): void {
+    setSelected(new Set());
+  }
+
+  async function bulk(
+    status: 'resolved' | 'dismissed' | 'escalated',
+    action?: ModerationAction,
+  ): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await Promise.all(
+        Array.from(selected).map((id) =>
+          api(`/reports/${id}/resolve`, {
+            method: 'POST',
+            body: { status, action },
+          }),
+        ),
+      );
+      setSelected(new Set());
+      onChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Bulk action failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 rounded border border-tavern-oak bg-tavern-stone p-2 text-xs">
+        <span className="text-tavern-mist">{selected.size} selected</span>
+        <button className="btn-ghost" onClick={selectAll} disabled={busy}>
+          Select all
+        </button>
+        <button className="btn-ghost" onClick={clearAll} disabled={busy}>
+          Clear
+        </button>
+        <div className="ml-auto flex gap-1">
+          <button
+            className="btn-ghost"
+            disabled={busy || selected.size === 0}
+            onClick={() => void bulk('dismissed')}
+          >
+            Dismiss
+          </button>
+          <button
+            className="btn-ghost"
+            disabled={busy || selected.size === 0}
+            onClick={() => void bulk('resolved', 'warn_user')}
+          >
+            Warn
+          </button>
+          <button
+            className="btn-primary"
+            disabled={busy || selected.size === 0}
+            onClick={() => void bulk('resolved', 'block')}
+          >
+            Block
+          </button>
+          <button
+            className="btn-primary"
+            disabled={busy || selected.size === 0}
+            onClick={() => void bulk('resolved', 'quarantine')}
+          >
+            Quarantine
+          </button>
+        </div>
+      </div>
+      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      <ul className="space-y-3">
+        {reports.map((r) => (
+          <ReportRow
+            key={r.id}
+            report={r}
+            selected={selected.has(r.id)}
+            onToggle={() => toggle(r.id)}
+            onResolve={onChanged}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ReportRow({
   report,
+  selected,
+  onToggle,
   onResolve,
 }: {
   report: Report;
+  selected: boolean;
+  onToggle: () => void;
   onResolve: () => void;
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -155,11 +262,20 @@ function ReportRow({
   return (
     <li className="card space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <div className="font-semibold">{report.category.replace(/_/g, ' ')}</div>
-          <div className="text-xs text-tavern-mist">
-            {report.targetType} · {report.targetId.slice(0, 8)} · reported by{' '}
-            {report.reporterId.slice(0, 8)}
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={selected}
+            onChange={onToggle}
+            aria-label="Select report"
+          />
+          <div>
+            <div className="font-semibold">{report.category.replace(/_/g, ' ')}</div>
+            <div className="text-xs text-tavern-mist">
+              {report.targetType} · {report.targetId.slice(0, 8)} · reported by{' '}
+              {report.reporterId.slice(0, 8)}
+            </div>
           </div>
         </div>
         <span className="text-xs uppercase tracking-wider text-tavern-mead">{report.status}</span>

@@ -4,6 +4,7 @@ import { Hash } from 'lucide-react';
 import { MessageList } from '../components/MessageList.js';
 import { MessageComposer } from '../components/MessageComposer.js';
 import { MemberSidebar } from '../components/MemberSidebar.js';
+import { TypingIndicator } from '../components/TypingIndicator.js';
 import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import type { Channel } from '@tavern/shared';
@@ -46,6 +47,7 @@ export function ChannelPage(): JSX.Element {
           ) : null}
         </header>
         <MessageList channelId={channelId} />
+        <TypingIndicator channelId={channelId} />
         <MessageComposer channelId={channelId} />
       </div>
       {serverId ? <MemberSidebar serverId={serverId} /> : null}

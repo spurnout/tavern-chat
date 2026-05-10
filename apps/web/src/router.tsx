@@ -15,6 +15,8 @@ import { ServerHomePage } from './routes/server-home.js';
 import { CampaignsPage } from './routes/campaigns-page.js';
 import { GamesPage } from './routes/games-page.js';
 import { ModerationPage } from './routes/moderation-page.js';
+import { ServerSettingsPage } from './routes/server-settings-page.js';
+import { SearchPage } from './routes/search-page.js';
 import { AuthGate } from './components/AuthGate.js';
 import { useAuth } from './lib/auth.js';
 
@@ -95,6 +97,18 @@ const moderationRoute = createRoute({
   component: ModerationPage,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/servers/$serverId/settings',
+  component: ServerSettingsPage,
+});
+
+const searchRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/servers/$serverId/search',
+  component: SearchPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
@@ -107,6 +121,8 @@ const routeTree = rootRoute.addChildren([
     campaignsRoute,
     gamesRoute,
     moderationRoute,
+    settingsRoute,
+    searchRoute,
   ]),
 ]);
 

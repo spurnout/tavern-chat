@@ -29,7 +29,10 @@ import { registerDiceRoutes } from './routes/dice.js';
 import { registerBoardGameRoutes } from './routes/board-games.js';
 import { registerGameNightRoutes } from './routes/game-nights.js';
 import { registerModerationRoutes } from './routes/moderation.js';
+import { registerTypingRoutes } from './routes/typing.js';
+import { registerSearchRoutes } from './routes/search.js';
 import { registerGateway } from './gateway/index.js';
+import { initRedisBroker } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
 
 export interface BuildAppOptions {
@@ -111,7 +114,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerBoardGameRoutes(app);
     await registerGameNightRoutes(app);
     await registerModerationRoutes(app);
+    await registerTypingRoutes(app);
+    await registerSearchRoutes(app);
     registerGateway(app, jwt);
+
+    // Promote the in-process broker to Redis pub/sub for multi-replica
+    // deployments. Failure here is non-fatal — we keep the in-process broker
+    // and log a warning.
+    if (opts.config.NODE_ENV !== 'test' && opts.config.REDIS_URL) {
+      void initRedisBroker(opts.config.REDIS_URL).catch((err) => {
+        app.log.warn({ err }, 'redis broker init failed; staying in-process');
+      });
+    }
   }
 
   return app;

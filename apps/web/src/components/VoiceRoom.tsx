@@ -6,7 +6,7 @@ import {
   type LocalParticipant,
   type RemoteParticipant,
 } from 'livekit-client';
-import { Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
+import { Mic, MicOff, Monitor, MonitorOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 import { api } from '../lib/api-client.js';
 
 interface JoinResponse {
@@ -36,6 +36,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  const [screenOn, setScreenOn] = useState(false);
   const [allowed, setAllowed] = useState<JoinResponse['allowedFeatures'] | null>(null);
 
   useEffect(() => {
@@ -112,6 +113,17 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
     await room.localParticipant.setCameraEnabled(next);
   }
 
+  async function toggleScreenShare(): Promise<void> {
+    if (!room || !allowed?.canPublishScreenShare) return;
+    const next = !screenOn;
+    try {
+      await room.localParticipant.setScreenShareEnabled(next);
+      setScreenOn(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not toggle screen share');
+    }
+  }
+
   async function leave(): Promise<void> {
     if (room) {
       await room.disconnect();
@@ -154,6 +166,16 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
           </button>
           <button
             type="button"
+            className={screenOn ? 'btn-primary' : 'btn-ghost'}
+            onClick={() => void toggleScreenShare()}
+            disabled={status !== 'connected' || !allowed?.canPublishScreenShare}
+            aria-pressed={screenOn}
+            title={screenOn ? 'Stop screen share' : 'Share screen'}
+          >
+            {screenOn ? <Monitor size={16} /> : <MonitorOff size={16} />}
+          </button>
+          <button
+            type="button"
             className="btn bg-red-700 text-white hover:bg-red-600"
             onClick={() => void leave()}
             title="Leave voice"
@@ -183,8 +205,11 @@ function ParticipantTile({
   participant: LocalParticipant | RemoteParticipant;
 }): JSX.Element {
   const speaking = participant.isSpeaking;
+  const screenTrack = participant.getTrackPublication(Track.Source.ScreenShare);
   const cameraTrack = participant.getTrackPublication(Track.Source.Camera);
-  const hasVideo = !!cameraTrack && !cameraTrack.isMuted && !!cameraTrack.track;
+  const activeTrack =
+    screenTrack && !screenTrack.isMuted && screenTrack.track ? screenTrack : cameraTrack;
+  const hasVideo = !!activeTrack && !activeTrack.isMuted && !!activeTrack.track;
 
   return (
     <div
@@ -195,14 +220,14 @@ function ParticipantTile({
       {hasVideo ? (
         <video
           ref={(el) => {
-            if (el && cameraTrack?.track) {
-              cameraTrack.track.attach(el);
+            if (el && activeTrack?.track) {
+              activeTrack.track.attach(el);
             }
           }}
           autoPlay
           playsInline
           muted={participant.isLocal}
-          className="h-full w-full object-cover"
+          className="h-full w-full object-contain"
         />
       ) : (
         <div className="grid h-full place-items-center text-2xl font-semibold">
@@ -210,7 +235,10 @@ function ParticipantTile({
         </div>
       )}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/40 px-2 py-1 text-xs">
-        <span className="truncate">{participant.name ?? participant.identity}</span>
+        <span className="truncate">
+          {participant.name ?? participant.identity}
+          {screenTrack && !screenTrack.isMuted ? ' · sharing screen' : ''}
+        </span>
         <span className={speaking ? 'text-tavern-ember' : 'text-tavern-mist'}>
           {participant.isMicrophoneEnabled ? '🎙' : '🔇'}
         </span>
