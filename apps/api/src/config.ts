@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+const optionalString = z
+  .string()
+  .optional()
+  .transform((v) => (v === undefined || v === '' ? undefined : v));
+
 const envSchema = z.object({
   APP_NAME: z.string().default('Tavern'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -7,8 +12,11 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   PUBLIC_BASE_URL: z.string().default('http://localhost:3001'),
 
+  /** The only required external service. */
   DATABASE_URL: z.string().min(1),
-  REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
+
+  /** Optional. When present, BullMQ + Redis pub/sub is used. */
+  REDIS_URL: optionalString,
 
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
@@ -21,16 +29,18 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
-  // Trust & safety
+  // Trust & safety -----------------------------------------------------------
   TRUST_SAFETY_CORE_ENABLED: z
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
-  CLAMAV_HOST: z.string().default('clamav'),
+  /** Optional — when blank, ClamAV scanning is skipped. */
+  CLAMAV_HOST: optionalString,
   CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
+  /** Default true: lets uploads proceed without a scanner present. */
   ALLOW_UNSCANNED_UPLOADS: z
     .enum(['true', 'false'])
-    .default('false')
+    .default('true')
     .transform((v) => v === 'true'),
   BLOCK_EXECUTABLE_UPLOADS: z
     .enum(['true', 'false'])
@@ -46,11 +56,19 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   MAX_MESSAGE_LENGTH: z.coerce.number().int().positive().default(4000),
 
-  // Storage (MinIO / S3)
-  S3_ENDPOINT: z.string().default('http://minio:9000'),
+  // Storage ------------------------------------------------------------------
+  /**
+   * "local" (default): files written to LOCAL_STORAGE_DIR, served by the API.
+   * "s3":              files routed via the S3-compatible endpoint below.
+   */
+  STORAGE_BACKEND: z.enum(['local', 's3']).default('local'),
+  LOCAL_STORAGE_DIR: z.string().default('./data/storage'),
+
+  /** Used only when STORAGE_BACKEND=s3. */
+  S3_ENDPOINT: optionalString,
   S3_REGION: z.string().default('us-east-1'),
-  S3_ACCESS_KEY: z.string().default('tavern'),
-  S3_SECRET_KEY: z.string().default('tavern-dev-secret'),
+  S3_ACCESS_KEY: optionalString,
+  S3_SECRET_KEY: optionalString,
   S3_BUCKET: z.string().default('tavern-media'),
   S3_QUARANTINE_BUCKET: z.string().default('tavern-quarantine'),
   S3_USE_SSL: z
@@ -59,10 +77,11 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   S3_PUBLIC_BASE_URL: z.string().default('http://localhost:9000/tavern-media'),
 
-  // LiveKit
-  LIVEKIT_URL: z.string().default('ws://localhost:7880'),
-  LIVEKIT_API_KEY: z.string().default('devkey'),
-  LIVEKIT_API_SECRET: z.string().default('devsecret-change-me'),
+  // LiveKit ------------------------------------------------------------------
+  /** Optional. When blank, voice/video routes return 503. */
+  LIVEKIT_URL: optionalString,
+  LIVEKIT_API_KEY: optionalString,
+  LIVEKIT_API_SECRET: optionalString,
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -80,5 +99,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       `\n  openssl rand -hex 48`;
     throw new Error(`Invalid environment configuration:\n${issues}${hint}`);
   }
-  return parsed.data;
+  const cfg = parsed.data;
+
+  // Cross-field validation: if STORAGE_BACKEND=s3, the S3 bits must be set.
+  if (cfg.STORAGE_BACKEND === 's3') {
+    const missing: string[] = [];
+    if (!cfg.S3_ENDPOINT) missing.push('S3_ENDPOINT');
+    if (!cfg.S3_ACCESS_KEY) missing.push('S3_ACCESS_KEY');
+    if (!cfg.S3_SECRET_KEY) missing.push('S3_SECRET_KEY');
+    if (missing.length > 0) {
+      throw new Error(
+        `STORAGE_BACKEND=s3 but the following are missing: ${missing.join(', ')}.\n` +
+          `Either set them, or switch to STORAGE_BACKEND=local.`,
+      );
+    }
+  }
+  return cfg;
+}
+
+export function describeConfig(cfg: Config): string {
+  const storageDescr =
+    cfg.STORAGE_BACKEND === 'local'
+      ? `local (${cfg.LOCAL_STORAGE_DIR})`
+      : `s3 (${cfg.S3_ENDPOINT})`;
+  return [
+    `  storage:  ${storageDescr}`,
+    `  redis:    ${cfg.REDIS_URL ?? 'in-process (single-replica only)'}`,
+    `  clamav:   ${
+      cfg.CLAMAV_HOST
+        ? `${cfg.CLAMAV_HOST}:${cfg.CLAMAV_PORT}`
+        : `disabled (allowUnscanned=${cfg.ALLOW_UNSCANNED_UPLOADS})`
+    }`,
+    `  livekit:  ${cfg.LIVEKIT_URL ?? 'disabled (voice/video routes return 503)'}`,
+  ].join('\n');
 }

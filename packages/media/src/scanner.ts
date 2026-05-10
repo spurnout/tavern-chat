@@ -1,7 +1,7 @@
 /**
  * Minimal ClamAV INSTREAM client.
  *
- * We talk to clamd over plain TCP using its INSTREAM protocol:
+ * Talks to clamd over plain TCP using its INSTREAM protocol:
  *   1. Send "zINSTREAM\0".
  *   2. Send chunks: 4-byte big-endian length + chunk bytes.
  *   3. Send 4-byte zero length to terminate.
@@ -10,6 +10,10 @@
  *
  * Implementing this directly avoids pulling another npm dep that wraps the
  * same protocol and lets us add tight timeouts.
+ *
+ * If ClamAV isn't running (the default in dev mode), construct the scanner
+ * anyway and call ping() first — `false` means "don't block uploads on a
+ * scanner that isn't there." See ALLOW_UNSCANNED_UPLOADS in api config.
  */
 
 import net from 'node:net';

@@ -3,6 +3,18 @@
 Before exposing a Tavern instance to anyone other than yourself, walk through
 this list. Items are ordered by impact.
 
+> Tavern can run two ways:
+>
+> 1. **All-native**: just Postgres, plus the api/worker/web Node processes.
+>    Storage on disk, queues in-process, gateway in-process. Single replica.
+>    Suitable for personal / small-group instances.
+> 2. **With Redis + S3 + (optional) ClamAV + LiveKit**: scales horizontally,
+>    media is in object storage, scans run on a real ClamAV daemon.
+>    Suitable for community-size instances.
+>
+> Both paths share most of this list. Items only relevant to path 2 are
+> marked **(scaled)**.
+
 ## Secrets
 
 - [ ] `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are 48+ random hex bytes,

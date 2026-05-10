@@ -38,9 +38,16 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       (result.perms & Permission.STREAM_SCREEN) === Permission.STREAM_SCREEN ||
       (result.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR;
 
-    if (!cfg.LIVEKIT_API_KEY || !cfg.LIVEKIT_API_SECRET) {
-      throw new TavernError(ErrorCodes.VOICE_UNAVAILABLE, 'Voice is not configured', 503);
+    if (!cfg.LIVEKIT_URL || !cfg.LIVEKIT_API_KEY || !cfg.LIVEKIT_API_SECRET) {
+      throw new TavernError(
+        ErrorCodes.VOICE_UNAVAILABLE,
+        'Voice is not configured on this instance.',
+        503,
+      );
     }
+    const liveKitUrl = cfg.LIVEKIT_URL;
+    const liveKitKey = cfg.LIVEKIT_API_KEY;
+    const liveKitSecret = cfg.LIVEKIT_API_SECRET;
 
     const me = await prisma.user.findUnique({
       where: { id: ctx.userId },
@@ -54,8 +61,8 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
     if (canPublishScreenShare) sources.push('screen_share');
 
     const { token, expiresAt } = await signLiveKitToken({
-      apiKey: cfg.LIVEKIT_API_KEY,
-      apiSecret: cfg.LIVEKIT_API_SECRET,
+      apiKey: liveKitKey,
+      apiSecret: liveKitSecret,
       identity: ctx.userId,
       name: me?.displayName ?? me?.username ?? 'Tavern user',
       ttlSeconds: 60 * 60,
@@ -96,7 +103,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
 
     reply.send(
       ok({
-        liveKitUrl: cfg.LIVEKIT_URL,
+        liveKitUrl,
         token,
         roomName,
         identity: ctx.userId,

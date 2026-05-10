@@ -33,25 +33,30 @@ docs/
   tabletop.md, safety.md, roadmap.md
 ```
 
-## Quick start
+## Quick start (no Docker)
 
 Prerequisites:
 
 - **Node 22+** (`node --version`)
 - **pnpm 9+** (`corepack enable && corepack use pnpm@9`)
-- **Docker** + **Docker Compose v2**
+- **PostgreSQL 16+** running locally (any install)
+
+That's it. Redis, MinIO, ClamAV, and LiveKit are all optional — Tavern uses
+in-process / on-disk fallbacks when they're missing. See
+[`docs/native-setup.md`](docs/native-setup.md) for OS-specific Postgres
+install instructions and how to enable the optional services.
 
 ```bash
 # 1. Install workspace dependencies
 pnpm install
 
-# 2. Copy env, then edit JWT secrets at minimum.
-#    The api/worker auto-load .env from the workspace root via dotenv.
+# 2. Copy env. Edit JWT_ACCESS_SECRET / JWT_REFRESH_SECRET (48 hex chars each).
 #    Generate strong secrets: openssl rand -hex 48
 cp .env.example .env
 
-# 3. Start infrastructure (postgres, redis, minio, clamav)
-pnpm docker:up
+# 3. Create the database role + database. With Postgres running locally:
+psql -U postgres -c "CREATE ROLE tavern WITH LOGIN PASSWORD 'tavern-dev';"
+psql -U postgres -c "CREATE DATABASE tavern OWNER tavern;"
 
 # 4. Generate the Prisma client + apply the database schema
 pnpm db:generate
@@ -64,6 +69,26 @@ pnpm dev
 
 Then open <http://localhost:3000>. Register with the seeded `DEV-INVITE` code,
 or log in as `admin` / `change-me-in-dev`.
+
+When you start the API you'll see a config summary like:
+
+```
+tavern config:
+  storage:  local (./data/storage)
+  redis:    in-process (single-replica only)
+  clamav:   disabled (allowUnscanned=true)
+  livekit:  disabled (voice/video routes return 503)
+```
+
+That confirms you're running in zero-Docker mode. Voice/video tries to
+load LiveKit and gets a friendly 503 — everything else (chat, dice, files,
+campaigns, board games, moderation, search) works.
+
+### Prefer Docker?
+
+`pnpm docker:up` still brings up Postgres + Redis + MinIO + ClamAV +
+LiveKit in containers. See [`docs/docker-setup.md`](docs/docker-setup.md)
+for the env vars to set when switching to S3/Redis/etc.
 
 ## Status
 

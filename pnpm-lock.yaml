@@ -53,6 +53,9 @@ importers:
       '@tavern/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@tavern/media':
+        specifier: workspace:*
+        version: link:../../packages/media
       '@tavern/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -199,6 +202,9 @@ importers:
       '@tavern/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@tavern/media':
+        specifier: workspace:*
+        version: link:../../packages/media
       '@tavern/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -211,18 +217,12 @@ importers:
       ioredis:
         specifier: ^5.4.1
         version: 5.10.1
-      minio:
-        specifier: ^8.0.2
-        version: 8.0.7
       pino:
         specifier: ^9.5.0
         version: 9.14.0
       pino-pretty:
         specifier: ^11.3.0
         version: 11.3.0
-      sharp:
-        specifier: ^0.33.5
-        version: 0.33.5
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -270,6 +270,28 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+
+  packages/media:
+    dependencies:
+      '@tavern/shared':
+        specifier: workspace:*
+        version: link:../shared
+      minio:
+        specifier: ^8.0.2
+        version: 8.0.7
+      sharp:
+        specifier: ^0.33.5
+        version: 0.33.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.9.0
+        version: 22.19.18
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.4
+        version: 2.1.9(@types/node@22.19.18)
 
   packages/shared:
     dependencies:

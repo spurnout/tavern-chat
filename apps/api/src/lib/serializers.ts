@@ -4,6 +4,7 @@
  */
 
 import type { Prisma } from '@tavern/db';
+import type { StorageBackend } from '@tavern/media';
 import type {
   Attachment,
   Channel as ChannelDto,
@@ -143,10 +144,12 @@ export interface AttachmentRow {
   thumbnailKey: string | null;
 }
 
-export function serializeAttachment(row: AttachmentRow, publicBaseUrl: string): Attachment {
-  const url = row.status === 'ready' ? `${publicBaseUrl}/${row.storageKey}` : null;
+export function serializeAttachment(row: AttachmentRow, storage: StorageBackend): Attachment {
+  const url = row.status === 'ready' ? storage.getPublicUrl(row.storageBucket, row.storageKey) : null;
   const thumbnailUrl =
-    row.status === 'ready' && row.thumbnailKey ? `${publicBaseUrl}/${row.thumbnailKey}` : null;
+    row.status === 'ready' && row.thumbnailKey
+      ? storage.getPublicUrl(row.storageBucket, row.thumbnailKey)
+      : null;
   return {
     id: row.id,
     uploaderId: row.uploaderId,

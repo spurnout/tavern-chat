@@ -47,6 +47,7 @@ Thumbs.db
 # Storage / media (local dev)
 infra/data/
 infra/docker/data/
+data/
 
 # Logs
 logs/
