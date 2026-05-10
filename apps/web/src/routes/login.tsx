@@ -1,22 +1,36 @@
-import { useState } from 'react';
-import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
 import { useAuth } from '../lib/auth.js';
 
 export function LoginPage(): JSX.Element {
   const login = useAuth((s) => s.login);
+  const refreshAuth = useAuth((s) => s.bootstrap);
   const status = useAuth((s) => s.status);
   const error = useAuth((s) => s.error);
+  const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const navigate = useNavigate();
-  const isAuthed = useRouterState({
-    select: () => useAuth.getState().status === 'authenticated',
-  });
 
-  if (isAuthed) {
-    queueMicrotask(() => void navigate({ to: '/app' }));
-  }
+  // Run the unauthenticated bootstrap-status + /me check once on mount.
+  useEffect(() => {
+    if (status === 'idle') void refreshAuth();
+  }, [status, refreshAuth]);
+
+  // If the instance is fresh, send the user to setup instead.
+  useEffect(() => {
+    if (needsBootstrap === true) {
+      void navigate({ to: '/bootstrap', replace: true });
+    }
+  }, [needsBootstrap, navigate]);
+
+  // Already signed in? Skip ahead.
+  useEffect(() => {
+    if (status === 'authenticated') {
+      void navigate({ to: '/app', replace: true });
+    }
+  }, [status, navigate]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();

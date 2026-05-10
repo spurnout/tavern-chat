@@ -1,10 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@tavern/db';
 import {
+  bootstrapRequestSchema,
   loginRequestSchema,
   refreshRequestSchema,
   registerRequestSchema,
   TavernError,
+  type BootstrapStatus,
   type Me,
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
@@ -25,6 +27,25 @@ function clientContext(req: import('fastify').FastifyRequest) {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOpts): Promise<void> {
+  // First-run check — frontend uses this to decide whether to redirect
+  // unauthenticated users to /bootstrap or /login.
+  app.get('/api/auth/bootstrap-status', async (_req, reply) => {
+    const needsBootstrap = await opts.auth.needsBootstrap();
+    const body: BootstrapStatus = { needsBootstrap };
+    reply.send(ok(body));
+  });
+
+  // First-run bootstrap. Only succeeds while User.count = 0; further calls
+  // get 409 CONFLICT.
+  app.post('/api/auth/bootstrap', {
+    config: { rateLimit: { max: 5, timeWindow: '5 minute' } },
+    handler: async (req, reply) => {
+      const body = bootstrapRequestSchema.parse(req.body);
+      const tokens = await opts.auth.bootstrap(body, clientContext(req));
+      reply.status(201).send(ok({ tokens }));
+    },
+  });
+
   app.post('/api/auth/register', {
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     handler: async (req, reply) => {

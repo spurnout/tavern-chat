@@ -172,6 +172,75 @@ describe('POST /api/auth/register', () => {
   });
 });
 
+describe('GET /api/auth/bootstrap-status', () => {
+  it('reports needsBootstrap=true when there are no users', async () => {
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/bootstrap-status' });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { data: { needsBootstrap: boolean } }).data.needsBootstrap).toBe(true);
+    await app.close();
+  });
+
+  it('reports needsBootstrap=false once a user exists', async () => {
+    fakeDb.users.set('u1', {
+      id: 'u1',
+      username: 'someone',
+      usernameLower: 'someone',
+      displayName: 'Someone',
+      email: 's@example.com',
+      emailLower: 's@example.com',
+      passwordHash: 'x',
+      isInstanceAdmin: false,
+      avatarAttachmentId: null,
+      bio: null,
+      postingLockedUntil: null,
+      uploadsLockedUntil: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = await makeApp();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/bootstrap-status' });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { data: { needsBootstrap: boolean } }).data.needsBootstrap).toBe(false);
+    await app.close();
+  });
+});
+
+describe('POST /api/auth/bootstrap (conflict)', () => {
+  it('rejects when a user already exists', async () => {
+    fakeDb.users.set('u1', {
+      id: 'u1',
+      username: 'someone',
+      usernameLower: 'someone',
+      displayName: 'Someone',
+      email: 's@example.com',
+      emailLower: 's@example.com',
+      passwordHash: 'x',
+      isInstanceAdmin: true,
+      avatarAttachmentId: null,
+      bio: null,
+      postingLockedUntil: null,
+      uploadsLockedUntil: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/bootstrap',
+      payload: {
+        username: 'admin',
+        displayName: 'Admin',
+        email: 'admin@example.com',
+        password: 'hunter22hunter22',
+      },
+    });
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('CONFLICT');
+    await app.close();
+  });
+});
+
 describe('POST /api/auth/login', () => {
   it('returns 401 for unknown identifier', async () => {
     const app = await makeApp();

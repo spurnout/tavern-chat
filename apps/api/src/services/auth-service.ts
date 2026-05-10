@@ -1,16 +1,20 @@
-import { prisma } from '@tavern/db';
+import { Prisma, prisma } from '@tavern/db';
 import {
   ErrorCodes,
   NAME_LIMITS,
+  PERMISSION_DEFAULT_EVERYONE,
   TavernError,
   TOKEN_TTL,
+  serializePermissions,
   ulid,
+  type BootstrapRequest,
   type LoginRequest,
   type RegisterRequest,
   type TokenPair,
 } from '@tavern/shared';
 import { hashPassword, verifyPassword } from '../lib/passwords.js';
 import { sha256 } from '../lib/hash.js';
+import { generateInviteCode } from '../lib/invite-codes.js';
 import type { JwtService } from '../lib/jwt.js';
 import type { Config } from '../config.js';
 
@@ -79,6 +83,135 @@ export class AuthService {
     });
 
     return this.issueSession(user.id, ctx);
+  }
+
+  /**
+   * Returns true when there are zero users — the frontend uses this to show
+   * a one-time "create admin account" page instead of the invite-gated
+   * register form.
+   */
+  async needsBootstrap(): Promise<boolean> {
+    const count = await prisma.user.count();
+    return count === 0;
+  }
+
+  /**
+   * First-run bootstrap. Creates the first user as instance admin, a default
+   * server with @everyone + #lobby + Voice Hall, and an invite code the
+   * admin can hand out. Atomic: only succeeds while User.count = 0; a
+   * second concurrent call gets CONFLICT.
+   */
+  async bootstrap(
+    req: BootstrapRequest,
+    sessionCtx: SessionContext,
+  ): Promise<TokenPair> {
+    const usernameLower = req.username.toLowerCase();
+    const emailLower = req.email.toLowerCase();
+
+    if (req.username.length < NAME_LIMITS.MIN_USERNAME) {
+      throw TavernError.validation('Username too short');
+    }
+
+    const passwordHash = await hashPassword(req.password);
+    const userId = ulid();
+    const serverId = ulid();
+    const everyoneRoleId = ulid();
+    const lobbyChannelId = ulid();
+    const voiceChannelId = ulid();
+    const inviteId = ulid();
+    const inviteCode = generateInviteCode();
+    const serverName = req.serverName?.trim() || 'The Tavern';
+
+    await prisma.$transaction(async (tx) => {
+      const count = await tx.user.count();
+      if (count > 0) {
+        throw new TavernError(
+          ErrorCodes.CONFLICT,
+          'This instance has already been initialised',
+          409,
+        );
+      }
+
+      await tx.user.create({
+        data: {
+          id: userId,
+          username: req.username,
+          usernameLower,
+          displayName: req.displayName,
+          email: req.email,
+          emailLower,
+          passwordHash,
+          isInstanceAdmin: true,
+        },
+      });
+
+      await tx.server.create({
+        data: {
+          id: serverId,
+          ownerUserId: userId,
+          name: serverName,
+          description: 'Pull up a chair, friend.',
+        },
+      });
+      await tx.role.create({
+        data: {
+          id: everyoneRoleId,
+          serverId,
+          name: '@everyone',
+          color: 0,
+          position: 0,
+          isEveryone: true,
+          permissions: new Prisma.Decimal(serializePermissions(PERMISSION_DEFAULT_EVERYONE)),
+        },
+      });
+      await tx.server.update({
+        where: { id: serverId },
+        data: { defaultRoleId: everyoneRoleId },
+      });
+      await tx.serverMember.create({ data: { serverId, userId } });
+      await tx.channel.create({
+        data: {
+          id: lobbyChannelId,
+          serverId,
+          type: 'text',
+          name: 'lobby',
+          topic: 'Welcome to the Tavern.',
+          position: 0,
+        },
+      });
+      await tx.channel.create({
+        data: {
+          id: voiceChannelId,
+          serverId,
+          type: 'voice',
+          name: 'Voice Hall',
+          position: 1,
+        },
+      });
+      await tx.safetyPolicy.create({ data: { serverId } });
+
+      await tx.invite.create({
+        data: {
+          id: inviteId,
+          code: inviteCode,
+          scope: 'instance',
+          createdById: userId,
+        },
+      });
+
+      await tx.message.create({
+        data: {
+          id: ulid(),
+          serverId,
+          channelId: lobbyChannelId,
+          authorId: userId,
+          type: 'system',
+          content: `Welcome to ${serverName}.`,
+        },
+      });
+    });
+
+    return this.issueSession(userId, sessionCtx);
   }
 
   async login(req: LoginRequest, ctx: SessionContext): Promise<TokenPair> {

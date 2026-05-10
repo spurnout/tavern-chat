@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@tavern/db';
 import { z } from 'zod';
-import { randomBytes } from 'node:crypto';
 import {
   createInviteRequestSchema,
   idSchema,
@@ -10,6 +9,7 @@ import {
   TOKEN_TTL,
   ulid,
 } from '@tavern/shared';
+import { generateInviteCode } from '../lib/invite-codes.js';
 import { ok } from '../lib/responses.js';
 import { requireServerPermission } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
@@ -41,11 +41,6 @@ function serializeInvite(i: {
     revokedAt: i.revokedAt?.toISOString() ?? null,
     createdAt: i.createdAt.toISOString(),
   };
-}
-
-function generateInviteCode(): string {
-  const buf = randomBytes(8);
-  return buf.toString('base64url').toUpperCase().slice(0, 10);
 }
 
 export async function registerInviteRoutes(app: FastifyInstance): Promise<void> {

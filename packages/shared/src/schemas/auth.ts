@@ -24,6 +24,27 @@ export const registerRequestSchema = z.object({
   inviteCode: inviteCodeSchema,
 });
 
+/**
+ * First-run bootstrap. Same fields as register, minus the invite — only
+ * accepted by POST /api/auth/bootstrap, only succeeds while User.count = 0.
+ */
+export const bootstrapRequestSchema = z.object({
+  username: usernameSchema,
+  displayName: z.string().min(NAME_LIMITS.MIN_DISPLAY_NAME).max(NAME_LIMITS.MAX_DISPLAY_NAME),
+  email: emailSchema,
+  password: passwordSchema,
+  /** Optional: name of the first server to create. Defaults to "The Tavern". */
+  serverName: z
+    .string()
+    .min(NAME_LIMITS.MIN_SERVER_NAME)
+    .max(NAME_LIMITS.MAX_SERVER_NAME)
+    .optional(),
+});
+
+export const bootstrapStatusSchema = z.object({
+  needsBootstrap: z.boolean(),
+});
+
 export const loginRequestSchema = z.object({
   identifier: z.string().min(1).max(254),
   password: passwordSchema,
@@ -41,6 +62,8 @@ export const tokenPairSchema = z.object({
 });
 
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
+export type BootstrapRequest = z.infer<typeof bootstrapRequestSchema>;
+export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type TokenPair = z.infer<typeof tokenPairSchema>;

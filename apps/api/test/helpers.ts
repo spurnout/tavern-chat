@@ -101,6 +101,9 @@ export function makeFakePrismaClient(db: FakeDb) {
         }
         return null;
       },
+      async count() {
+        return db.users.size;
+      },
       async create({ data }: { data: Partial<UserRow> & { id: string; passwordHash: string } }) {
         const now = new Date();
         const row: UserRow = {

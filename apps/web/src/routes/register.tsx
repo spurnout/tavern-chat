@@ -1,13 +1,27 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
 import { useAuth } from '../lib/auth.js';
 
 export function RegisterPage(): JSX.Element {
   const register = useAuth((s) => s.register);
+  const refreshAuth = useAuth((s) => s.bootstrap);
   const status = useAuth((s) => s.status);
   const error = useAuth((s) => s.error);
+  const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (status === 'idle') void refreshAuth();
+  }, [status, refreshAuth]);
+
+  // Fresh instance: send to /bootstrap instead of asking for an invite that
+  // doesn't exist yet.
+  useEffect(() => {
+    if (needsBootstrap === true) {
+      void navigate({ to: '/bootstrap', replace: true });
+    }
+  }, [needsBootstrap, navigate]);
 
   const [form, setForm] = useState({
     username: '',

@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-router';
 import { LoginPage } from './routes/login.js';
 import { RegisterPage } from './routes/register.js';
+import { BootstrapPage } from './routes/bootstrap-page.js';
 import { AppShell } from './routes/app-shell.js';
 import { AppHomePage } from './routes/app-home.js';
 import { ChannelPage } from './routes/channel-page.js';
@@ -28,9 +29,17 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   beforeLoad: () => {
-    const status = useAuth.getState().status;
-    throw redirect({ to: status === 'authenticated' ? '/app' : '/login' });
+    const auth = useAuth.getState();
+    if (auth.status === 'authenticated') throw redirect({ to: '/app' });
+    if (auth.needsBootstrap === true) throw redirect({ to: '/bootstrap' });
+    throw redirect({ to: '/login' });
   },
+});
+
+const bootstrapRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/bootstrap',
+  component: BootstrapPage,
 });
 
 const loginRoute = createRoute({
@@ -111,6 +120,7 @@ const searchRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
+  bootstrapRoute,
   loginRoute,
   registerRoute,
   appLayoutRoute.addChildren([
