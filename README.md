@@ -67,8 +67,11 @@ pnpm db:seed     # creates admin user + DEV-INVITE invite code
 pnpm dev
 ```
 
-Then open <http://localhost:3000>. Register with the seeded `DEV-INVITE` code,
+Then open <http://localhost:3030>. Register with the seeded `DEV-INVITE` code,
 or log in as `admin` / `change-me-in-dev`.
+
+(Want a different port? `WEB_PORT=3000 pnpm dev`. Update `ALLOWED_ORIGINS` in
+`.env` to match.)
 
 When you start the API you'll see a config summary like:
 
