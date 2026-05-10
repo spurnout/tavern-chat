@@ -27,8 +27,11 @@ export type WorkerConfig = z.infer<typeof envSchema>;
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const parsed = envSchema.safeParse(env);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
-    throw new Error(`Invalid worker environment:\n${issues}`);
+    const issues = parsed.error.issues
+      .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
+      .join('\n');
+    const hint = `\n\nDid you copy .env.example to .env at the workspace root?\n  cp .env.example .env`;
+    throw new Error(`Invalid worker environment:\n${issues}${hint}`);
   }
   return parsed.data;
 }

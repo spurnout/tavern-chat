@@ -73,7 +73,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
       .join('\n');
-    throw new Error(`Invalid environment configuration:\n${issues}`);
+    const hint =
+      `\n\nDid you copy .env.example to .env at the workspace root?` +
+      `\n  cp .env.example .env` +
+      `\n\nThen edit JWT_ACCESS_SECRET and JWT_REFRESH_SECRET — generate with:` +
+      `\n  openssl rand -hex 48`;
+    throw new Error(`Invalid environment configuration:\n${issues}${hint}`);
   }
   return parsed.data;
 }

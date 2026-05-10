@@ -45,13 +45,16 @@ Prerequisites:
 # 1. Install workspace dependencies
 pnpm install
 
-# 2. Copy env, then edit JWT secrets at minimum
+# 2. Copy env, then edit JWT secrets at minimum.
+#    The api/worker auto-load .env from the workspace root via dotenv.
+#    Generate strong secrets: openssl rand -hex 48
 cp .env.example .env
 
 # 3. Start infrastructure (postgres, redis, minio, clamav)
 pnpm docker:up
 
-# 4. Apply the database schema
+# 4. Generate the Prisma client + apply the database schema
+pnpm db:generate
 pnpm db:migrate
 pnpm db:seed     # creates admin user + DEV-INVITE invite code
 

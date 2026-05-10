@@ -1,3 +1,7 @@
+// Side-effect import — must come first so .env populates process.env before
+// any module reads it.
+import './lib/load-env.js';
+
 import { loadConfig } from './config.js';
 import { buildApp } from './app.js';
 

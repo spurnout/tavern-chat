@@ -1,3 +1,6 @@
+// Side-effect import — must come first so .env populates process.env.
+import './load-env.js';
+
 import pino from 'pino';
 import { loadWorkerConfig } from './config.js';
 import { QUEUE_NAMES, makeRedisConnection, makeWorker } from './queues.js';
