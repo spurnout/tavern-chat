@@ -20,6 +20,9 @@ coverage/
 e2e/test-results/
 e2e/playwright-report/
 e2e/playwright/.cache/
+e2e/walkthrough-frames/
+e2e/walkthrough.html
+e2e/walkthrough.mp4
 
 # Env
 .env

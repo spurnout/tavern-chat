@@ -9,6 +9,7 @@
     "test:e2e:headed": "playwright test --project=chromium --headed",
     "test:walkthrough": "playwright test --project=walkthrough",
     "test:walkthrough:headed": "playwright test --project=walkthrough --headed",
+    "walkthrough:assemble": "node scripts/assemble-walkthrough.mjs",
     "install-browsers": "playwright install --with-deps chromium",
     "typecheck": "tsc --noEmit"
   },
