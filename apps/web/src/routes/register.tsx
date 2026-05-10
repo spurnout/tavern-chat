@@ -56,33 +56,33 @@ export function RegisterPage(): JSX.Element {
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8" />
         <form className="card space-y-4" onSubmit={onSubmit}>
-          <h1 className="text-xl font-semibold">Pull up a chair</h1>
-          <p className="text-sm text-tavern-mist">
+          <h1 className="font-serif text-xl font-medium">Pull up a chair</h1>
+          <p className="text-sm text-fg-muted">
             Tavern is invite-only. Enter the code your innkeeper gave you.
           </p>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Invite code</span>
+            <span className="mb-1 inline-block text-fg-muted">Invite code</span>
             <input className="input font-mono uppercase" required disabled={busy} {...bind('inviteCode')} />
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Username</span>
+            <span className="mb-1 inline-block text-fg-muted">Username</span>
             <input className="input" required disabled={busy} {...bind('username')} />
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Display name</span>
+            <span className="mb-1 inline-block text-fg-muted">Display name</span>
             <input className="input" required disabled={busy} {...bind('displayName')} />
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Email</span>
+            <span className="mb-1 inline-block text-fg-muted">Email</span>
             <input className="input" type="email" required disabled={busy} {...bind('email')} />
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Password</span>
+            <span className="mb-1 inline-block text-fg-muted">Password</span>
             <input
               className="input"
               type="password"
@@ -95,16 +95,16 @@ export function RegisterPage(): JSX.Element {
           </label>
 
           {error && status === 'error' ? (
-            <p className="text-sm text-red-400">{error}</p>
+            <p className="text-sm text-danger">{error}</p>
           ) : null}
 
           <button className="btn-primary w-full" type="submit" disabled={busy}>
             {busy ? 'Creating account…' : 'Create account'}
           </button>
 
-          <p className="text-center text-sm text-tavern-mist">
+          <p className="text-center text-sm text-fg-muted">
             Already have an account?{' '}
-            <Link to="/login" className="text-tavern-mead hover:underline">
+            <Link to="/login" className="text-mead hover:underline">
               Sign in
             </Link>
           </p>

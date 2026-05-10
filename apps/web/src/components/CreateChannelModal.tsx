@@ -41,7 +41,7 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
       setName('');
       setTopic('');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create channel');
+      setError(err instanceof ApiError ? err.message : 'Could not create room');
     } finally {
       setBusy(false);
     }
@@ -53,14 +53,14 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Create channel"
+      title="Create room"
       footer={
         <>
           <button className="btn-ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </button>
           <button className="btn-primary" onClick={() => void submit()} disabled={busy || !valid}>
-            {busy ? 'Creating…' : 'Create channel'}
+            {busy ? 'Creating…' : 'Create room'}
           </button>
         </>
       }
@@ -74,8 +74,8 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
             disabled={busy}
             className={`rounded border p-3 text-sm ${
               type === t.value
-                ? 'border-tavern-ember bg-tavern-ember/10 text-tavern-mead'
-                : 'border-tavern-oak text-tavern-mist hover:bg-tavern-oak'
+                ? 'border-ember bg-tint-ember text-mead'
+                : 'border-subtle text-fg-muted hover:bg-raised'
             }`}
           >
             {t.label}
@@ -83,7 +83,7 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
         ))}
       </div>
       <label className="mt-4 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Name</span>
+        <span className="mb-1 inline-block text-fg-muted">Name</span>
         <input
           autoFocus
           className="input"
@@ -95,7 +95,7 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
       </label>
       {type === 'text' ? (
         <label className="mt-3 block text-sm">
-          <span className="mb-1 inline-block text-tavern-mist">Topic (optional)</span>
+          <span className="mb-1 inline-block text-fg-muted">Topic (optional)</span>
           <input
             className="input"
             value={topic}
@@ -105,7 +105,7 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
           />
         </label>
       ) : null}
-      {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>
   );
 }

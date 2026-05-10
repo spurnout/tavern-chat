@@ -32,7 +32,7 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
       setDescription('');
       await navigate({ to: '/app/servers/$serverId', params: { serverId: server.id } });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create server');
+      setError(err instanceof ApiError ? err.message : 'Could not create den');
     } finally {
       setBusy(false);
     }
@@ -44,8 +44,8 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Create a new server"
-      description="Servers are top-level communities with their own channels, roles, and members."
+      title="Create a new den"
+      description="Dens are private spaces with their own rooms, roles, and members."
       footer={
         <>
           <button className="btn-ghost" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -56,13 +56,13 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
             onClick={() => void submit()}
             disabled={busy || !valid}
           >
-            {busy ? 'Creating…' : 'Create server'}
+            {busy ? 'Creating…' : 'Create den'}
           </button>
         </>
       }
     >
       <label className="block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Name</span>
+        <span className="mb-1 inline-block text-fg-muted">Name</span>
         <input
           autoFocus
           className="input"
@@ -74,7 +74,7 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
         />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Description (optional)</span>
+        <span className="mb-1 inline-block text-fg-muted">Description (optional)</span>
         <textarea
           className="input min-h-[5rem]"
           value={description}
@@ -83,7 +83,7 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
           disabled={busy}
         />
       </label>
-      {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>
   );
 }

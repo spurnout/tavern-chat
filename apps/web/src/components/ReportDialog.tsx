@@ -58,18 +58,18 @@ export function ReportDialog(props: Props): JSX.Element {
     <Dialog.Root open onOpenChange={(o) => !o && props.onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(95vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-tavern-oak bg-tavern-stone p-6 shadow-xl">
-          <Dialog.Title className="text-lg font-semibold">Report content</Dialog.Title>
-          <Dialog.Description className="mt-1 text-sm text-tavern-mist">
-            Reports go to your server moderators. Pick the most specific category that applies.
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(95vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-subtle bg-surface p-6 shadow-xl">
+          <Dialog.Title className="font-serif text-lg font-medium">Report content</Dialog.Title>
+          <Dialog.Description className="mt-1 text-sm text-fg-muted">
+            Reports go to your den moderators. Pick the most specific category that applies.
           </Dialog.Description>
 
           {submitted ? (
-            <p className="mt-6 text-sm text-tavern-mead">Thanks — your report was filed.</p>
+            <p className="mt-6 text-sm text-mead">Thanks — your report was filed.</p>
           ) : (
             <>
               <label className="mt-4 block text-sm">
-                <span className="mb-1 inline-block text-tavern-mist">Category</span>
+                <span className="mb-1 inline-block text-fg-muted">Category</span>
                 <select
                   className="input"
                   value={category}
@@ -84,7 +84,7 @@ export function ReportDialog(props: Props): JSX.Element {
                 </select>
               </label>
               <label className="mt-3 block text-sm">
-                <span className="mb-1 inline-block text-tavern-mist">Notes (optional)</span>
+                <span className="mb-1 inline-block text-fg-muted">Notes (optional)</span>
                 <textarea
                   className="input min-h-[6rem]"
                   value={notes}
@@ -94,7 +94,7 @@ export function ReportDialog(props: Props): JSX.Element {
                   placeholder="Anything else moderators should know?"
                 />
               </label>
-              {error ? <p className="mt-2 text-sm text-red-400">{error}</p> : null}
+              {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"

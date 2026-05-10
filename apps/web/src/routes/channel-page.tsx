@@ -34,16 +34,16 @@ export function ChannelPage(): JSX.Element {
       .catch(() => undefined);
   }, [channelId, channel, upsertChannel]);
 
-  if (!channelId) return <div className="grid h-full place-items-center">Pick a channel.</div>;
+  if (!channelId) return <div className="grid h-full place-items-center">Pick a room.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-          <Hash size={16} className="text-tavern-mist" />
-          <span className="font-semibold">{channel?.name ?? '…'}</span>
+        <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
+          <Hash size={16} className="text-fg-muted" />
+          <span className="font-serif font-medium">{channel?.name ?? '…'}</span>
           {channel?.topic ? (
-            <span className="ml-3 truncate text-sm text-tavern-mist">{channel.topic}</span>
+            <span className="ml-3 truncate text-sm text-fg-muted">{channel.topic}</span>
           ) : null}
         </header>
         <MessageList channelId={channelId} />

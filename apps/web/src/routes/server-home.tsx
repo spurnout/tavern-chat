@@ -25,11 +25,11 @@ export function ServerHomePage(): JSX.Element {
     <div className="grid h-full place-items-center p-12 text-center">
       <div className="max-w-md space-y-4">
         <TavernLogo className="justify-center" />
-        <h1 className="text-2xl font-semibold">Welcome.</h1>
-        <p className="text-sm text-tavern-mist">
+        <h1 className="font-serif text-2xl font-medium">Welcome.</h1>
+        <p className="text-sm text-fg-muted">
           {channels.length === 0
-            ? 'No channels yet — ask the server owner to create some.'
-            : 'Pick a channel from the sidebar.'}
+            ? 'No rooms yet — ask the den owner to create some.'
+            : 'Pick a room from the sidebar.'}
         </p>
       </div>
     </div>

@@ -2,11 +2,83 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    color-scheme: dark;
-  }
+/* ─────────────────────────────────────────────────────────────────
+   Design tokens — see docs/design-system.html for the full reference.
+   Canonical values are oklch; hex is the comment-side fallback only.
+   ───────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
 
+  /* Surface ramp — six steps, each ~4% lighter than the last */
+  --bg-canvas:    oklch(0.165 0.010 60);  /* #15110d */
+  --bg-sunken:    oklch(0.190 0.012 60);  /* #1b1610 */
+  --bg-surface:   oklch(0.220 0.013 60);  /* #221b14 */
+  --bg-raised:    oklch(0.255 0.014 60);  /* #2a2218 */
+  --bg-elevated:  oklch(0.290 0.016 60);  /* #33291d */
+  --bg-overlay:   oklch(0.330 0.018 60);  /* #3d3122 */
+
+  /* Foreground tones — warm cream through faint */
+  --fg-default:   oklch(0.910 0.035 80);  /* #f1e6cf */
+  --fg-muted:     oklch(0.730 0.045 80);  /* #b8a988 */
+  --fg-faint:     oklch(0.500 0.035 80);  /* #7a6b53 */
+  --fg-on-accent: oklch(0.165 0.015 60);  /* #1a130c */
+
+  /* Borders */
+  --border-subtle:  oklch(0.235 0.015 60);  /* #2e2519 */
+  --border-default: oklch(0.275 0.017 60);  /* #3a2e1f */
+  --border-strong:  oklch(0.345 0.020 60);  /* #4d3d29 */
+
+  /* Accents — six perceptually-balanced hues */
+  --ember:        oklch(0.74 0.13 52);
+  --ember-hi:     oklch(0.80 0.12 56);
+  --ember-lo:     oklch(0.62 0.13 48);
+  --mead:         oklch(0.82 0.11 82);
+  --moss:         oklch(0.66 0.09 148);
+  --rust:         oklch(0.60 0.15 32);
+  --lavender:     oklch(0.74 0.07 300);
+  --dusk:         oklch(0.62 0.06 245);
+
+  /* Tints — 14% mix of an accent into transparent */
+  --tint-ember:    color-mix(in oklch, var(--ember)    14%, transparent);
+  --tint-mead:     color-mix(in oklch, var(--mead)     14%, transparent);
+  --tint-moss:     color-mix(in oklch, var(--moss)     14%, transparent);
+  --tint-rust:     color-mix(in oklch, var(--rust)     14%, transparent);
+  --tint-lavender: color-mix(in oklch, var(--lavender) 14%, transparent);
+
+  /* Foreground tint — for neutral row hovers that should not adopt an accent */
+  --tint-fg-04:    color-mix(in oklch, var(--fg-default) 4%, transparent);
+
+  /* Status — destructive. Used by error text, danger buttons, and report banners. */
+  --danger:        oklch(0.62 0.18 22);
+  --danger-hi:     oklch(0.70 0.16 22);
+  --tint-danger:   color-mix(in oklch, var(--danger) 14%, transparent);
+  --border-danger: color-mix(in oklch, var(--danger) 40%, transparent);
+
+  /* Motion */
+  --t-instant:     80ms;
+  --t-quick:      120ms;
+  --t-base:       180ms;
+  --t-deliberate: 260ms;
+  --t-cinematic:  420ms;
+  --ease-standard:   cubic-bezier(.2, 0, 0, 1);
+  --ease-decel:      cubic-bezier(0, 0, .2, 1);
+  --ease-accel:      cubic-bezier(.4, 0, 1, 1);
+  --ease-emphasized: cubic-bezier(.2, 0, 0, 1.2);
+  --ease-spring:     cubic-bezier(.34, 1.56, .64, 1);
+  --ease-linear:     linear;
+
+  /* Spacing — same 4-pt scale Tailwind uses; documented for cross-reference */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+}
+
+@layer base {
   html,
   body,
   #root {
@@ -16,29 +88,50 @@
   body {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    background: var(--bg-canvas);
+    color: var(--fg-default);
+  }
+
+  /* Default keyboard-focus outline. Composed classes (.btn-primary, .input)
+     override this with a tuned focus ring; everything else falls back here.
+     Specificity is 0 thanks to :where, so any explicit focus styles win. */
+  :where(button, a, summary, [role='button']):focus-visible {
+    outline: 2px solid var(--border-strong);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Standard enter transition — duration + easing from the design tokens.
+     Pair with the desired transition-property utility, or use alone as a
+     drop-in for `transition-all` with the canonical timing. */
+  .transition-base {
+    transition-property: all;
+    transition-duration: var(--t-base);
+    transition-timing-function: var(--ease-decel);
   }
 }
 
 @layer components {
   .input {
-    @apply w-full rounded-md bg-tavern-stone border border-tavern-oak px-3 py-2 text-tavern-parchment placeholder:text-tavern-mist focus:outline-none focus:ring-2 focus:ring-tavern-ember;
+    @apply w-full rounded-md bg-sunken border border-default px-3 py-2 text-fg placeholder:text-fg-faint focus:outline-none focus:ring-2 focus:ring-ember;
   }
 
   .btn {
     @apply inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-tavern-ember text-tavern-ink hover:bg-tavern-flame focus:outline-none focus:ring-2 focus:ring-tavern-mead;
+    @apply btn bg-ember text-fg-on-accent hover:bg-ember-hi focus:outline-none focus:ring-2 focus:ring-mead;
   }
   .btn-ghost {
-    @apply btn bg-transparent text-tavern-parchment hover:bg-tavern-oak;
+    @apply btn bg-transparent text-fg hover:bg-raised;
   }
 
   .card {
-    @apply rounded-lg border border-tavern-oak bg-tavern-stone p-6 shadow-lg;
+    @apply rounded-lg border border-subtle bg-surface p-6 shadow-lg;
   }
 
   .panel {
-    @apply rounded-md border border-tavern-oak bg-tavern-stone;
+    @apply rounded-md border border-subtle bg-surface;
   }
 }

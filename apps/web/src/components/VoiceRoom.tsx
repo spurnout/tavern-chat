@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Room,
   RoomEvent,
@@ -41,6 +41,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
 
   useEffect(() => {
     let mounted = true;
+    let connectedRoom: Room | null = null;
     async function join() {
       setStatus('connecting');
       setError(null);
@@ -75,6 +76,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
           await r.disconnect();
           return;
         }
+        connectedRoom = r;
         setRoom(r);
         setStatus('connected');
         syncParticipants(r);
@@ -89,14 +91,16 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
       } catch (e) {
         if (!mounted) return;
         setStatus('error');
-        setError(e instanceof Error ? e.message : 'Failed to join voice');
+        setError(e instanceof Error ? e.message : 'Failed to enter voice room');
       }
     }
     void join();
     return () => {
       mounted = false;
+      if (connectedRoom) {
+        void connectedRoom.disconnect();
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId]);
 
   async function toggleMic(): Promise<void> {
@@ -134,13 +138,13 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
 
   return (
     <div className="flex flex-col">
-      <header className="flex items-center justify-between border-b border-tavern-oak px-4 py-3">
+      <header className="flex items-center justify-between border-b border-subtle px-4 py-3">
         <div>
-          <div className="font-semibold">🔊 {channelName}</div>
-          <div className="text-xs text-tavern-mist">
+          <div className="font-serif font-medium">🔊 {channelName}</div>
+          <div className="text-xs text-fg-muted">
             {status === 'connecting' && 'Connecting…'}
             {status === 'connected' && `${participants.length} in room`}
-            {status === 'error' && (error ?? 'Could not join voice')}
+            {status === 'error' && (error ?? 'Could not enter voice room')}
           </div>
         </div>
         <div className="flex gap-2">
@@ -176,7 +180,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
           </button>
           <button
             type="button"
-            className="btn bg-red-700 text-white hover:bg-red-600"
+            className="btn bg-danger text-fg-on-accent hover:bg-danger-hi"
             onClick={() => void leave()}
             title="Leave voice"
           >
@@ -190,7 +194,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
           <ParticipantTile key={p.identity} participant={p} />
         ))}
         {participants.length === 0 && status === 'connected' ? (
-          <div className="col-span-full grid place-items-center text-tavern-mist">
+          <div className="col-span-full grid place-items-center text-fg-muted">
             Just you for now.
           </div>
         ) : null}
@@ -211,35 +215,52 @@ function ParticipantTile({
     screenTrack && !screenTrack.isMuted && screenTrack.track ? screenTrack : cameraTrack;
   const hasVideo = !!activeTrack && !activeTrack.isMuted && !!activeTrack.track;
 
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const track = activeTrack?.track;
+    const el = videoRef.current;
+    if (!track || !el || !hasVideo) return;
+    track.attach(el);
+    return () => {
+      track.detach(el);
+    };
+  }, [activeTrack, hasVideo]);
+
+  const displayName = participant.name ?? participant.identity;
   return (
     <div
-      className={`relative aspect-video overflow-hidden rounded-md border bg-tavern-stone ${
-        speaking ? 'border-tavern-ember' : 'border-tavern-oak'
+      // role="status" makes mic / speaking / sharing state changes announce
+      // politely to assistive tech. The speaking border is decorative.
+      role="status"
+      aria-label={`${displayName}${participant.isMicrophoneEnabled ? ', mic on' : ', mic off'}${
+        screenTrack && !screenTrack.isMuted ? ', sharing screen' : ''
+      }`}
+      className={`relative aspect-video overflow-hidden rounded-md border bg-surface ${
+        speaking ? 'border-ember' : 'border-subtle'
       }`}
     >
       {hasVideo ? (
         <video
-          ref={(el) => {
-            if (el && activeTrack?.track) {
-              activeTrack.track.attach(el);
-            }
-          }}
+          ref={videoRef}
           autoPlay
           playsInline
           muted={participant.isLocal}
           className="h-full w-full object-contain"
         />
       ) : (
-        <div className="grid h-full place-items-center text-2xl font-semibold">
-          {(participant.name ?? participant.identity).slice(0, 2).toUpperCase()}
+        <div className="grid h-full place-items-center font-serif text-2xl font-semibold">
+          {displayName.slice(0, 2).toUpperCase()}
         </div>
       )}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/40 px-2 py-1 text-xs">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/40 px-2 py-1 text-xs"
+      >
         <span className="truncate">
-          {participant.name ?? participant.identity}
+          {displayName}
           {screenTrack && !screenTrack.isMuted ? ' · sharing screen' : ''}
         </span>
-        <span className={speaking ? 'text-tavern-ember' : 'text-tavern-mist'}>
+        <span className={speaking ? 'text-ember' : 'text-fg-muted'}>
           {participant.isMicrophoneEnabled ? '🎙' : '🔇'}
         </span>
       </div>

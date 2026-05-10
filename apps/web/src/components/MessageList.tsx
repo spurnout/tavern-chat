@@ -54,12 +54,19 @@ export function MessageList({ channelId }: Props): JSX.Element {
   }, [sorted.length]);
 
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto px-4 py-4">
+    <div
+      ref={parentRef}
+      role="log"
+      aria-live="polite"
+      aria-atomic="false"
+      aria-label="Messages"
+      className="flex-1 overflow-y-auto px-4 py-4"
+    >
       {loading && sorted.length === 0 ? (
-        <div className="grid h-full place-items-center text-sm text-tavern-mist">Loading…</div>
+        <div className="grid h-full place-items-center text-sm text-fg-muted">Loading…</div>
       ) : null}
       {!loading && sorted.length === 0 ? (
-        <div className="grid h-full place-items-center text-sm text-tavern-mist">
+        <div className="grid h-full place-items-center text-sm text-fg-muted">
           No messages yet. Start the conversation.
         </div>
       ) : null}
@@ -105,13 +112,13 @@ interface RowProps {
 function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
   if (message.deletedAt) {
     return (
-      <div className="rounded px-3 py-2 text-sm italic text-tavern-mist">message deleted</div>
+      <div className="rounded px-3 py-2 text-sm italic text-fg-muted">message deleted</div>
     );
   }
   if (message.type === 'dice_roll') {
     return (
-      <div className="rounded-md border border-tavern-oak bg-tavern-stone px-3 py-2 text-sm">
-        <div className="flex items-center gap-2 text-tavern-mead">
+      <div className="rounded-md border border-subtle bg-surface px-3 py-2 text-sm">
+        <div className="flex items-center gap-2 text-mead">
           <Dice5 size={16} />
           <span className="font-mono">{message.content}</span>
         </div>
@@ -120,26 +127,26 @@ function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
   }
   if (message.type === 'system') {
     return (
-      <div className="px-3 py-1 text-sm italic text-tavern-mist">{message.content}</div>
+      <div className="px-3 py-1 text-sm italic text-fg-muted">{message.content}</div>
     );
   }
   return (
-    <div className="group flex items-start gap-3 rounded px-2 py-1.5 hover:bg-tavern-stone/60">
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-tavern-oak text-sm font-semibold">
+    <div className="group flex items-start gap-3 rounded px-2 py-1.5 hover:bg-tint-fg-04">
+      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-raised font-serif text-sm font-semibold">
         {message.authorId.slice(-2).toUpperCase()}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2 text-sm">
-          <span className={mine ? 'font-semibold text-tavern-mead' : 'font-semibold'}>
+          <span className={mine ? 'font-serif font-medium text-mead' : 'font-serif font-medium'}>
             {message.authorId.slice(0, 8)}
           </span>
-          <span className="text-xs text-tavern-mist">
+          <span className="font-mono text-xs text-fg-muted">
             {new Date(message.createdAt).toLocaleTimeString()}
           </span>
-          {message.editedAt ? <span className="text-xs text-tavern-mist">(edited)</span> : null}
+          {message.editedAt ? <span className="text-xs text-fg-muted">(edited)</span> : null}
         </div>
         {message.content ? (
-          <div className="whitespace-pre-wrap break-words text-sm text-tavern-parchment">
+          <div className="whitespace-pre-wrap break-words text-sm text-fg">
             {message.content}
           </div>
         ) : null}
@@ -154,7 +161,7 @@ function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
           onClick={onReport}
           aria-label="Report message"
           title="Report"
-          className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+          className="rounded p-1 text-fg-muted hover:bg-raised"
         >
           <Flag size={14} />
         </button>
@@ -169,7 +176,7 @@ function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
             }}
             aria-label="Delete message"
             title="Delete"
-            className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+            className="rounded p-1 text-fg-muted hover:bg-raised"
           >
             <Trash2 size={14} />
           </button>

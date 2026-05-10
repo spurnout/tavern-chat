@@ -49,23 +49,23 @@ export function GamesPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId, filterPlayers, filterTime]);
 
-  if (!serverId) return <div className="p-12">Pick a server.</div>;
+  if (!serverId) return <div className="p-12">Pick a den.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-        <Dice5 size={16} className="text-tavern-mist" />
-        <span className="font-semibold">Game library &amp; nights</span>
+      <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
+        <Dice5 size={16} className="text-fg-muted" />
+        <span className="font-serif font-medium">Game library &amp; nights</span>
       </header>
 
       <div className="space-y-8 p-6">
-        {error ? <p className="text-sm text-red-400">{error}</p> : null}
+        {error ? <p className="text-sm text-danger">{error}</p> : null}
 
         <section>
           <div className="mb-3 flex flex-wrap items-end gap-3">
-            <h2 className="text-lg font-semibold">Library</h2>
+            <h2 className="font-serif text-lg font-medium">Library</h2>
             <label className="text-xs">
-              <span className="mb-0.5 block text-tavern-mist">Players</span>
+              <span className="mb-0.5 block text-fg-muted">Players</span>
               <input
                 type="number"
                 min={1}
@@ -78,7 +78,7 @@ export function GamesPage(): JSX.Element {
               />
             </label>
             <label className="text-xs">
-              <span className="mb-0.5 block text-tavern-mist">Max minutes</span>
+              <span className="mb-0.5 block text-fg-muted">Max minutes</span>
               <input
                 type="number"
                 min={5}
@@ -95,15 +95,15 @@ export function GamesPage(): JSX.Element {
               <Plus size={14} className="mr-1" /> Add game
             </button>
           </div>
-          {loading ? <p className="text-tavern-mist">Loading…</p> : null}
+          {loading ? <p className="text-fg-muted">Loading…</p> : null}
           {!loading && games.length === 0 ? (
-            <p className="text-tavern-mist">No games match.</p>
+            <p className="text-fg-muted">No games match.</p>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {games.map((g) => (
               <article key={g.id} className="card space-y-2">
-                <h3 className="text-base font-semibold">{g.name}</h3>
-                <div className="flex flex-wrap gap-2 text-xs text-tavern-mist">
+                <h3 className="font-serif text-base font-medium">{g.name}</h3>
+                <div className="flex flex-wrap gap-2 text-xs text-fg-muted">
                   <span>
                     {g.minPlayers === g.maxPlayers
                       ? `${g.minPlayers} players`
@@ -113,14 +113,14 @@ export function GamesPage(): JSX.Element {
                   {g.complexity ? <span>complexity {g.complexity.toFixed(1)}/5</span> : null}
                 </div>
                 {g.description ? (
-                  <p className="text-sm text-tavern-parchment">{g.description}</p>
+                  <p className="text-sm text-fg">{g.description}</p>
                 ) : null}
                 {g.tags.length > 0 ? (
                   <div className="flex flex-wrap gap-1">
                     {g.tags.map((t) => (
                       <span
                         key={t}
-                        className="rounded border border-tavern-oak px-1.5 py-0.5 text-xs text-tavern-mist"
+                        className="rounded border border-subtle px-1.5 py-0.5 text-xs text-fg-muted"
                       >
                         {t}
                       </span>
@@ -134,8 +134,8 @@ export function GamesPage(): JSX.Element {
 
         <section>
           <div className="mb-3 flex items-center gap-2">
-            <Calendar size={16} className="text-tavern-mist" />
-            <h2 className="text-lg font-semibold">Game nights</h2>
+            <Calendar size={16} className="text-fg-muted" />
+            <h2 className="font-serif text-lg font-medium">Game nights</h2>
             <button
               className="ml-auto btn-primary text-sm"
               onClick={() => setCreateNightOpen(true)}
@@ -144,7 +144,7 @@ export function GamesPage(): JSX.Element {
             </button>
           </div>
           {nights.length === 0 ? (
-            <p className="text-tavern-mist">No game nights scheduled yet.</p>
+            <p className="text-fg-muted">No game nights scheduled yet.</p>
           ) : (
             <ul className="space-y-3">
               {nights.map((n) => (
@@ -245,35 +245,37 @@ function GameNightCard({
     <li className="card space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <div className="font-semibold">{gameNight.title}</div>
-          <div className="text-xs text-tavern-mist">
-            {gameNight.scheduledStart
-              ? new Date(gameNight.scheduledStart).toLocaleString()
-              : 'unscheduled'}
+          <div className="font-serif font-medium">{gameNight.title}</div>
+          <div className="text-xs text-fg-muted">
+            <span className="font-mono">
+              {gameNight.scheduledStart
+                ? new Date(gameNight.scheduledStart).toLocaleString()
+                : 'unscheduled'}
+            </span>
             {gameNight.location ? ` · ${gameNight.location}` : ''}
           </div>
         </div>
-        <span className="text-xs uppercase tracking-wider text-tavern-mead">
+        <span className="text-xs uppercase tracking-wider text-mead">
           {gameNight.status}
         </span>
       </div>
       <div className="flex flex-wrap gap-1 text-xs">
-        <span className="text-tavern-mist">RSVP:</span>
+        <span className="text-fg-muted">RSVP:</span>
         {(['yes', 'maybe', 'no', 'late'] as const).map((v) => (
           <button
             key={v}
             type="button"
             onClick={() => void rsvp(v)}
-            className="rounded border border-tavern-oak px-2 py-0.5 hover:bg-tavern-oak"
+            className="rounded border border-subtle px-2 py-0.5 hover:bg-raised"
           >
             {v}
           </button>
         ))}
       </div>
       <div>
-        <div className="text-xs uppercase tracking-wider text-tavern-mist">Candidates</div>
+        <div className="text-xs uppercase tracking-wider text-fg-muted">Candidates</div>
         {candidates.length === 0 ? (
-          <p className="text-xs text-tavern-mist">No candidates yet.</p>
+          <p className="text-xs text-fg-muted">No candidates yet.</p>
         ) : (
           <ul className="mt-1 space-y-1">
             {candidates.map((c) => {
@@ -286,8 +288,8 @@ function GameNightCard({
                     onClick={() => void vote(c.boardGameId)}
                     className={`rounded border px-2 py-0.5 text-xs ${
                       c.meVoted
-                        ? 'border-tavern-ember bg-tavern-ember/10 text-tavern-mead'
-                        : 'border-tavern-oak hover:bg-tavern-oak'
+                        ? 'border-ember bg-tint-ember text-mead'
+                        : 'border-subtle hover:bg-raised'
                     }`}
                   >
                     {c.voteCount} vote{c.voteCount === 1 ? '' : 's'}
@@ -299,14 +301,14 @@ function GameNightCard({
         )}
         {proposable.length > 0 ? (
           <details className="mt-2 text-xs">
-            <summary className="cursor-pointer text-tavern-mist">propose another</summary>
+            <summary className="cursor-pointer text-fg-muted">propose another</summary>
             <ul className="mt-1 grid grid-cols-2 gap-1">
               {proposable.map((g) => (
                 <li key={g.id}>
                   <button
                     type="button"
                     onClick={() => void propose(g.id)}
-                    className="w-full rounded border border-tavern-oak px-2 py-0.5 text-left hover:bg-tavern-oak"
+                    className="w-full rounded border border-subtle px-2 py-0.5 text-left hover:bg-raised"
                   >
                     {g.name}
                   </button>
@@ -316,7 +318,7 @@ function GameNightCard({
           </details>
         ) : null}
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-danger">{error}</p> : null}
     </li>
   );
 }
@@ -394,11 +396,11 @@ function CreateBoardGameModal({
       }
     >
       <label className="block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Name</span>
+        <span className="mb-1 inline-block text-fg-muted">Name</span>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Description</span>
+        <span className="mb-1 inline-block text-fg-muted">Description</span>
         <textarea
           className="input min-h-[4rem]"
           value={description}
@@ -407,7 +409,7 @@ function CreateBoardGameModal({
       </label>
       <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
         <label>
-          <span className="mb-1 inline-block text-tavern-mist">Min players</span>
+          <span className="mb-1 inline-block text-fg-muted">Min players</span>
           <input
             type="number"
             min={1}
@@ -418,7 +420,7 @@ function CreateBoardGameModal({
           />
         </label>
         <label>
-          <span className="mb-1 inline-block text-tavern-mist">Max players</span>
+          <span className="mb-1 inline-block text-fg-muted">Max players</span>
           <input
             type="number"
             min={1}
@@ -429,7 +431,7 @@ function CreateBoardGameModal({
           />
         </label>
         <label>
-          <span className="mb-1 inline-block text-tavern-mist">Minutes</span>
+          <span className="mb-1 inline-block text-fg-muted">Minutes</span>
           <input
             type="number"
             min={5}
@@ -440,7 +442,7 @@ function CreateBoardGameModal({
           />
         </label>
         <label>
-          <span className="mb-1 inline-block text-tavern-mist">Complexity (1–5)</span>
+          <span className="mb-1 inline-block text-fg-muted">Complexity (1–5)</span>
           <input
             type="number"
             min={1}
@@ -453,10 +455,10 @@ function CreateBoardGameModal({
         </label>
       </div>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Tags (comma-separated)</span>
+        <span className="mb-1 inline-block text-fg-muted">Tags (comma-separated)</span>
         <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} />
       </label>
-      {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>
   );
 }
@@ -532,11 +534,11 @@ function CreateGameNightModal({
       }
     >
       <label className="block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Title</span>
+        <span className="mb-1 inline-block text-fg-muted">Title</span>
         <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">When</span>
+        <span className="mb-1 inline-block text-fg-muted">When</span>
         <input
           type="datetime-local"
           className="input"
@@ -545,7 +547,7 @@ function CreateGameNightModal({
         />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Location (optional)</span>
+        <span className="mb-1 inline-block text-fg-muted">Location (optional)</span>
         <input
           className="input"
           value={location}
@@ -554,13 +556,13 @@ function CreateGameNightModal({
       </label>
       {games.length > 0 ? (
         <div className="mt-3">
-          <div className="mb-1 text-xs uppercase tracking-wider text-tavern-mist">
+          <div className="mb-1 text-xs uppercase tracking-wider text-fg-muted">
             Candidate games
           </div>
           <ul className="grid grid-cols-2 gap-1 text-sm">
             {games.map((g) => (
               <li key={g.id}>
-                <label className="flex cursor-pointer items-center gap-2 rounded px-1 hover:bg-tavern-oak">
+                <label className="flex cursor-pointer items-center gap-2 rounded px-1 hover:bg-raised">
                   <input
                     type="checkbox"
                     checked={candidateIds.includes(g.id)}
@@ -573,7 +575,7 @@ function CreateGameNightModal({
           </ul>
         </div>
       ) : null}
-      {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>
   );
 }

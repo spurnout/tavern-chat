@@ -38,13 +38,13 @@ export function ModerationPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, serverId]);
 
-  if (!serverId) return <div className="p-12">Pick a server.</div>;
+  if (!serverId) return <div className="p-12">Pick a den.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-        <Shield size={16} className="text-tavern-mist" />
-        <span className="font-semibold">Moderation</span>
+      <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
+        <Shield size={16} className="text-fg-muted" />
+        <span className="font-serif font-medium">Moderation</span>
         <div className="ml-auto flex gap-1 text-xs">
           <TabButton active={tab === 'queue'} onClick={() => setTab('queue')}>
             Queue
@@ -56,37 +56,37 @@ export function ModerationPage(): JSX.Element {
       </header>
       <div className="space-y-3 p-6">
         {error ? (
-          <p className="rounded border border-red-700/50 bg-red-900/20 p-3 text-sm text-red-300">
+          <p className="rounded border border-danger bg-tint-danger p-3 text-sm text-danger">
             {error}
           </p>
         ) : null}
-        {loading ? <p className="text-tavern-mist">Loading…</p> : null}
+        {loading ? <p className="text-fg-muted">Loading…</p> : null}
 
         {tab === 'queue' ? (
           reports.length === 0 ? (
-            <p className="text-tavern-mist">Queue is empty. Nice and quiet.</p>
+            <p className="text-fg-muted">Queue is empty. Nice and quiet.</p>
           ) : (
             <QueuePanel reports={reports} onChanged={() => void refresh()} />
           )
         ) : (
           <ul className="space-y-1">
             {audit.length === 0 ? (
-              <p className="text-tavern-mist">No audit entries yet.</p>
+              <p className="text-fg-muted">No audit entries yet.</p>
             ) : null}
             {audit.map((e) => (
               <li
                 key={e.id}
-                className="flex flex-wrap items-baseline gap-2 rounded border border-tavern-oak bg-tavern-stone px-3 py-2 text-sm"
+                className="flex flex-wrap items-baseline gap-2 rounded border border-subtle bg-surface px-3 py-2 text-sm"
               >
-                <span className="font-mono text-xs text-tavern-mist">
+                <span className="font-mono text-xs text-fg-muted">
                   {new Date(e.createdAt).toLocaleString()}
                 </span>
-                <span className="font-semibold">{e.action}</span>
+                <span className="font-mono text-xs font-medium">{e.action}</span>
                 {e.actorId ? (
-                  <span className="text-xs text-tavern-mist">by {e.actorId.slice(0, 8)}</span>
+                  <span className="text-xs text-fg-muted">by {e.actorId.slice(0, 8)}</span>
                 ) : null}
                 {e.targetId ? (
-                  <span className="text-xs text-tavern-mist">→ {e.targetId.slice(0, 8)}</span>
+                  <span className="text-xs text-fg-muted">→ {e.targetId.slice(0, 8)}</span>
                 ) : null}
               </li>
             ))}
@@ -111,7 +111,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={`rounded px-2 py-1 ${
-        active ? 'bg-tavern-oak text-tavern-parchment' : 'text-tavern-mist hover:bg-tavern-oak'
+        active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'
       }`}
     >
       {children}
@@ -171,8 +171,8 @@ function QueuePanel({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 rounded border border-tavern-oak bg-tavern-stone p-2 text-xs">
-        <span className="text-tavern-mist">{selected.size} selected</span>
+      <div className="flex flex-wrap items-center gap-2 rounded border border-subtle bg-surface p-2 text-xs">
+        <span className="text-fg-muted">{selected.size} selected</span>
         <button className="btn-ghost" onClick={selectAll} disabled={busy}>
           Select all
         </button>
@@ -210,7 +210,7 @@ function QueuePanel({
           </button>
         </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-3">
         {reports.map((r) => (
           <ReportRow
@@ -271,19 +271,19 @@ function ReportRow({
             aria-label="Select report"
           />
           <div>
-            <div className="font-semibold">{report.category.replace(/_/g, ' ')}</div>
-            <div className="text-xs text-tavern-mist">
+            <div className="font-serif font-medium">{report.category.replace(/_/g, ' ')}</div>
+            <div className="text-xs text-fg-muted">
               {report.targetType} · {report.targetId.slice(0, 8)} · reported by{' '}
               {report.reporterId.slice(0, 8)}
             </div>
           </div>
         </div>
-        <span className="text-xs uppercase tracking-wider text-tavern-mead">{report.status}</span>
+        <span className="text-xs uppercase tracking-wider text-mead">{report.status}</span>
       </div>
       {report.notes ? (
-        <p className="rounded bg-tavern-ink p-2 text-sm text-tavern-parchment">{report.notes}</p>
+        <p className="rounded bg-canvas p-2 text-sm text-fg">{report.notes}</p>
       ) : null}
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-danger">{error}</p> : null}
       <div className="flex flex-wrap gap-2 text-xs">
         <button className="btn-ghost" disabled={busy} onClick={() => void resolve('dismissed')}>
           Dismiss
@@ -310,8 +310,7 @@ function ReportRow({
           Quarantine
         </button>
         <button
-          className="btn"
-          style={{ background: '#7f1d1d', color: 'white' }}
+          className="btn bg-danger text-fg-on-accent hover:bg-danger-hi"
           disabled={busy}
           onClick={() => void resolve('resolved', 'lock_account')}
         >

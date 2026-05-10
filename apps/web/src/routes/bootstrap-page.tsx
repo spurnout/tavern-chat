@@ -60,7 +60,7 @@ export function BootstrapPage(): JSX.Element {
 
   if (needsBootstrap === null) {
     return (
-      <div className="grid min-h-screen place-items-center text-tavern-mist">
+      <div className="grid min-h-screen place-items-center text-fg-muted">
         <span className="animate-pulse text-sm">Checking instance…</span>
       </div>
     );
@@ -72,20 +72,20 @@ export function BootstrapPage(): JSX.Element {
         <TavernLogo className="mb-8" />
         <form className="card space-y-4" onSubmit={onSubmit}>
           <div>
-            <h1 className="text-xl font-semibold">First time here</h1>
-            <p className="mt-1 text-sm text-tavern-mist">
+            <h1 className="font-serif text-xl font-medium">First time here</h1>
+            <p className="mt-1 text-sm text-fg-muted">
               No accounts exist yet. Create the instance owner — this account is the
               first administrator and will be able to invite everyone else.
             </p>
           </div>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Username</span>
+            <span className="mb-1 inline-block text-fg-muted">Username</span>
             <input className="input" required disabled={busy || !ready} {...bind('username')} />
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Display name</span>
+            <span className="mb-1 inline-block text-fg-muted">Display name</span>
             <input
               className="input"
               required
@@ -96,7 +96,7 @@ export function BootstrapPage(): JSX.Element {
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Email</span>
+            <span className="mb-1 inline-block text-fg-muted">Email</span>
             <input
               className="input"
               type="email"
@@ -107,7 +107,7 @@ export function BootstrapPage(): JSX.Element {
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Password</span>
+            <span className="mb-1 inline-block text-fg-muted">Password</span>
             <input
               className="input"
               type="password"
@@ -117,26 +117,26 @@ export function BootstrapPage(): JSX.Element {
               disabled={busy || !ready}
               {...bind('password')}
             />
-            <span className="mt-1 inline-block text-xs text-tavern-mist">
+            <span className="mt-1 inline-block text-xs text-fg-muted">
               Minimum 8 characters. Pick something you'll remember.
             </span>
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Server name</span>
+            <span className="mb-1 inline-block text-fg-muted">Den name</span>
             <input
               className="input"
               required
               disabled={busy || !ready}
               {...bind('serverName')}
             />
-            <span className="mt-1 inline-block text-xs text-tavern-mist">
-              We'll create your first server with a #lobby and a Voice Hall.
+            <span className="mt-1 inline-block text-xs text-fg-muted">
+              We'll set up your den with a default room and a Voice Hall.
             </span>
           </label>
 
           {error && status === 'error' ? (
-            <p className="text-sm text-red-400">{error}</p>
+            <p className="text-sm text-danger">{error}</p>
           ) : null}
 
           <button
@@ -147,7 +147,7 @@ export function BootstrapPage(): JSX.Element {
             {busy ? 'Setting up…' : 'Create admin account'}
           </button>
 
-          <p className="text-center text-xs text-tavern-mist">
+          <p className="text-center text-xs text-fg-muted">
             This screen disappears once an account exists. Future signups need
             an invite from an admin.
           </p>

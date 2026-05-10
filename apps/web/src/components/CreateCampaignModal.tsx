@@ -74,7 +74,7 @@ export function CreateCampaignModal({
       open={open}
       onOpenChange={onOpenChange}
       title="Create campaign"
-      description="You'll be the GM. Players join by being members of this server."
+      description="You'll be the GM. Players take part by being members of this den."
       footer={
         <>
           <button className="btn-ghost" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -87,7 +87,7 @@ export function CreateCampaignModal({
       }
     >
       <label className="block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Name</span>
+        <span className="mb-1 inline-block text-fg-muted">Name</span>
         <input
           autoFocus
           className="input"
@@ -98,7 +98,7 @@ export function CreateCampaignModal({
         />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Game system</span>
+        <span className="mb-1 inline-block text-fg-muted">Game system</span>
         <input
           className="input"
           value={system}
@@ -109,7 +109,7 @@ export function CreateCampaignModal({
         />
       </label>
       <label className="mt-3 block text-sm">
-        <span className="mb-1 inline-block text-tavern-mist">Description</span>
+        <span className="mb-1 inline-block text-fg-muted">Description</span>
         <textarea
           className="input min-h-[5rem]"
           value={description}
@@ -120,7 +120,7 @@ export function CreateCampaignModal({
       </label>
       <div className="mt-4">
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs uppercase tracking-wider text-tavern-mist">
+          <span className="text-xs uppercase tracking-wider text-fg-muted">
             Safety lines &amp; veils
           </span>
           <button type="button" className="btn-ghost text-xs" onClick={addBoundary} disabled={busy}>
@@ -153,7 +153,7 @@ export function CreateCampaignModal({
               </select>
               <button
                 type="button"
-                className="btn-ghost text-red-300"
+                className="btn-ghost text-danger"
                 onClick={() => removeBoundary(i)}
                 aria-label="Remove"
               >
@@ -162,13 +162,13 @@ export function CreateCampaignModal({
             </li>
           ))}
           {boundaries.length === 0 ? (
-            <li className="text-xs text-tavern-mist">
+            <li className="text-xs text-fg-muted">
               You can add lines &amp; veils later from the campaign page.
             </li>
           ) : null}
         </ul>
       </div>
-      {error ? <p className="mt-3 text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>
   );
 }

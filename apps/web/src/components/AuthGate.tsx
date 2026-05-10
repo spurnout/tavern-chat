@@ -15,7 +15,7 @@ export function AuthGate({ children }: AuthGateProps): JSX.Element {
 
   if (status === 'idle' || status === 'loading') {
     return (
-      <div className="grid h-full place-items-center text-tavern-mist">
+      <div className="grid h-full place-items-center text-fg-muted">
         <span className="animate-pulse text-sm">Loading…</span>
       </div>
     );

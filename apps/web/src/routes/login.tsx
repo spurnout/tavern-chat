@@ -49,9 +49,9 @@ export function LoginPage(): JSX.Element {
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8" />
         <form className="card space-y-4" onSubmit={onSubmit}>
-          <h1 className="text-xl font-semibold">Welcome back</h1>
+          <h1 className="font-serif text-xl font-medium">Welcome back</h1>
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Username or email</span>
+            <span className="mb-1 inline-block text-fg-muted">Username or email</span>
             <input
               className="input"
               autoComplete="username"
@@ -62,7 +62,7 @@ export function LoginPage(): JSX.Element {
             />
           </label>
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-tavern-mist">Password</span>
+            <span className="mb-1 inline-block text-fg-muted">Password</span>
             <input
               className="input"
               type="password"
@@ -74,14 +74,14 @@ export function LoginPage(): JSX.Element {
             />
           </label>
           {error && status === 'error' ? (
-            <p className="text-sm text-red-400">{error}</p>
+            <p className="text-sm text-danger">{error}</p>
           ) : null}
           <button className="btn-primary w-full" type="submit" disabled={busy}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
-          <p className="text-center text-sm text-tavern-mist">
+          <p className="text-center text-sm text-fg-muted">
             Have an invite?{' '}
-            <Link to="/register" className="text-tavern-mead hover:underline">
+            <Link to="/register" className="text-mead hover:underline">
               Create an account
             </Link>
           </p>

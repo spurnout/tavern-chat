@@ -3,6 +3,7 @@ import { cn } from '../lib/cn.js';
 export function TavernLogo({ className }: { className?: string }): JSX.Element {
   return (
     <div className={cn('flex items-center gap-3', className)}>
+      {/* Brand-fixed logo colors: kept as literal hex so the mark renders the same in every theme. */}
       <svg viewBox="0 0 64 64" className="h-9 w-9">
         <rect width="64" height="64" rx="12" fill="#0c0a09" />
         <path
@@ -14,8 +15,8 @@ export function TavernLogo({ className }: { className?: string }): JSX.Element {
         <ellipse cx="32" cy="20" rx="10" ry="3" fill="#fbbf24" />
       </svg>
       <div>
-        <div className="text-2xl font-semibold tracking-tight">Tavern</div>
-        <div className="text-xs text-tavern-mist">a cozy hall for friends</div>
+        <div className="font-serif text-2xl font-medium tracking-tight">Tavern</div>
+        <div className="text-xs text-fg-muted">a cozy hall for friends</div>
       </div>
     </div>
   );

@@ -44,13 +44,13 @@ export function CampaignsPage(): JSX.Element {
 
   const active = campaigns.find((c) => c.id === activeId) ?? null;
 
-  if (!serverId) return <div className="p-12">Pick a server.</div>;
+  if (!serverId) return <div className="p-12">Pick a den.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-        <Swords size={16} className="text-tavern-mist" />
-        <span className="font-semibold">Campaigns</span>
+      <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
+        <Swords size={16} className="text-fg-muted" />
+        <span className="font-serif font-medium">Campaigns</span>
         <button
           type="button"
           className="btn-primary ml-auto text-sm"
@@ -60,11 +60,11 @@ export function CampaignsPage(): JSX.Element {
         </button>
       </header>
       <div className="grid flex-1 grid-cols-1 gap-0 lg:grid-cols-[280px_1fr]">
-        <aside className="border-b border-tavern-oak p-3 lg:border-b-0 lg:border-r">
-          {loading ? <p className="text-tavern-mist">Loading…</p> : null}
-          {error ? <p className="text-red-400">{error}</p> : null}
+        <aside className="border-b border-subtle p-3 lg:border-b-0 lg:border-r">
+          {loading ? <p className="text-fg-muted">Loading…</p> : null}
+          {error ? <p className="text-danger">{error}</p> : null}
           {!loading && campaigns.length === 0 ? (
-            <p className="text-sm text-tavern-mist">No campaigns yet.</p>
+            <p className="text-sm text-fg-muted">No campaigns yet.</p>
           ) : null}
           <ul className="space-y-1">
             {campaigns.map((c) => (
@@ -73,11 +73,11 @@ export function CampaignsPage(): JSX.Element {
                   type="button"
                   onClick={() => setActiveId(c.id)}
                   className={`w-full rounded px-2 py-1.5 text-left text-sm ${
-                    activeId === c.id ? 'bg-tavern-oak' : 'hover:bg-tavern-oak'
+                    activeId === c.id ? 'bg-raised' : 'hover:bg-raised'
                   }`}
                 >
-                  <div className="font-medium">{c.name}</div>
-                  <div className="text-xs text-tavern-mist">
+                  <div className="font-serif font-medium">{c.name}</div>
+                  <div className="font-mono text-xs text-fg-muted">
                     {c.gameSystem ?? '—'} · {c.status}
                   </div>
                 </button>
@@ -107,19 +107,19 @@ function CampaignDetail({ campaign }: { campaign: Campaign }): JSX.Element {
   return (
     <div className="space-y-4">
       <header>
-        <h2 className="text-2xl font-semibold">{campaign.name}</h2>
+        <h2 className="font-serif text-2xl font-medium">{campaign.name}</h2>
         {campaign.description ? (
-          <p className="mt-1 text-sm text-tavern-parchment">{campaign.description}</p>
+          <p className="mt-1 text-sm text-fg">{campaign.description}</p>
         ) : null}
       </header>
       {campaign.safetyBoundaries.length > 0 ? (
-        <div className="rounded border border-tavern-oak bg-tavern-stone p-3 text-xs">
-          <div className="mb-1 uppercase tracking-wider text-tavern-mist">Safety lines &amp; veils</div>
+        <div className="rounded border border-subtle bg-surface p-3 text-xs">
+          <div className="mb-1 uppercase tracking-wider text-fg-muted">Safety lines &amp; veils</div>
           <ul className="space-y-0.5">
             {campaign.safetyBoundaries.map((b) => (
               <li key={b.topic}>
                 <strong>{b.topic}:</strong>{' '}
-                <span className="text-tavern-mist">{b.action.replace(/_/g, ' ')}</span>
+                <span className="text-fg-muted">{b.action.replace(/_/g, ' ')}</span>
               </li>
             ))}
           </ul>
@@ -157,7 +157,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={`rounded px-2 py-1 ${
-        active ? 'bg-tavern-oak text-tavern-parchment' : 'text-tavern-mist hover:bg-tavern-oak'
+        active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'
       }`}
     >
       {children}
@@ -241,7 +241,7 @@ function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
   return (
     <div className="space-y-3">
       <div className="card space-y-2">
-        <div className="text-xs uppercase tracking-wider text-tavern-mist">New session</div>
+        <div className="text-xs uppercase tracking-wider text-fg-muted">New session</div>
         <input
           className="input"
           placeholder="Title"
@@ -274,14 +274,14 @@ function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
           </button>
         </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
         {sessions.map((s) => (
           <li key={s.id} className="card space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div>
-                <div className="font-semibold">{s.title}</div>
-                <div className="text-xs text-tavern-mist">
+                <div className="font-serif font-medium">{s.title}</div>
+                <div className="font-mono text-xs text-fg-muted">
                   {s.scheduledStart
                     ? new Date(s.scheduledStart).toLocaleString()
                     : 'unscheduled'}{' '}
@@ -294,7 +294,7 @@ function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
                     key={v}
                     type="button"
                     onClick={() => void rsvp(s.id, v)}
-                    className="rounded border border-tavern-oak px-2 py-0.5 hover:bg-tavern-oak"
+                    className="rounded border border-subtle px-2 py-0.5 hover:bg-raised"
                   >
                     {v}
                   </button>
@@ -302,10 +302,10 @@ function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
               </div>
             </div>
             {s.agenda ? (
-              <p className="rounded bg-tavern-ink p-2 text-sm">{s.agenda}</p>
+              <p className="rounded bg-canvas p-2 text-sm">{s.agenda}</p>
             ) : null}
             {s.recap ? (
-              <p className="rounded bg-tavern-ink p-2 text-sm italic text-tavern-parchment">
+              <p className="rounded bg-canvas p-2 text-sm italic text-fg">
                 {s.recap}
               </p>
             ) : null}
@@ -408,7 +408,7 @@ function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
   return (
     <div className="space-y-3">
       <div className="card space-y-2">
-        <div className="text-xs uppercase tracking-wider text-tavern-mist">New note</div>
+        <div className="text-xs uppercase tracking-wider text-fg-muted">New note</div>
         <input
           className="input"
           placeholder="Title"
@@ -453,20 +453,20 @@ function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
           </button>
         </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
         {notes.map((n) => (
           <li key={n.id} className="card space-y-1">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <div className="font-semibold">
+              <div className="font-serif font-medium">
                 {n.pinned ? '📌 ' : ''}
                 {n.title}
               </div>
-              <div className="flex items-center gap-2 text-xs text-tavern-mist">
+              <div className="flex items-center gap-2 text-xs text-fg-muted">
                 <span>{n.visibility.replace(/_/g, ' ')}</span>
                 <button
                   type="button"
-                  className="text-red-300 hover:underline"
+                  className="text-danger hover:underline"
                   onClick={() => void remove(n.id)}
                 >
                   delete
@@ -550,7 +550,7 @@ function HandoutsTab({ campaign }: { campaign: Campaign }): JSX.Element {
   return (
     <div className="space-y-3">
       <div className="card space-y-2">
-        <div className="text-xs uppercase tracking-wider text-tavern-mist">New handout</div>
+        <div className="text-xs uppercase tracking-wider text-fg-muted">New handout</div>
         <input
           className="input"
           placeholder="Title"
@@ -577,7 +577,7 @@ function HandoutsTab({ campaign }: { campaign: Campaign }): JSX.Element {
             <span className="btn-ghost">Attach file</span>
           </label>
           {draft.attachmentIds.length > 0 ? (
-            <span className="text-xs text-tavern-mist">
+            <span className="text-xs text-fg-muted">
               {draft.attachmentIds.length} file{draft.attachmentIds.length === 1 ? '' : 's'}
             </span>
           ) : null}
@@ -602,17 +602,17 @@ function HandoutsTab({ campaign }: { campaign: Campaign }): JSX.Element {
           </button>
         </div>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
         {handouts.map((h) => (
           <li key={h.id} className="card">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <div className="font-semibold">{h.title}</div>
-              <span className="text-xs text-tavern-mist">{h.visibility.replace(/_/g, ' ')}</span>
+              <div className="font-serif font-medium">{h.title}</div>
+              <span className="text-xs text-fg-muted">{h.visibility.replace(/_/g, ' ')}</span>
             </div>
             {h.body ? <p className="whitespace-pre-wrap text-sm">{h.body}</p> : null}
             {h.attachmentIds.length > 0 ? (
-              <div className="mt-1 text-xs text-tavern-mist">
+              <div className="mt-1 text-xs text-fg-muted">
                 {h.attachmentIds.length} attachment{h.attachmentIds.length === 1 ? '' : 's'}
               </div>
             ) : null}

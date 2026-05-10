@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Dice5, Mic, Paperclip, Send, Square, X } from 'lucide-react';
 import type { Attachment, Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
@@ -24,6 +24,16 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recordingChunks = useRef<Blob[]>([]);
+
+  // Tracks whether the component is still mounted so async callbacks (recorder
+  // onstop, upload completions) can skip setState on a teardown.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   async function send(): Promise<void> {
     const trimmed = content.trim();
@@ -95,24 +105,26 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   }
 
   function removePending(id: string): void {
-    setPending((p) => {
-      const removed = p.find((x) => x.attachment.id === id);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-      return p.filter((x) => x.attachment.id !== id);
-    });
+    const target = pending.find((x) => x.attachment.id === id);
+    if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+    setPending((p) => p.filter((x) => x.attachment.id !== id));
   }
 
   async function startRecording(): Promise<void> {
     if (recording) return;
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // MediaRecorder construction can throw (e.g. Safari rejects audio/webm).
+      // Capture the stream above so the catch below can stop its tracks.
       const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const recorderStream = stream;
       recordingChunks.current = [];
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) recordingChunks.current.push(e.data);
       };
       recorder.onstop = async () => {
-        for (const t of stream.getTracks()) t.stop();
+        for (const t of recorderStream.getTracks()) t.stop();
         const blob = new Blob(recordingChunks.current, { type: 'audio/webm' });
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
         try {
@@ -126,14 +138,24 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
             },
           });
         } catch (err) {
+          if (!mountedRef.current) {
+            // Component unmounted before the upload resolved — surface the
+            // failure to the console so it isn't completely invisible.
+            console.warn('[voice] upload failed after composer unmount:', err);
+            return;
+          }
           const msg = err instanceof ApiError ? err.message : 'Voice message failed';
           setError(msg);
         }
       };
       recorder.start();
       setRecording(recorder);
-    } catch {
-      setError('Could not access microphone');
+    } catch (err) {
+      if (stream) {
+        for (const t of stream.getTracks()) t.stop();
+      }
+      const msg = err instanceof Error ? err.message : 'Could not access microphone';
+      setError(msg);
     }
   }
 
@@ -145,13 +167,13 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   }
 
   return (
-    <div className="border-t border-tavern-oak bg-tavern-stone p-3">
+    <div className="border-t border-subtle bg-sunken p-3">
       {pending.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-2">
           {pending.map((p) => (
             <div
               key={p.attachment.id}
-              className="relative flex items-center gap-2 rounded border border-tavern-oak bg-tavern-ink px-2 py-1 text-xs"
+              className="relative flex items-center gap-2 rounded border border-subtle bg-canvas px-2 py-1 text-xs"
             >
               {p.previewUrl ? (
                 <img
@@ -166,7 +188,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
               <button
                 type="button"
                 onClick={() => removePending(p.attachment.id)}
-                className="rounded p-1 hover:bg-tavern-oak"
+                className="rounded p-1 hover:bg-raised"
                 aria-label="Remove attachment"
               >
                 <X size={12} />
@@ -230,9 +252,9 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           <Send size={16} />
         </button>
       </div>
-      {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
       {recording ? (
-        <p className="mt-1 text-xs text-tavern-mead">● Recording… click stop to send</p>
+        <p className="mt-1 text-xs text-mead">● Recording… click stop to send</p>
       ) : null}
     </div>
   );

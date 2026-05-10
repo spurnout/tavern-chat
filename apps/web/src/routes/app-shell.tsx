@@ -74,12 +74,20 @@ export function AppShell(): JSX.Element {
   const channels = params.serverId ? (channelsByServer[params.serverId] ?? []) : [];
 
   return (
-    <div className="relative flex h-full bg-tavern-ink text-tavern-parchment">
+    <div className="relative flex h-full bg-canvas text-fg">
+      {/* Skip link — first tab stop on the page, jumps over the rails to the
+          message column for keyboard users. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:text-fg focus:outline-none focus:ring-2 focus:ring-ember"
+      >
+        Skip to messages
+      </a>
       {/* Mobile menu toggle */}
       <button
         type="button"
         aria-label="Toggle menu"
-        className="absolute left-3 top-3 z-30 rounded p-1.5 bg-tavern-stone shadow md:hidden"
+        className="absolute left-3 top-3 z-30 rounded p-1.5 bg-surface shadow md:hidden"
         onClick={() => setDrawerOpen((v) => !v)}
       >
         {drawerOpen ? <X size={18} /> : <Menu size={18} />}
@@ -118,7 +126,7 @@ export function AppShell(): JSX.Element {
         />
       ) : null}
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main id="main-content" tabIndex={-1} className="flex min-w-0 flex-1 flex-col focus:outline-none">
         <Outlet />
       </main>
 
@@ -144,7 +152,7 @@ function ServerRail({
   onCreateServer: () => void;
 }): JSX.Element {
   return (
-    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-tavern-oak bg-tavern-stone py-4">
+    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-subtle bg-sunken py-4">
       {servers.map((s) => {
         const active = s.id === activeId;
         return (
@@ -155,22 +163,22 @@ function ServerRail({
             aria-label={s.name}
             title={s.name}
             className={cn(
-              'grid h-12 w-12 place-items-center rounded-2xl text-lg font-bold transition-all',
+              'grid h-12 w-12 place-items-center rounded-2xl font-serif text-lg font-bold transition-base',
               active
-                ? 'bg-tavern-ember text-tavern-ink rounded-xl'
-                : 'bg-tavern-oak text-tavern-parchment hover:rounded-xl hover:bg-tavern-ember/80 hover:text-tavern-ink',
+                ? 'bg-ember text-fg-on-accent rounded-xl'
+                : 'bg-raised text-fg hover:rounded-xl hover:bg-ember-hi hover:text-fg-on-accent',
             )}
           >
             {s.name.slice(0, 2).toUpperCase()}
           </Link>
         );
       })}
-      <div className="my-1 h-px w-8 bg-tavern-oak" />
+      <div className="my-1 h-px w-8 bg-raised" />
       <button
-        aria-label="Add server"
+        aria-label="Add den"
         onClick={onCreateServer}
-        className="grid h-12 w-12 place-items-center rounded-2xl border border-dashed border-tavern-oak text-tavern-mist hover:bg-tavern-oak hover:rounded-xl"
-        title="Create a new server"
+        className="grid h-12 w-12 place-items-center rounded-2xl border border-dashed border-subtle text-fg-muted hover:bg-raised hover:rounded-xl"
+        title="Create a new den"
       >
         <Plus size={18} />
       </button>
@@ -198,12 +206,12 @@ function ChannelSidebar({
   onCreateChannel,
 }: ChannelSidebarProps): JSX.Element {
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-tavern-oak bg-tavern-stone">
-      <div className="flex items-center justify-between gap-2 border-b border-tavern-oak p-3">
+    <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">
+      <div className="flex items-center justify-between gap-2 border-b border-subtle p-3">
         <div className="min-w-0">
-          <div className="truncate font-semibold">{server?.name ?? '…'}</div>
+          <div className="truncate font-serif font-medium">{server?.name ?? '…'}</div>
           {server?.description ? (
-            <div className="truncate text-xs text-tavern-mist">{server.description}</div>
+            <div className="truncate text-xs text-fg-muted">{server.description}</div>
           ) : null}
         </div>
         {activeServerId ? (
@@ -211,7 +219,7 @@ function ChannelSidebar({
             to="/app/servers/$serverId/search"
             params={{ serverId: activeServerId }}
             aria-label="Search"
-            className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+            className="rounded p-1 text-fg-muted hover:bg-raised"
             title="Search messages"
           >
             <Search size={14} />
@@ -220,13 +228,13 @@ function ChannelSidebar({
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto p-2 text-sm">
         {activeServerId ? (
-          <SidebarSection title="Server">
+          <SidebarSection title="Den">
             <Link
               to="/app/servers/$serverId/campaigns"
               params={{ serverId: activeServerId }}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment hover:bg-tavern-oak"
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-fg hover:bg-raised"
             >
-              <span className="text-tavern-mist">
+              <span className="text-fg-muted">
                 <Swords size={16} />
               </span>
               <span className="truncate">Campaigns</span>
@@ -234,9 +242,9 @@ function ChannelSidebar({
             <Link
               to="/app/servers/$serverId/games"
               params={{ serverId: activeServerId }}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment hover:bg-tavern-oak"
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-fg hover:bg-raised"
             >
-              <span className="text-tavern-mist">
+              <span className="text-fg-muted">
                 <Dice5 size={16} />
               </span>
               <span className="truncate">Games &amp; nights</span>
@@ -244,9 +252,9 @@ function ChannelSidebar({
             <Link
               to="/app/servers/$serverId/moderation"
               params={{ serverId: activeServerId }}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment hover:bg-tavern-oak"
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-fg hover:bg-raised"
             >
-              <span className="text-tavern-mist">
+              <span className="text-fg-muted">
                 <Shield size={16} />
               </span>
               <span className="truncate">Moderation</span>
@@ -254,9 +262,9 @@ function ChannelSidebar({
             <Link
               to="/app/servers/$serverId/settings"
               params={{ serverId: activeServerId }}
-              className="flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment hover:bg-tavern-oak"
+              className="flex items-center gap-2 rounded px-2 py-1.5 text-fg hover:bg-raised"
             >
-              <span className="text-tavern-mist">
+              <span className="text-fg-muted">
                 <Settings size={16} />
               </span>
               <span className="truncate">Settings</span>
@@ -270,9 +278,9 @@ function ChannelSidebar({
               <button
                 type="button"
                 onClick={onCreateChannel}
-                aria-label="Create channel"
-                className="rounded p-0.5 text-tavern-mist hover:bg-tavern-oak"
-                title="Create channel"
+                aria-label="Create room"
+                className="rounded p-0.5 text-fg-muted hover:bg-raised"
+                title="Create room"
               >
                 <Plus size={12} />
               </button>
@@ -303,18 +311,18 @@ function ChannelSidebar({
             ))}
         </SidebarSection>
       </nav>
-      <footer className="flex items-center justify-between gap-2 border-t border-tavern-oak p-2 text-sm">
+      <footer className="flex items-center justify-between gap-2 border-t border-subtle p-2 text-sm">
         <div className="min-w-0">
-          <div className="truncate font-medium">{me?.displayName ?? '—'}</div>
-          <div className="truncate text-xs text-tavern-mist">@{me?.username}</div>
+          <div className="truncate font-serif font-medium">{me?.displayName ?? '—'}</div>
+          <div className="truncate font-mono text-xs text-fg-muted">@{me?.username}</div>
         </div>
-        <button aria-label="Settings" className="rounded p-1 hover:bg-tavern-oak" title="Settings">
+        <button aria-label="Settings" className="rounded p-1 hover:bg-raised" title="Settings">
           <Settings size={16} />
         </button>
         <button
           aria-label="Sign out"
           onClick={onLogout}
-          className="rounded p-1 hover:bg-tavern-oak"
+          className="rounded p-1 hover:bg-raised"
           title="Sign out"
         >
           <LogOut size={16} />
@@ -335,7 +343,7 @@ function SidebarSection({
 }): JSX.Element {
   return (
     <div>
-      <div className="flex items-center justify-between px-2 pb-1 pt-3 text-xs uppercase tracking-wider text-tavern-mist">
+      <div className="flex items-center justify-between px-2 pb-1 pt-3 text-xs uppercase tracking-wider text-fg-muted">
         <span>{title}</span>
         {action}
       </div>
@@ -354,8 +362,8 @@ function SidebarChannelLink({
   active: boolean;
 }): JSX.Element {
   const className = cn(
-    'flex items-center gap-2 rounded px-2 py-1.5 text-tavern-parchment',
-    active ? 'bg-tavern-oak' : 'hover:bg-tavern-oak',
+    'flex items-center gap-2 rounded px-2 py-1.5 text-fg',
+    active ? 'bg-raised' : 'hover:bg-raised',
   );
   if (channel.type === 'voice') {
     return (
@@ -364,7 +372,7 @@ function SidebarChannelLink({
         params={{ serverId: channel.serverId, channelId: channel.id }}
         className={className}
       >
-        <span className="text-tavern-mist">{icon}</span>
+        <span className="text-fg-muted">{icon}</span>
         <span className="truncate">{channel.name}</span>
       </Link>
     );
@@ -375,7 +383,7 @@ function SidebarChannelLink({
       params={{ serverId: channel.serverId, channelId: channel.id }}
       className={className}
     >
-      <span className="text-tavern-mist">{icon}</span>
+      <span className="text-fg-muted">{icon}</span>
       <span className="truncate">{channel.name}</span>
     </Link>
   );

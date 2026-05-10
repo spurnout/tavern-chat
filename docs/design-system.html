@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tavern · Design system handoff</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,ital,wght@8..60,0,400;8..60,0,500;8..60,0,600;8..60,1,400;8..60,1,500&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+:root{
+  color-scheme:dark;
+  --bg-canvas:#15110d; --bg-sunken:#1b1610; --bg-surface:#221b14;
+  --bg-raised:#2a2218; --bg-elevated:#33291d; --bg-overlay:#3d3122;
+  --border-subtle:#2e2519; --border-default:#3a2e1f; --border-strong:#4d3d29;
+  --fg-default:#f1e6cf; --fg-muted:#b8a988; --fg-faint:#7a6b53; --fg-on-accent:#1a130c;
+  --ember:oklch(.74 .13 52); --ember-hi:oklch(.80 .12 56); --ember-lo:oklch(.62 .13 48);
+  --mead:oklch(.82 .11 82); --moss:oklch(.66 .09 148); --rust:oklch(.60 .15 32);
+  --dusk:oklch(.62 .06 245); --lavender:oklch(.74 .07 300);
+  --serif:"Source Serif 4",ui-serif,Georgia,serif;
+  --sans:"Manrope",ui-sans-serif,system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,monospace;
+  --tint-ember:color-mix(in oklch,var(--ember) 14%,transparent);
+  --tint-mead:color-mix(in oklch,var(--mead) 14%,transparent);
+  --tint-moss:color-mix(in oklch,var(--moss) 14%,transparent);
+  --tint-rust:color-mix(in oklch,var(--rust) 14%,transparent);
+  --tint-lav:color-mix(in oklch,var(--lavender) 14%,transparent);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;scroll-behavior:smooth}
+body{background:var(--bg-canvas);color:var(--fg-default);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;font-feature-settings:"ss01","cv11"}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;background:
+  radial-gradient(80% 50% at 20% 0%, color-mix(in oklch,var(--ember) 6%,transparent), transparent 60%),
+  radial-gradient(60% 40% at 100% 100%, color-mix(in oklch,var(--mead) 4%,transparent), transparent 60%);}
+
+/* nav rail */
+.app{position:relative;z-index:1;display:grid;grid-template-columns:240px 1fr;max-width:1480px;margin:0 auto;min-height:100vh}
+nav.toc{position:sticky;top:0;height:100vh;padding:32px 16px 32px 24px;border-right:1px solid var(--border-subtle);overflow:auto;background:color-mix(in oklch,var(--bg-canvas) 90%,transparent);backdrop-filter:blur(8px)}
+.toc .brand{font-family:var(--serif);font-size:18px;font-weight:500;margin-bottom:4px}
+.toc .brand em{font-style:italic;color:var(--ember);font-weight:500}
+.toc .ver{font-family:var(--mono);font-size:10px;color:var(--fg-faint);letter-spacing:.1em;margin-bottom:24px;text-transform:uppercase}
+.toc h5{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint);margin:18px 0 6px;padding:0 6px}
+.toc a{display:block;padding:5px 8px;color:var(--fg-muted);text-decoration:none;font-size:13px;border-radius:4px}
+.toc a:hover{color:var(--fg-default);background:var(--bg-surface)}
+.toc a.active{color:var(--ember);background:var(--tint-ember)}
+.toc .pin{margin-top:24px;padding:12px;background:var(--tint-ember);border-radius:8px;border:1px solid color-mix(in oklch,var(--ember) 30%,transparent)}
+.toc .pin b{font-family:var(--serif);font-weight:500;color:var(--ember-hi);display:block;font-size:13px;margin-bottom:4px}
+.toc .pin p{margin:0;font-size:11px;color:var(--fg-muted);line-height:1.5}
+
+main{padding:48px 56px 120px;max-width:980px;min-width:0}
+header.hero{padding-bottom:28px;margin-bottom:40px;border-bottom:1px solid var(--border-subtle)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-faint);margin-bottom:8px}
+h1{font-family:var(--serif);font-weight:500;font-size:48px;line-height:1.05;letter-spacing:-.02em;margin:0;text-wrap:balance}
+h1 em{font-style:italic;color:var(--ember);font-weight:500}
+.lede{margin:12px 0 0;color:var(--fg-muted);max-width:64ch;font-size:16px}
+
+section{margin:56px 0 0;scroll-margin-top:24px}
+section > .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border-subtle)}
+section > .sec-head .num{font-family:var(--mono);font-size:12px;color:var(--fg-faint);letter-spacing:.1em}
+section > .sec-head h2{font-family:var(--serif);font-weight:500;font-size:28px;line-height:1.15;letter-spacing:-.01em;margin:0}
+.sub{color:var(--fg-muted);margin:8px 0 22px;max-width:66ch;font-size:14px;text-wrap:pretty}
+
+h3{font-family:var(--serif);font-weight:500;font-size:18px;margin:28px 0 10px;color:var(--fg-default)}
+h3 .id{font-family:var(--mono);font-weight:500;font-size:11px;color:var(--fg-faint);letter-spacing:.06em;margin-left:8px}
+h4{font-family:var(--serif);font-weight:500;font-size:15px;margin:18px 0 8px;color:var(--fg-default)}
+p{margin:0 0 12px;color:var(--fg-default);text-wrap:pretty}
+p.muted{color:var(--fg-muted)}
+ul,ol{margin:8px 0 12px;padding-left:20px;color:var(--fg-default)}
+ul li,ol li{margin:4px 0;color:var(--fg-muted)}
+ul li b,ol li b{color:var(--fg-default);font-weight:500;font-family:var(--serif)}
+code{font-family:var(--mono);font-size:.88em;color:var(--mead);background:color-mix(in oklch,var(--mead) 8%,transparent);padding:1px 5px;border-radius:3px;letter-spacing:.02em}
+pre{font-family:var(--mono);font-size:12px;line-height:1.55;background:var(--bg-sunken);border:1px solid var(--border-subtle);border-radius:8px;padding:14px 16px;overflow-x:auto;color:var(--fg-default);margin:8px 0 14px}
+pre code{background:transparent;padding:0;color:inherit}
+pre .k{color:var(--ember-hi)} pre .s{color:var(--moss)} pre .c{color:var(--fg-faint);font-style:italic} pre .n{color:var(--mead)} pre .t{color:var(--lavender)}
+a{color:var(--ember-hi)}
+
+/* token tables */
+.tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;margin:8px 0 16px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden}
+.tbl th,.tbl td{padding:8px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--border-subtle)}
+.tbl tr:last-child td{border-bottom:0}
+.tbl th{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);background:var(--bg-sunken)}
+.tbl td.tok{font-family:var(--mono);font-size:11px;color:var(--mead);white-space:nowrap}
+.tbl td.val{font-family:var(--mono);font-size:11px;color:var(--fg-muted)}
+.tbl td.desc{color:var(--fg-muted);max-width:36ch}
+.swatch{display:inline-block;width:18px;height:18px;border-radius:4px;vertical-align:middle;margin-right:8px;border:1px solid var(--border-subtle)}
+
+/* surface ramp visual */
+.ramp{display:flex;height:80px;border-radius:8px;overflow:hidden;border:1px solid var(--border-subtle);margin:8px 0 16px}
+.ramp > div{flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:8px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--fg-muted)}
+.ramp > div b{color:var(--fg-default);font-weight:500;font-family:var(--sans);font-size:11px;letter-spacing:0}
+
+/* accent strip */
+.accents{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:8px 0 16px}
+.acc{padding:14px 12px;border-radius:8px;border:1px solid var(--border-subtle)}
+.acc .nm{font-family:var(--serif);font-size:14px;font-weight:500;margin-bottom:6px}
+.acc .role{font-family:var(--mono);font-size:9px;color:rgba(0,0,0,.65);letter-spacing:.08em;text-transform:uppercase;line-height:1.4}
+.acc .val{font-family:var(--mono);font-size:9px;color:rgba(0,0,0,.55);letter-spacing:.04em;margin-top:8px}
+
+/* type specimens */
+.spec-row{display:grid;grid-template-columns:120px 1fr 200px;gap:18px;padding:14px 0;border-bottom:1px solid var(--border-subtle);align-items:baseline}
+.spec-row:last-child{border-bottom:0}
+.spec-row .tag{font-family:var(--mono);font-size:10px;color:var(--fg-faint);letter-spacing:.12em;text-transform:uppercase;padding-top:6px}
+.spec-row .sample{color:var(--fg-default)}
+.spec-row .meta{font-family:var(--mono);font-size:11px;color:var(--fg-muted);letter-spacing:.04em}
+
+/* component anatomy */
+.cmp{background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:12px;padding:22px 24px;margin:14px 0 22px}
+.cmp .head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:1px solid var(--border-subtle);padding-bottom:12px;margin-bottom:14px;flex-wrap:wrap}
+.cmp .head h3{margin:0;font-size:20px}
+.cmp .path{font-family:var(--mono);font-size:11px;color:var(--mead);background:color-mix(in oklch,var(--mead) 8%,transparent);padding:3px 8px;border-radius:4px}
+.cmp .role{color:var(--fg-muted);font-size:14px;text-wrap:pretty;margin:0 0 14px}
+.cmp h4:first-of-type{margin-top:4px}
+
+/* do / dont */
+.dd{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0 14px}
+.dd > div{padding:12px 14px;border-radius:8px;border:1px solid var(--border-subtle);background:var(--bg-canvas)}
+.dd .do{border-left:3px solid var(--moss)}
+.dd .dont{border-left:3px solid var(--rust)}
+.dd b{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;display:block;margin-bottom:6px}
+.dd .do b{color:var(--moss)} .dd .dont b{color:var(--rust)}
+.dd p{margin:0;font-size:13px;color:var(--fg-muted)}
+
+/* callout */
+.callout{background:var(--tint-ember);border:1px solid color-mix(in oklch,var(--ember) 28%,transparent);border-radius:10px;padding:14px 16px;margin:12px 0 16px;display:flex;gap:12px}
+.callout .ico{width:18px;height:18px;flex-shrink:0;color:var(--ember);font-family:var(--serif);font-style:italic;font-weight:500;font-size:16px;line-height:18px;text-align:center}
+.callout .body{font-size:13px;color:var(--fg-default);line-height:1.55}
+.callout b{font-family:var(--serif);font-weight:500;color:var(--ember-hi)}
+.callout.note{background:color-mix(in oklch,var(--mead) 10%,transparent);border-color:color-mix(in oklch,var(--mead) 24%,transparent)}
+.callout.note .ico{color:var(--mead)}
+.callout.note b{color:var(--mead)}
+
+/* surface index cards */
+.idx{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:8px 0 14px}
+.idx a{display:block;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:16px 18px;text-decoration:none;color:inherit;transition:border-color 120ms,transform 120ms}
+.idx a:hover{border-color:var(--ember);transform:translateY(-2px)}
+.idx a .tag{font-family:var(--mono);font-size:10px;color:var(--fg-faint);letter-spacing:.12em;text-transform:uppercase}
+.idx a h4{margin:6px 0 6px;font-size:16px;color:var(--fg-default)}
+.idx a p{font-size:12px;color:var(--fg-muted);margin:0;line-height:1.5}
+
+/* misc */
+.kbd{font-family:var(--mono);font-size:11px;padding:2px 6px;border-radius:4px;background:var(--bg-elevated);border:1px solid var(--border-default);color:var(--fg-muted)}
+.col2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:8px 0 14px}
+.tag-pill{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--bg-elevated);color:var(--fg-muted);margin-right:6px}
+.tag-pill.ember{background:var(--tint-ember);color:var(--ember)}
+.tag-pill.mead{background:var(--tint-mead);color:var(--mead)}
+.tag-pill.moss{background:var(--tint-moss);color:var(--moss)}
+.tag-pill.rust{background:var(--tint-rust);color:var(--rust)}
+
+footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);color:var(--fg-faint);font-size:12px;font-family:var(--mono);letter-spacing:.04em}
+</style>
+</head>
+<body>
+<div class="app">
+
+<nav class="toc" id="toc">
+  <div class="brand">Tavern <em>·</em> design system</div>
+  <div class="ver">v1.0 · handoff · 2026</div>
+  <h5>Start here</h5>
+  <a href="#claude-code">For Claude Code</a>
+  <a href="#principles">Principles</a>
+  <a href="#index">What this doc covers</a>
+  <h5>Foundations</h5>
+  <a href="#colour">Colour</a>
+  <a href="#type">Type</a>
+  <a href="#layout">Layout &amp; spacing</a>
+  <a href="#motion">Motion</a>
+  <a href="#sound">Sound</a>
+  <a href="#voice">Voice &amp; copy</a>
+  <a href="#a11y">Accessibility</a>
+  <h5>Components</h5>
+  <a href="#cmp-appshell">AppShell</a>
+  <a href="#cmp-server-rail">ServerRail</a>
+  <a href="#cmp-channel-sidebar">ChannelSidebar</a>
+  <a href="#cmp-member-sidebar">MemberSidebar</a>
+  <a href="#cmp-message">Message / List</a>
+  <a href="#cmp-composer">MessageComposer</a>
+  <a href="#cmp-reactionbar">ReactionBar</a>
+  <a href="#cmp-typing">TypingIndicator</a>
+  <a href="#cmp-modal">Modal &amp; atoms</a>
+  <a href="#cmp-create">Create&hellip; modals</a>
+  <a href="#cmp-report">ReportDialog</a>
+  <a href="#cmp-notifs">NotificationInbox</a>
+  <a href="#cmp-voice">VoiceRoom</a>
+  <a href="#cmp-aux">Aux components</a>
+  <h5>Surfaces</h5>
+  <a href="#cmp-auth">Onboarding &amp; auth</a>
+  <a href="#surfaces">Product routes</a>
+  <h5>Reference</h5>
+  <a href="#followups">Open follow-ups</a>
+  <div class="pin">
+    <b>Hey, Claude Code.</b>
+    <p>Open <code style="font-size:10px">CLAUDE.md</code> at the project root, then come back to the section called "For Claude Code". Then read this whole document before touching UI.</p>
+  </div>
+</nav>
+
+<main>
+
+<header class="hero">
+  <div class="eyebrow">design system · handoff</div>
+  <h1>The <em>Tavern</em> design system.</h1>
+  <p class="lede">A complete reference for the visual, motion, sound, and copy language of Tavern. Source of truth for every UI decision. Read this before designing or editing anything in <code>apps/web</code>.</p>
+</header>
+
+<!-- 00 CLAUDE CODE -->
+<section id="claude-code">
+  <div class="sec-head"><div class="num">00</div><h2>For Claude Code</h2></div>
+  <p class="sub">This document is the canonical reference for any agent doing UI work on Tavern. Read in this order, then check your work against the do/don'ts in each component's section.</p>
+
+  <h3>Read order</h3>
+  <ol>
+    <li><b>CLAUDE.md</b> — terse project conventions. Always loaded into your context first.</li>
+    <li><b>This document</b> — the visual + interaction system. Skim once; jump back to relevant sections per task.</li>
+    <li><b>The component / route sections</b> — when you need to see how a specific surface is shaped. The <a href="#index">map</a> lists every section.</li>
+  </ol>
+
+  <h3>Workflow</h3>
+  <ol>
+    <li><b>Map the request to a surface.</b> Most things already have a phase doc. Use the surface index.</li>
+    <li><b>Use existing components.</b> Reach for <code>Modal</code> + atoms, <code>MessageList</code>, etc. Don't build new ones unless the inventory genuinely doesn't cover the case.</li>
+    <li><b>Use semantic tokens only.</b> <code>bg-canvas</code>, <code>fg-default</code>, <code>accent-ember</code>. Never the deprecated <code>tavern-*</code> classes.</li>
+    <li><b>Use the named transitions.</b> <code>--t-base</code> + <code>--ease-decel</code> for enter; <code>--t-base</code> + <code>--ease-accel</code> for exit. See <a href="#motion">Motion</a>.</li>
+    <li><b>Stay in voice.</b> See <a href="#voice">Voice &amp; copy</a> before writing user-facing strings.</li>
+    <li><b>Check do/don'ts.</b> Every component section has them.</li>
+  </ol>
+
+  <h3>What this system does <em>not</em> cover</h3>
+  <ul>
+    <li>Backend / API shape. <code>NotificationInbox</code>, <code>InviteModal</code>, and <code>SettingsModal</code> have placeholder endpoints — wire them when the API ships.</li>
+    <li>OAuth flows. SSO buttons are inert. Wire to <code>auth.ts</code>.</li>
+    <li>Mobile-native concerns. The web app is responsive but not a PWA.</li>
+    <li>Internationalization. All copy is English; no i18n scaffolding yet.</li>
+  </ul>
+
+  <div class="callout"><div class="ico">!</div><div class="body"><b>If you find yourself inventing a colour, font, or transition</b> — stop. Either it already exists as a token, or it's wrong. Search this doc, then ask.</div></div>
+</section>
+
+<!-- 01 PRINCIPLES -->
+<section id="principles">
+  <div class="sec-head"><div class="num">01</div><h2>Principles</h2></div>
+  <p class="sub">Four ideas that shape every decision below. Use them as a tiebreaker.</p>
+  <ol>
+    <li><b>Warmth, not friction.</b> Tavern is a place to gather. Surfaces are warm-dark, not pure black. Type is human, not industrial. Motion confirms intent rather than performing.</li>
+    <li><b>Restraint as identity.</b> One serif, one sans, one mono. One primary accent. Five sounds. Five durations. Constraints are the brand.</li>
+    <li><b>Earned attention.</b> Pings, badges, sound, and motion are scarce resources. The rarer they are, the more they mean.</li>
+    <li><b>Hospitable copy.</b> Every label, every error, every empty state is written like a host speaking to a guest — not a system speaking at a user.</li>
+  </ol>
+</section>
+
+<!-- 02 COLOUR -->
+<section id="colour">
+  <div class="sec-head"><div class="num">02</div><h2>Colour</h2></div>
+  <p class="sub">Two layers: a six-step surface ramp (warm-dark backgrounds) and six accents. Foreground tones, borders, and tints all derive from those. Never use raw hex in components — always reach for a semantic token.</p>
+
+  <h3>Surface ramp <span class="id">--bg-*</span></h3>
+  <p class="muted">Stack surfaces from canvas (lowest, page background) to overlay (highest, modal chrome). Each step is ~4% lighter. Use to express depth without shadows.</p>
+  <div class="ramp">
+    <div style="background:var(--bg-canvas)"><b>canvas</b><span>#15110d</span></div>
+    <div style="background:var(--bg-sunken)"><b>sunken</b><span>#1b1610</span></div>
+    <div style="background:var(--bg-surface)"><b>surface</b><span>#221b14</span></div>
+    <div style="background:var(--bg-raised)"><b>raised</b><span>#2a2218</span></div>
+    <div style="background:var(--bg-elevated)"><b>elevated</b><span>#33291d</span></div>
+    <div style="background:var(--bg-overlay)"><b>overlay</b><span>#3d3122</span></div>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>Hex</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">bg-canvas</td><td class="val">#15110d</td><td class="desc">Page / body background. Also message column.</td></tr>
+      <tr><td class="tok">bg-sunken</td><td class="val">#1b1610</td><td class="desc">Sidebar, server rail, settings nav, modal footers.</td></tr>
+      <tr><td class="tok">bg-surface</td><td class="val">#221b14</td><td class="desc">Cards, modal bodies, popover panels, raised rows.</td></tr>
+      <tr><td class="tok">bg-raised</td><td class="val">#2a2218</td><td class="desc">Hover on surface. Pinned-message tiles.</td></tr>
+      <tr><td class="tok">bg-elevated</td><td class="val">#33291d</td><td class="desc">Buttons, voice tiles, identity footer chips.</td></tr>
+      <tr><td class="tok">bg-overlay</td><td class="val">#3d3122</td><td class="desc">Highest — modal chrome, toast surfaces, settings tab strip.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Foreground <span class="id">--fg-*</span></h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>Hex</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok"><span class="swatch" style="background:#f1e6cf"></span>fg-default</td><td class="val">#f1e6cf</td><td class="desc">Body text, headings, primary actions. Cream, not white.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#b8a988"></span>fg-muted</td><td class="val">#b8a988</td><td class="desc">Secondary text, helper copy, default icon colour.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#7a6b53"></span>fg-faint</td><td class="val">#7a6b53</td><td class="desc">Mono labels, timestamps, kickers, divider text.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#1a130c"></span>fg-on-accent</td><td class="val">#1a130c</td><td class="desc">Text/icons on ember or mead accent fills.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Borders <span class="id">--border-*</span></h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>Hex</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok"><span class="swatch" style="background:#2e2519"></span>border-subtle</td><td class="val">#2e2519</td><td class="desc">Default — between same-level surfaces, list rows.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#3a2e1f"></span>border-default</td><td class="val">#3a2e1f</td><td class="desc">Inputs, buttons, segmented controls.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#4d3d29"></span>border-strong</td><td class="val">#4d3d29</td><td class="desc">Focus rings, hover on borders, file thumbnails.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Accents <span class="id">--accent-*</span></h3>
+  <p class="muted">Six oklch-defined accents. <b>Ember</b> is the primary brand colour and the only one used for primary actions. The others have specific semantic jobs — do not mix.</p>
+  <div class="accents">
+    <div class="acc" style="background:oklch(.74 .13 52)"><div class="nm" style="color:#1a130c">Ember</div><div class="role">Primary / brand</div><div class="val">oklch(.74 .13 52)</div></div>
+    <div class="acc" style="background:oklch(.82 .11 82)"><div class="nm" style="color:#1a130c">Mead</div><div class="role">Highlights / counts</div><div class="val">oklch(.82 .11 82)</div></div>
+    <div class="acc" style="background:oklch(.66 .09 148)"><div class="nm" style="color:#0a1408">Moss</div><div class="role">Success / online</div><div class="val">oklch(.66 .09 148)</div></div>
+    <div class="acc" style="background:oklch(.60 .15 32)"><div class="nm" style="color:#1a0a08">Rust</div><div class="role">Destructive / errors</div><div class="val">oklch(.60 .15 32)</div></div>
+    <div class="acc" style="background:oklch(.74 .07 300)"><div class="nm" style="color:#140a1a">Lavender</div><div class="role">DMs / private</div><div class="val">oklch(.74 .07 300)</div></div>
+    <div class="acc" style="background:oklch(.62 .06 245)"><div class="nm" style="color:#080f1a">Dusk</div><div class="role">Links / info</div><div class="val">oklch(.62 .06 245)</div></div>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>Accent</th><th>Reserved for</th><th>Never use for</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">ember</td><td class="desc">Primary CTAs, active server, edge bar, focused input border, badges with high signal, ember tints on hover.</td><td class="desc">Errors, destructive actions, secondary text emphasis.</td></tr>
+      <tr><td class="tok">mead</td><td class="desc">Counts, pinned glyphs, "saved" feedback, code/mono call-outs, secondary highlights.</td><td class="desc">Primary CTAs, active states.</td></tr>
+      <tr><td class="tok">moss</td><td class="desc">Online presence dot, success toasts, voice-speaking outline, "do" callouts.</td><td class="desc">Anything not strictly positive.</td></tr>
+      <tr><td class="tok">rust</td><td class="desc">Destructive buttons, error alerts, mic-muted state, "leave call".</td><td class="desc">Decoration.</td></tr>
+      <tr><td class="tok">lavender</td><td class="desc">DM-channel chrome, DM notification icons, private/encrypted indicators.</td><td class="desc">Generic accent.</td></tr>
+      <tr><td class="tok">dusk</td><td class="desc">Plain hyperlinks in body copy, info callouts.</td><td class="desc">Primary actions.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Tints <span class="id">--tint-*</span></h3>
+  <p class="muted">14% mix of an accent into transparent. Use for hover backgrounds, active row fills, badge surfaces — anywhere an accent needs to live as a background without overwhelming. One additional foreground tint, <code>--tint-fg-04</code>, is reserved for neutral row hovers (channel rows, member rows) that should not adopt an accent colour.</p>
+  <pre><code><span class="c">/* Accent tints — one per accent */</span>
+<span class="k">--tint-ember</span>:    <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--ember</span>)    <span class="n">14%</span>, transparent);
+<span class="k">--tint-mead</span>:     <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--mead</span>)     <span class="n">14%</span>, transparent);
+<span class="k">--tint-moss</span>:     <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--moss</span>)     <span class="n">14%</span>, transparent);
+<span class="k">--tint-rust</span>:     <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--rust</span>)     <span class="n">14%</span>, transparent);
+<span class="k">--tint-lavender</span>: <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--lavender</span>) <span class="n">14%</span>, transparent);
+
+<span class="c">/* Foreground tint — for neutral hovers */</span>
+<span class="k">--tint-fg-04</span>:    <span class="t">color-mix</span>(<span class="k">in</span> oklch, <span class="t">var</span>(<span class="k">--fg-default</span>) <span class="n">4%</span>, transparent);</code></pre>
+
+  <div class="dd">
+    <div class="do"><b>do</b><p>Use <code>bg-surface</code> on top of <code>bg-canvas</code> to express that a card sits above the page.</p></div>
+    <div class="dont"><b>don't</b><p>Apply a drop shadow to express depth. We use the surface ramp for hierarchy.</p></div>
+  </div>
+</section>
+
+<!-- 03 TYPE -->
+<section id="type">
+  <div class="sec-head"><div class="num">03</div><h2>Type</h2></div>
+  <p class="sub">Three families. Use them by role, not by aesthetic preference.</p>
+
+  <table class="tbl">
+    <thead><tr><th>Family</th><th>Token</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td class="tok" style="font-family:var(--serif);font-size:14px;color:var(--fg-default)">Source Serif 4</td><td class="val">--serif</td><td class="desc">Headings, display, member names, modal titles, brand serifs in copy.</td></tr>
+      <tr><td class="tok" style="font-family:var(--sans);font-size:14px;color:var(--fg-default)">Manrope</td><td class="val">--sans</td><td class="desc">Body, UI labels, buttons, inputs, message content.</td></tr>
+      <tr><td class="tok" style="font-family:var(--mono);font-size:13px;color:var(--fg-default)">JetBrains Mono</td><td class="val">--mono</td><td class="desc">Kickers, timestamps, file metadata, invite codes, channel handles, technical labels.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Specimens</h3>
+  <div class="spec-row">
+    <div class="tag">display</div>
+    <div class="sample" style="font-family:var(--serif);font-weight:500;font-size:48px;line-height:1.05;letter-spacing:-.02em">Pull up a chair.</div>
+    <div class="meta">serif · 500 · 48 / 50<br/>tracking -.02em</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">h1</div>
+    <div class="sample" style="font-family:var(--serif);font-weight:500;font-size:32px;line-height:1.15;letter-spacing:-.01em">A warm room for your group.</div>
+    <div class="meta">serif · 500 · 32 / 37<br/>tracking -.01em</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">h2</div>
+    <div class="sample" style="font-family:var(--serif);font-weight:500;font-size:24px;line-height:1.2;letter-spacing:-.005em">Around the table</div>
+    <div class="meta">serif · 500 · 24 / 29</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">h3</div>
+    <div class="sample" style="font-family:var(--serif);font-weight:500;font-size:18px">Channel topic</div>
+    <div class="meta">serif · 500 · 18 / 26</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">body</div>
+    <div class="sample" style="font-family:var(--sans);font-size:15px;line-height:1.6">The body text. Manrope at 15px. Slightly larger than typical so reading at the message density feels relaxed, not cramped.</div>
+    <div class="meta">sans · 400 · 15 / 24</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">label</div>
+    <div class="sample" style="font-family:var(--sans);font-weight:500;font-size:13px">Display name</div>
+    <div class="meta">sans · 500 · 13 / 20</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">kicker</div>
+    <div class="sample" style="font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-faint)">section · subtitle</div>
+    <div class="meta">mono · 400 · 11<br/>tracking .18em · uppercase</div>
+  </div>
+  <div class="spec-row">
+    <div class="tag">timestamp</div>
+    <div class="sample" style="font-family:var(--mono);font-size:11px;color:var(--fg-muted)">Tue 8:14p</div>
+    <div class="meta">mono · 400 · 11</div>
+  </div>
+
+  <h3>Italic serif</h3>
+  <p class="muted">Reserved for the brand voice in display headlines: <em style="font-family:var(--serif);font-style:italic;color:var(--ember)">"the warmth in between"</em>. Don't use italic body for emphasis in UI copy — use weight instead.</p>
+
+  <div class="dd">
+    <div class="do"><b>do</b><p>Use serif for every member's display name in messages and member lists. It's part of the warmth.</p></div>
+    <div class="dont"><b>don't</b><p>Use serif for buttons, inputs, or short-burst UI text. Sans handles all UI.</p></div>
+  </div>
+</section>
+
+<!-- 04 LAYOUT -->
+<section id="layout">
+  <div class="sec-head"><div class="num">04</div><h2>Layout &amp; spacing</h2></div>
+  <p class="sub">A 4-pt base scale, with the message rhythm tuned to 5px between same-author messages and 12px between author blocks. Three breakpoints. Two density modes (default + compact).</p>
+
+  <h3>Spacing scale</h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>px</th><th>Common use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">space-0</td><td class="val">0</td><td class="desc">—</td></tr>
+      <tr><td class="tok">space-1</td><td class="val">4</td><td class="desc">Icon-to-text gap, kicker-to-title gap.</td></tr>
+      <tr><td class="tok">space-2</td><td class="val">8</td><td class="desc">Inline button gaps, badge padding.</td></tr>
+      <tr><td class="tok">space-3</td><td class="val">12</td><td class="desc">Card internal padding, gap between message and avatar.</td></tr>
+      <tr><td class="tok">space-4</td><td class="val">16</td><td class="desc">Default card padding, modal field gaps.</td></tr>
+      <tr><td class="tok">space-5</td><td class="val">20</td><td class="desc">Section gaps inside panels.</td></tr>
+      <tr><td class="tok">space-6</td><td class="val">24</td><td class="desc">Modal header padding, settings rail padding.</td></tr>
+      <tr><td class="tok">space-8</td><td class="val">32</td><td class="desc">Page padding, between major surface groups.</td></tr>
+      <tr><td class="tok">space-12</td><td class="val">48</td><td class="desc">Hero padding, between phases.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Radii</h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>px</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">radius-xs</td><td class="val">3</td><td class="desc">Inline pills, kbd badges.</td></tr>
+      <tr><td class="tok">radius-sm</td><td class="val">4</td><td class="desc">Mention chips, segmented control inner.</td></tr>
+      <tr><td class="tok">radius-md</td><td class="val">6</td><td class="desc">Buttons, inputs, channel rows, sidebar items.</td></tr>
+      <tr><td class="tok">radius-lg</td><td class="val">8</td><td class="desc">Cards, message hover surface, modal panels.</td></tr>
+      <tr><td class="tok">radius-xl</td><td class="val">12</td><td class="desc">Modal frame, large cards, file preview chrome.</td></tr>
+      <tr><td class="tok">radius-2xl</td><td class="val">14</td><td class="desc">Active server icon (morph target).</td></tr>
+      <tr><td class="tok">radius-full</td><td class="val">9999</td><td class="desc">Pills, avatars, presence dots, voice-tile controls.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Shadows</h3>
+  <p class="muted">Shadows are reserved. Use the surface ramp first; only reach for shadows on overlays that need to detach from the canvas.</p>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>Value</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">shadow-pop</td><td class="val">0 8px 24px -10px rgba(0,0,0,.5)</td><td class="desc">Popovers, dropdowns, notification inbox.</td></tr>
+      <tr><td class="tok">shadow-modal</td><td class="val">0 20px 60px -24px rgba(0,0,0,.7)</td><td class="desc">Modals, lightbox chrome.</td></tr>
+      <tr><td class="tok">shadow-toast</td><td class="val">0 6px 20px -8px rgba(0,0,0,.55)</td><td class="desc">Toasts, success badges.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Shell layout</h3>
+  <p class="muted">The product shell is a three-column grid: server rail (72px) · channel sidebar (240px) · message column (flex) · member sidebar (240px, optional, hideable). At <code>≤ 1024px</code>, channel + member sidebars become drawers.</p>
+  <pre><code><span class="c">/* AppShell grid · desktop */</span>
+<span class="k">.app-shell</span> {
+  <span class="k">display</span>: grid;
+  <span class="k">grid-template-columns</span>: <span class="n">72px</span> <span class="n">240px</span> <span class="n">1fr</span> <span class="n">240px</span>;
+  <span class="k">height</span>: <span class="n">100vh</span>;
+}</code></pre>
+
+  <h3>Breakpoints</h3>
+  <table class="tbl">
+    <thead><tr><th>Name</th><th>Min width</th><th>What changes</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">mobile</td><td class="val">0</td><td class="desc">Single-column. Channel sidebar = drawer (slide-in). Member sidebar = hidden by default, accessed via header button.</td></tr>
+      <tr><td class="tok">tablet</td><td class="val">768</td><td class="desc">Server rail + channel sidebar persistent. Member sidebar still drawer.</td></tr>
+      <tr><td class="tok">desktop</td><td class="val">1024</td><td class="desc">All three columns visible. Default density.</td></tr>
+      <tr><td class="tok">wide</td><td class="val">1440</td><td class="desc">Message column gets max-width 880px and centres.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 05 MOTION -->
+<section id="motion">
+  <div class="sec-head"><div class="num">05</div><h2>Motion</h2></div>
+  <p class="sub">Six easing tokens, five durations, nine named transitions. Live demos lived in earlier exploration drafts; canonical values are below.</p>
+
+  <h3>Easing tokens</h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>Curve</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">--ease-standard</td><td class="val">cubic-bezier(.2,0,0,1)</td><td class="desc">State changes that stay put — tint shifts, colour swaps.</td></tr>
+      <tr><td class="tok">--ease-decel</td><td class="val">cubic-bezier(0,0,.2,1)</td><td class="desc">Things entering — panels, modals, dropdowns.</td></tr>
+      <tr><td class="tok">--ease-accel</td><td class="val">cubic-bezier(.4,0,1,1)</td><td class="desc">Things leaving — toasts dismissing, modals closing.</td></tr>
+      <tr><td class="tok">--ease-emphasized</td><td class="val">cubic-bezier(.2,0,0,1.2)</td><td class="desc">Hero entrances — onboarding success, bootstrap.</td></tr>
+      <tr><td class="tok">--ease-spring</td><td class="val">cubic-bezier(.34,1.56,.64,1)</td><td class="desc">Reserved — server-rail morph, dice clatter.</td></tr>
+      <tr><td class="tok">--ease-linear</td><td class="val">linear</td><td class="desc">Progress fills, voice bars.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Duration tokens</h3>
+  <table class="tbl">
+    <thead><tr><th>Token</th><th>ms</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">--t-instant</td><td class="val">80</td><td class="desc">Button-press feedback, hover settling.</td></tr>
+      <tr><td class="tok">--t-quick</td><td class="val">120</td><td class="desc">Hover states, row tints, focus rings.</td></tr>
+      <tr><td class="tok">--t-base</td><td class="val">180</td><td class="desc">Default — panels, fades, lifts.</td></tr>
+      <tr><td class="tok">--t-deliberate</td><td class="val">260</td><td class="desc">Server-hop, drawer swipe.</td></tr>
+      <tr><td class="tok">--t-cinematic</td><td class="val">420</td><td class="desc">Welcome screen, bootstrap success.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Named transitions</h3>
+  <table class="tbl">
+    <thead><tr><th>Name</th><th>What</th><th>Use</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">fade</td><td class="val">opacity 0→1 · base · standard</td><td class="desc">Empty states, content swaps.</td></tr>
+      <tr><td class="tok">lift</td><td class="val">opacity + translateY + scale · base · decel</td><td class="desc">Popovers, dropdowns, inbox.</td></tr>
+      <tr><td class="tok">tint</td><td class="val">bg + color · quick · standard</td><td class="desc">Row hover, mention hover.</td></tr>
+      <tr><td class="tok">morph</td><td class="val">border-radius 50%→14px · deliberate · spring</td><td class="desc">Server-rail active state.</td></tr>
+      <tr><td class="tok">swipe</td><td class="val">translateX -140%→0 · deliberate · decel</td><td class="desc">Drawer, threading panel.</td></tr>
+      <tr><td class="tok">dismiss</td><td class="val">opacity + translateY · base · accel</td><td class="desc">Toasts leaving, modals closing.</td></tr>
+      <tr><td class="tok">pulse</td><td class="val">staggered ring scale · 1400ms · decel</td><td class="desc">Mention arrival.</td></tr>
+      <tr><td class="tok">clatter</td><td class="val">translateY + rotate, staggered · 600ms · spring</td><td class="desc">Dice roll result.</td></tr>
+      <tr><td class="tok">bars</td><td class="val">height loop · 700–1100ms · linear</td><td class="desc">Voice speaking, typing dots.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note"><div class="ico">i</div><div class="body"><b>Reduced motion.</b> When <code>prefers-reduced-motion</code> is set: spring/emphasized collapse to standard; cinematic durations compress to base; pulse, clatter, swipe lose their motion. Tint and fade stay — they <em>are</em> feedback, not flourish.</div></div>
+</section>
+
+<!-- 06 SOUND -->
+<section id="sound">
+  <div class="sec-head"><div class="num">06</div><h2>Sound</h2></div>
+  <p class="sub">Five sounds total. All synthesized at runtime via Web Audio — no asset files.</p>
+  <table class="tbl">
+    <thead><tr><th>Sound</th><th>Trigger</th><th>Shape</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">mention</td><td class="desc">New @mention while window unfocused.</td><td class="val">880 + 1320 hz · sine · 380ms decay</td></tr>
+      <tr><td class="tok">dm</td><td class="desc">Incoming DM while unfocused.</td><td class="val">660 + 990 hz · double-tap · 120ms apart</td></tr>
+      <tr><td class="tok">roll</td><td class="desc">Your dice roll resolves. (Muted for others' rolls.)</td><td class="val">3 clicks + 1760 hz bell</td></tr>
+      <tr><td class="tok">voice-join</td><td class="desc">Someone joins a voice room you're in.</td><td class="val">C5 → G5 glide · 220ms</td></tr>
+      <tr><td class="tok">voice-leave</td><td class="desc">Someone leaves a voice room you're in.</td><td class="val">G5 → C5 glide · 220ms</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><div class="ico">!</div><div class="body"><b>Don't add new sounds.</b> Five is the budget. New audio cues require a design discussion. Sound toggle is independent of motion — both live in Settings → Notifications.</div></div>
+</section>
+
+<!-- 07 VOICE -->
+<section id="voice">
+  <div class="sec-head"><div class="num">07</div><h2>Voice &amp; copy</h2></div>
+  <p class="sub">Warm, calm, a little literary. Write as a host speaking to a guest. Use the metaphor sparingly — "tavern", "room", "table", "chair", "doors" — never "channel" / "server" / "join" in user-facing copy.</p>
+
+  <h3>Lexicon</h3>
+  <table class="tbl">
+    <thead><tr><th>Use</th><th>Not</th></tr></thead>
+    <tbody>
+      <tr><td class="desc">Tavern</td><td class="desc">Server, workspace, guild</td></tr>
+      <tr><td class="desc">Room</td><td class="desc">Channel (only in code)</td></tr>
+      <tr><td class="desc">Member · guest · regular</td><td class="desc">User</td></tr>
+      <tr><td class="desc">Pull up a chair · Open the doors</td><td class="desc">Sign up · Get started</td></tr>
+      <tr><td class="desc">Around the table</td><td class="desc">Active voice channel</td></tr>
+      <tr><td class="desc">A chair is waiting</td><td class="desc">Welcome to your account</td></tr>
+      <tr><td class="desc">Light the hearth</td><td class="desc">Create your first instance</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Tone shifts</h3>
+  <ul>
+    <li><b>Empty states</b> — gentle and inviting. "All quiet for now." not "No notifications."</li>
+    <li><b>Errors</b> — calm and specific. Tell them what happened and what to do. Never blame the user. Never use "Oops" or "Whoops".</li>
+    <li><b>Success</b> — quick and warm. "Saved." not "Settings updated successfully."</li>
+    <li><b>Destructive confirmations</b> — direct, not dramatic. "Remove from the tavern?" not "ARE YOU SURE you want to PERMANENTLY DELETE?"</li>
+  </ul>
+
+  <div class="dd">
+    <div class="do"><b>do</b><p>"We couldn't reach the tavern. Check your connection, or try again in a moment."</p></div>
+    <div class="dont"><b>don't</b><p>"Error: Network request failed (code 503). Please retry."</p></div>
+  </div>
+
+  <h3>Mechanics</h3>
+  <ul>
+    <li>Sentence case for headings, labels, buttons. <b>Never title case.</b></li>
+    <li>One period per sentence, including button labels with two clauses. ("Save changes." not "Save changes")</li>
+    <li>Oxford comma. Always.</li>
+    <li>Numbers: spell out under 10 in body copy; numerals in UI labels and counts.</li>
+    <li>Time: "Tue 8:14p" (mono, terse). "4m ago" / "3 weeks ago" for relative.</li>
+  </ul>
+</section>
+
+<!-- 07b ACCESSIBILITY -->
+<section id="a11y">
+  <div class="sec-head"><div class="num">07b</div><h2>Accessibility</h2></div>
+  <p class="sub">Hard floors that every UI change must respect. Contrast pairings are measured (sRGB / WCAG 2.1) and reflected in the rules below — when the doc says <em>"fg-faint is permitted on …"</em>, that's not a suggestion.</p>
+
+  <h3>Contrast pairings <span class="id">measured · WCAG 2.1</span></h3>
+  <p class="muted">All ratios computed from the canonical hex anchors. Body-text minimum is AA 4.5:1; large-text (≥18pt regular or ≥14pt bold) minimum is AA 3:1. AAA = 7:1 / 4.5:1.</p>
+  <table class="tbl">
+    <thead><tr><th>Foreground</th><th>On surface</th><th>Ratio</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">fg-default</td><td class="val">bg-canvas</td><td class="val">14.8</td><td class="desc">AAA — body or larger.</td></tr>
+      <tr><td class="tok">fg-default</td><td class="val">bg-sunken</td><td class="val">14.0</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-default</td><td class="val">bg-surface</td><td class="val">13.2</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-default</td><td class="val">bg-raised</td><td class="val">12.1</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-default</td><td class="val">bg-elevated</td><td class="val">10.9</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-default</td><td class="val">bg-overlay</td><td class="val">9.7</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-canvas</td><td class="val">8.1</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-sunken</td><td class="val">7.7</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-surface</td><td class="val">7.2</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-raised</td><td class="val">6.6</td><td class="desc">AA — body OK; AAA only at large.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-elevated</td><td class="val">6.0</td><td class="desc">AA — body OK.</td></tr>
+      <tr><td class="tok">fg-muted</td><td class="val">bg-overlay</td><td class="val">5.3</td><td class="desc">AA — body OK; nearing the floor.</td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-canvas</td><td class="val">3.7</td><td class="desc">AA <b>large only</b>. <span class="tag-pill rust">no body text</span></td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-sunken</td><td class="val">3.5</td><td class="desc">AA large only.</td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-surface</td><td class="val">3.3</td><td class="desc">AA large only.</td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-raised</td><td class="val">3.0</td><td class="desc">AA large only — at the floor; avoid if possible.</td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-elevated</td><td class="val">2.7</td><td class="desc"><b>fails</b> AA at any size. <span class="tag-pill rust">do not use</span></td></tr>
+      <tr><td class="tok">fg-faint</td><td class="val">bg-overlay</td><td class="val">2.4</td><td class="desc"><b>fails</b> AA at any size.</td></tr>
+      <tr><td class="tok">fg-on-accent</td><td class="val">ember fill</td><td class="val">6.4</td><td class="desc">AA at any size; ~AAA at large.</td></tr>
+      <tr><td class="tok">fg-on-accent</td><td class="val">mead fill</td><td class="val">~7.5</td><td class="desc">AAA.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><div class="ico">!</div><div class="body"><b>Hard rules.</b> <code>fg-faint</code> is for kickers, timestamps, and decorative icons only — never for paragraphs, never for interactive labels. Use it only on <code>bg-canvas</code>, <code>bg-sunken</code>, or <code>bg-surface</code>, and only at sizes ≥16px regular / ≥14px bold. Use <code>fg-muted</code> the moment a string is part of a sentence.</div></div>
+
+  <h3>Focus management</h3>
+  <ul>
+    <li><b>Visible focus ring</b> — <code>border-strong</code> 2px outline + 2px offset. Never <code>outline:none</code>.</li>
+    <li><b>Modals + popovers + drawers</b> trap focus when open and restore it on close. Radix Dialog handles this for <code>Modal</code> and <code>ReportDialog</code>; the inbox popover does it via the <code>useFocusTrap</code> helper.</li>
+    <li><b>Esc</b> closes the topmost overlay (popover before drawer before modal). Never closes more than one layer per press.</li>
+    <li><b>Skip link</b> at the top of <code>AppShell</code> jumps to the message column, so keyboard users don't tab through the rail every navigation.</li>
+  </ul>
+
+  <h3>Keyboard map</h3>
+  <div class="callout"><span class="ico">!</span><div><b>Spec, not yet implemented.</b> The bindings below are the target keyboard map. Today, only the basics work out-of-the-box: <code>Enter</code> / <code>Shift+Enter</code> in the composer (handled by <code>textarea</code>), <code>Esc</code> on Radix modals, and <code>Tab</code> / <code>Shift+Tab</code> focus traps inside modals. The rest (Cmd-K, server hop, j/k, ↑-to-edit, M-to-mute) are tracked as a follow-up — don't rely on them in tests or copy yet.</div></div>
+  <table class="tbl">
+    <thead><tr><th>Surface</th><th>Key</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">global</td><td class="val">Cmd/Ctrl + K</td><td class="desc">Open search.</td></tr>
+      <tr><td class="tok">global</td><td class="val">Cmd/Ctrl + 1..9</td><td class="desc">Jump to nth den in the rail.</td></tr>
+      <tr><td class="tok">global</td><td class="val">Esc</td><td class="desc">Close topmost overlay.</td></tr>
+      <tr><td class="tok">MessageComposer</td><td class="val">Enter</td><td class="desc">Send.</td></tr>
+      <tr><td class="tok">MessageComposer</td><td class="val">Shift + Enter</td><td class="desc">Newline.</td></tr>
+      <tr><td class="tok">MessageComposer</td><td class="val">↑ (empty input)</td><td class="desc">Edit your last message in this room.</td></tr>
+      <tr><td class="tok">MessageComposer</td><td class="val">Esc (replying)</td><td class="desc">Cancel reply.</td></tr>
+      <tr><td class="tok">MessageList</td><td class="val">PgUp / PgDn</td><td class="desc">Page through the log.</td></tr>
+      <tr><td class="tok">MessageList</td><td class="val">j / k</td><td class="desc">Next / previous message (opt-in via Settings → Accessibility).</td></tr>
+      <tr><td class="tok">Modal</td><td class="val">Tab / Shift + Tab</td><td class="desc">Cycle inside trapped focus.</td></tr>
+      <tr><td class="tok">VoiceRoom</td><td class="val">M</td><td class="desc">Toggle mic. (Camera + screenshare unbound by default — too easy to fire by mistake.)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>ARIA patterns</h3>
+  <ul>
+    <li><b>MessageList</b> — <code>role="log"</code> with <code>aria-live="polite"</code> and <code>aria-atomic="false"</code>. New incoming messages are announced once; the toolbar that appears on hover is decorative and gets <code>aria-hidden</code>.</li>
+    <li><b>Mention arrival</b> — fires an <code>aria-live="assertive"</code> announcement: <em>"{author} mentioned you in #{room}."</em></li>
+    <li><b>Modal</b> — Radix Dialog provides the right role + labelledby/describedby plumbing. Always pass <code>title</code> and <code>description</code> to <code>Modal</code> so it's wired correctly.</li>
+    <li><b>NotificationInbox</b> — the bell button is <code>aria-haspopup="dialog"</code> and reflects open state via <code>aria-expanded</code>. Tabs use <code>role="tablist"</code> + <code>role="tab"</code> + <code>role="tabpanel"</code>.</li>
+    <li><b>VoiceRoom</b> — participant tile chips are <code>role="status"</code> so changes (joined / muted / speaking) are announced quietly. Speaker outline is decorative.</li>
+    <li><b>TypingIndicator</b> — wrapped in a node with <code>role="status"</code> and <code>aria-live="polite"</code>; pulsing dot is <code>aria-hidden</code>.</li>
+  </ul>
+
+  <h3>Color-blind safety</h3>
+  <p class="muted">Color is never the sole signal. Wherever an accent carries meaning, a glyph or shape carries the same meaning.</p>
+  <table class="tbl">
+    <thead><tr><th>Signal</th><th>Color</th><th>Shape backup</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">presence: online</td><td class="val">moss</td><td class="desc">Filled circle.</td></tr>
+      <tr><td class="tok">presence: idle</td><td class="val">mead</td><td class="desc">Hollow ring (no fill).</td></tr>
+      <tr><td class="tok">presence: do-not-disturb</td><td class="val">rust</td><td class="desc">Filled square (not circle).</td></tr>
+      <tr><td class="tok">presence: in-voice</td><td class="val">moss · pulse</td><td class="desc">Filled circle with two animated bars.</td></tr>
+      <tr><td class="tok">presence: offline</td><td class="val">fg-faint</td><td class="desc">Hollow ring at 60% opacity (the row dims as a whole).</td></tr>
+      <tr><td class="tok">notification: mention</td><td class="val">ember</td><td class="desc">Mention chip uses <code>@</code> glyph + count.</td></tr>
+      <tr><td class="tok">notification: reply / thread</td><td class="val">moss</td><td class="desc">Reply arrow / thread glyph.</td></tr>
+      <tr><td class="tok">notification: dm</td><td class="val">lavender</td><td class="desc">Envelope glyph.</td></tr>
+      <tr><td class="tok">voice mic: muted</td><td class="val">rust</td><td class="desc"><code>MicOff</code> glyph (not <code>Mic</code>).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Reduced motion</h3>
+  <p class="muted">Already specified in <a href="#motion">Motion</a> — when <code>prefers-reduced-motion</code> is set, spring/emphasized collapse to standard, cinematic compresses to base, and pulse / clatter / swipe drop their motion entirely. Tint and fade stay because they are feedback, not flourish. The composer's auto-grow is also unanimated under reduced-motion.</p>
+</section>
+
+<!-- INDEX (map of internal anchors) -->
+<section id="index">
+  <div class="sec-head"><div class="num">08</div><h2>What this doc covers</h2></div>
+  <p class="sub">A map of every section in this document. Earlier exploration phases lived as separate HTML drafts during design and were inlined here — those drafts are not checked into the repo.</p>
+  <div class="idx">
+    <a href="#colour"><div class="tag">foundations</div><h4>Colour</h4><p>Surface ramp, foreground tones, borders, accents, tints. The full token system.</p></a>
+    <a href="#type"><div class="tag">foundations</div><h4>Type</h4><p>Three families (serif, sans, mono) and the full specimen ladder.</p></a>
+    <a href="#layout"><div class="tag">foundations</div><h4>Layout &amp; spacing</h4><p>4-pt scale, radii, shadows, the three-column shell, breakpoints.</p></a>
+    <a href="#motion"><div class="tag">foundations</div><h4>Motion</h4><p>Easings, durations, named transitions, reduced-motion handling.</p></a>
+    <a href="#sound"><div class="tag">foundations</div><h4>Sound</h4><p>Five Web-Audio cues — mention, dm, roll, voice-join, voice-leave.</p></a>
+    <a href="#voice"><div class="tag">foundations</div><h4>Voice &amp; copy</h4><p>The tavern lexicon, tone shifts, copy mechanics.</p></a>
+    <a href="#a11y"><div class="tag">foundations</div><h4>Accessibility</h4><p>Measured contrast pairings, focus rules, keyboard map, ARIA patterns, color-blind safety.</p></a>
+    <a href="#cmp-appshell"><div class="tag">components</div><h4>Shell &amp; chrome</h4><p>AppShell, ServerRail, ChannelSidebar, MemberSidebar.</p></a>
+    <a href="#cmp-message"><div class="tag">components</div><h4>Messages</h4><p>MessageList, Message, MessageComposer, ReactionBar, TypingIndicator.</p></a>
+    <a href="#cmp-modal"><div class="tag">components</div><h4>Modal &amp; atoms</h4><p>Modal, Field, TextInput, PrimaryButton, GhostButton, ErrorAlert. Plus Create* modals and ReportDialog.</p></a>
+    <a href="#cmp-notifs"><div class="tag">components</div><h4>NotificationInbox</h4><p>Bell button + drop-in inbox panel.</p></a>
+    <a href="#cmp-voice"><div class="tag">components</div><h4>VoiceRoom</h4><p>LiveKit-powered voice / video room with tile grid and toggles.</p></a>
+    <a href="#cmp-aux"><div class="tag">components</div><h4>Aux components</h4><p>AttachmentView, AuthGate, TavernLogo.</p></a>
+    <a href="#cmp-auth"><div class="tag">surfaces</div><h4>Onboarding &amp; auth</h4><p>Register, login, bootstrap routes.</p></a>
+    <a href="#surfaces"><div class="tag">surfaces</div><h4>Product routes</h4><p>app-home, server-home, channel, voice, search, campaigns, games, moderation, server-settings.</p></a>
+    <a href="#followups"><div class="tag">reference</div><h4>Open follow-ups</h4><p>Backend, integration, and product items the visual layer is ready for.</p></a>
+  </div>
+</section>
+
+<!-- ─────── COMPONENTS ─────── -->
+<section id="components">
+  <div class="sec-head"><div class="num">09</div><h2>Components</h2></div>
+  <p class="sub">Each component lives in <code>apps/web/src/components/</code> (or <code>apps/web/src/routes/</code> for shell/auth) and is the canonical implementation. Reach for these before making new components.</p>
+</section>
+
+<!-- APPSHELL -->
+<section id="cmp-appshell">
+  <div class="cmp">
+    <div class="head">
+      <h3>AppShell</h3>
+      <span class="path">routes/app-shell.tsx</span>
+    </div>
+    <p class="role">The root product layout. Hosts the server rail, channel sidebar, message outlet, and member sidebar. Owns the responsive drawer mechanics for mobile and tablet.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Server rail</b> — 72px fixed left column. Renders <code>ServerRail</code>.</li>
+      <li><b>Channel sidebar</b> — 240px column right of the rail. Renders <code>ChannelSidebar</code>.</li>
+      <li><b>Outlet</b> — flex-fills with the active route (message list, settings, etc.).</li>
+      <li><b>Member sidebar</b> — 240px right column. Renders <code>MemberSidebar</code>. Hideable.</li>
+    </ul>
+
+    <h4>Key props</h4>
+    <pre><code><span class="k">type</span> <span class="t">AppShellProps</span> = {
+  <span class="n">activeServerId</span>: <span class="t">string</span> | <span class="k">null</span>;
+  <span class="n">activeChannelId</span>: <span class="t">string</span> | <span class="k">null</span>;
+  <span class="c">// the outlet renders the active route</span>
+};</code></pre>
+
+    <h4>Routing contract</h4>
+    <p class="muted">Reads <code>useParams()</code> for <code>serverId</code> and <code>channelId</code>. Reads <code>useAuth()</code> for current user. Reads <code>useRealtime()</code> for presence + ws plumbing. Don't add new context dependencies — extend the existing hooks.</p>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Mount new top-level overlays (modals, lightbox) as siblings inside <code>AppShell</code>, gated by local state.</p></div>
+      <div class="dont"><b>don't</b><p>Mount new persistent UI inside the outlet — it should appear in the shell, not move with route changes.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- SERVER RAIL (inline in AppShell currently) -->
+<section id="cmp-server-rail">
+  <div class="cmp">
+    <div class="head">
+      <h3>ServerRail</h3>
+      <span class="path">inline in routes/app-shell.tsx</span>
+    </div>
+    <p class="role">The 72px vertical strip of server icons. Active server uses the morph transition (circle → 14px radius) plus a 3×28px ember edge bar to its left.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Server icon</b> — 44px gradient avatar with two-letter serif initials. Default <code>border-radius: 50%</code>; hover or active morphs to <code>radius-2xl</code>.</li>
+      <li><b>Edge bar</b> — absolutely positioned, <code>-left-3 top-1/2 h-7 w-[3px]</code>, ember. Grows in via the <code>morph</code> transition.</li>
+      <li><b>Add-server button</b> — same dimensions, dashed border, <code>fg-faint</code> plus glyph.</li>
+    </ul>
+
+    <h4>States</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">default</td><td class="desc">Circle. Mead tint on hover; no edge bar.</td></tr>
+        <tr><td class="tok">hovered</td><td class="desc">Morph to radius-2xl. Tooltip appears to the right after 400ms hold.</td></tr>
+        <tr><td class="tok">active</td><td class="desc">Morphed. Edge bar grown.</td></tr>
+        <tr><td class="tok">has-unread</td><td class="desc">Mead pip top-right (8×8, full radius).</td></tr>
+        <tr><td class="tok">has-mention</td><td class="desc">Ember pip top-right with mention count.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- CHANNEL SIDEBAR -->
+<section id="cmp-channel-sidebar">
+  <div class="cmp">
+    <div class="head">
+      <h3>ChannelSidebar</h3>
+      <span class="path">components/ChannelSidebar.tsx</span>
+    </div>
+    <p class="role">The 240px column of channels for the active server. Sticky server header at the top; identity footer at the bottom. Channels grouped by category, with text/voice variants.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Server header</b> — serif server name + dropdown caret + search icon. Bordered bottom.</li>
+      <li><b>Category</b> — mono 10px / .12em tracking label. Collapsible with chevron.</li>
+      <li><b>Channel row</b> — 14px text, 5px vertical padding, <code>#</code> for text or speaker glyph for voice. Active uses <code>tint-ember</code> background and ember icon colour.</li>
+      <li><b>Voice occupancy</b> — when a voice room has members, an additional row appears below with member avatars + count pill (mead).</li>
+      <li><b>Identity footer</b> — 32px gradient avatar, display name (serif) + handle (mono), then <code>NotificationBell</code>, settings gear, sign-out icon buttons.</li>
+    </ul>
+
+    <h4>Row states</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Background</th><th>Text/icon</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">default</td><td class="val">transparent</td><td class="val">fg-muted</td></tr>
+        <tr><td class="tok">hover</td><td class="val">tint-fg-04</td><td class="val">fg-default</td></tr>
+        <tr><td class="tok">active</td><td class="val">tint-ember</td><td class="val">ember (icon) + fg-default (text)</td></tr>
+        <tr><td class="tok">has-unread</td><td class="val">—</td><td class="val">fg-default + mead pip right-aligned</td></tr>
+        <tr><td class="tok">has-mention</td><td class="val">—</td><td class="val">ember count pill right-aligned</td></tr>
+        <tr><td class="tok">muted</td><td class="val">—</td><td class="val">fg-faint, no pip ever</td></tr>
+      </tbody>
+    </table>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Use the <code>#</code> glyph for text channels and the speaker glyph for voice — they're the visual contract.</p></div>
+      <div class="dont"><b>don't</b><p>Use emoji in channel names. The glyph carries the type signal; emoji would compete.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- MEMBER SIDEBAR -->
+<section id="cmp-member-sidebar">
+  <div class="cmp">
+    <div class="head">
+      <h3>MemberSidebar</h3>
+      <span class="path">components/MemberSidebar.tsx</span>
+    </div>
+    <p class="role">The 240px right column. Lists members of the active channel, grouped by role, with presence and activity.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Role group header</b> — mono kicker with role name and count: <code>OWNER · 1</code>.</li>
+      <li><b>Member row</b> — 24px avatar with presence dot (bottom-right, 2px border in <code>bg-sunken</code>), serif display name in role colour, optional activity line in mono <code>fg-faint</code> ("playing · Around the table" / "typing…").</li>
+      <li><b>Offline group</b> — collapsed by default. Members rendered at 60% opacity.</li>
+    </ul>
+
+    <h4>Presence dot colours</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Colour</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">online</td><td class="val">moss</td></tr>
+        <tr><td class="tok">idle</td><td class="val">mead</td></tr>
+        <tr><td class="tok">in-voice</td><td class="val">moss · pulsing bars</td></tr>
+        <tr><td class="tok">do-not-disturb</td><td class="val">rust</td></tr>
+        <tr><td class="tok">offline</td><td class="val">fg-faint (hollow)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- MESSAGE / LIST -->
+<section id="cmp-message">
+  <div class="cmp">
+    <div class="head">
+      <h3>MessageList &amp; Message</h3>
+      <span class="path">components/MessageList.tsx</span>
+    </div>
+    <p class="role">The scrolling list of messages and a single message row. Renders day dividers, author blocks (grouped consecutive messages from the same author), inline reactions, and a hover-only action toolbar.</p>
+
+    <h4>Author block rhythm</h4>
+    <ul>
+      <li>First message in a block: avatar + serif display name (in role colour) + mono timestamp + body.</li>
+      <li>Subsequent messages: <em>no</em> avatar, no name, no timestamp; body only with 5px top padding. Timestamp appears in the gutter on hover.</li>
+      <li>New block starts when: author changes, or <code>≥ 7 minutes</code> elapse, or a day divider falls between.</li>
+    </ul>
+
+    <h4>Inline elements</h4>
+    <ul>
+      <li><b>Mention chip</b> — ember tint background, ember text, mono <code>@handle</code>. Hover lifts a member hovercard (not yet built).</li>
+      <li><b>Channel reference</b> — mead tint, mead text, mono <code>#room</code>.</li>
+      <li><b>Reaction</b> — pill with emoji + count + mono. Active (you reacted) uses <code>tint-ember</code> + ember border.</li>
+      <li><b>Edited marker</b> — mono <code>(edited)</code> in <code>fg-faint</code> after the body.</li>
+    </ul>
+
+    <h4>Hover action toolbar</h4>
+    <p class="muted">A floating bar of icon buttons appears top-right of the hovered message: react · reply · thread · more. Uses the <code>lift</code> transition. Pinned messages get a mead corner glyph instead of/in addition to the toolbar.</p>
+
+    <h4>Day divider</h4>
+    <pre><code><span class="c">/* mono kicker centred on a hairline rule */</span>
+<span class="k">TUESDAY</span> <span class="c">·</span> <span class="k">FEB 12</span></code></pre>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Use the role colour from the member's primary role for the display name. Owner=ember, Mod=mead, DM=lavender, regular=fg-default, etc.</p></div>
+      <div class="dont"><b>don't</b><p>Colour the message body. Only the display name takes role colour. Bodies are always <code>fg-default</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPOSER -->
+<section id="cmp-composer">
+  <div class="cmp">
+    <div class="head">
+      <h3>MessageComposer</h3>
+      <span class="path">components/MessageComposer.tsx</span>
+    </div>
+    <p class="role">The input row pinned to the bottom of the message column. Auto-grows to 6 lines max. Left-side affordances: attach, roll, GIF. Right-side: emoji, send.</p>
+
+    <h4>States</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">empty</td><td class="desc">Placeholder: "Speak in #room-name". Send disabled (fg-faint).</td></tr>
+        <tr><td class="tok">drafting</td><td class="desc">Send active (ember). Char count appears when ≥ 80% of limit.</td></tr>
+        <tr><td class="tok">slow-mode</td><td class="desc">Input disabled with mono countdown beneath: "Cooldown · 4s".</td></tr>
+        <tr><td class="tok">replying</td><td class="desc">Header bar above input: "Replying to <b>Brielle</b>" + close button.</td></tr>
+        <tr><td class="tok">no-permission</td><td class="desc">Input replaced by muted card: "You don't have permission to speak in this room."</td></tr>
+        <tr><td class="tok">send-failed</td><td class="desc">Rust toast above input: "Couldn't send — retry?" with retry + discard buttons.</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Affordances</h4>
+    <ul>
+      <li><b>Attach</b> — paperclip glyph, opens file picker.</li>
+      <li><b>Roll</b> — d20 glyph, opens dice menu inline (d4/d6/d8/d10/d12/d20/d100 + count).</li>
+      <li><b>GIF</b> — mono text "GIF", opens GIF picker popover.</li>
+      <li><b>Emoji</b> — smiley glyph, opens <code>EmojiPicker</code> popover.</li>
+      <li><b>Send</b> — ember chevron button, only enabled when there's content.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- REACTIONBAR -->
+<section id="cmp-reactionbar">
+  <div class="cmp">
+    <div class="head">
+      <h3>ReactionBar</h3>
+      <span class="path">components/ReactionBar.tsx</span>
+    </div>
+    <p class="role">The row of reaction pills that hangs under a message, plus the quick-emoji popover for adding new ones. Renders only when the message has reactions or is hovered.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Reaction pill</b> — emoji + mono count. Bordered. Toggling sends <code>PUT</code> / <code>DELETE</code> to <code>/messages/:id/reactions/:emoji</code>.</li>
+      <li><b>Add button</b> — smiley glyph in <code>fg-muted</code>. Hidden by default; revealed on hover via <code>group-hover:opacity-100</code>.</li>
+      <li><b>Quick picker</b> — popover anchored above the add button with eight curated emojis: <code>👍 ❤️ 🎉 😂 🤔 🎲 🔥 🏰</code>. Two of those are tabletop-flavoured on purpose.</li>
+    </ul>
+
+    <h4>States</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">default</td><td class="desc">Border <code>border-subtle</code>, transparent fill.</td></tr>
+        <tr><td class="tok">hovered</td><td class="desc"><code>tint-fg-04</code> fill.</td></tr>
+        <tr><td class="tok">mine</td><td class="desc"><code>tint-ember</code> fill, ember border, mead numeric — the user has reacted.</td></tr>
+        <tr><td class="tok">custom emoji</td><td class="desc">When the emoji string starts with <code>custom:</code>, render a 🖼 placeholder until the custom-emoji renderer ships.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Use the active "mine" treatment for any reaction the current user has cast — confirms the action without needing a second affordance.</p></div>
+      <div class="dont"><b>don't</b><p>Add new emojis to the quick row. Eight is the budget; further additions go through the full picker (not yet built).</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- TYPING -->
+<section id="cmp-typing">
+  <div class="cmp">
+    <div class="head">
+      <h3>TypingIndicator</h3>
+      <span class="path">components/TypingIndicator.tsx</span>
+    </div>
+    <p class="role">The italic line beneath the composer that says who's typing. Reads from the realtime store. Renders <code>null</code> when nobody else is typing.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li>Single-line italic in <code>fg-muted</code> at <code>text-xs</code>, with a small pulsing dot before the label.</li>
+      <li>Pulsing dot uses the <code>bars</code>-class motion (height-loop) — collapses to static under <code>prefers-reduced-motion</code>.</li>
+    </ul>
+
+    <h4>Labels</h4>
+    <table class="tbl">
+      <thead><tr><th>Count</th><th>Label</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">0</td><td class="desc">Renders nothing.</td></tr>
+        <tr><td class="tok">1</td><td class="desc">"Brielle is typing…"</td></tr>
+        <tr><td class="tok">2</td><td class="desc">"Brielle and Davi are typing…"</td></tr>
+        <tr><td class="tok">3+</td><td class="desc">"4 people are typing…" (numeric, never names them all).</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Lifecycle</h4>
+    <p class="muted">Each typing event has a 6-second TTL. The component ticks every second to expire stale entries. The current user's own typing event is never shown back to them.</p>
+
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Display-name lookup is pending.</b> Today the indicator slices the user ID to its first 8 chars. When the member-hovercard data flow lands, swap to the canonical display name from the realtime member map.</div></div>
+  </div>
+</section>
+
+<!-- MODAL -->
+<section id="cmp-modal">
+  <div class="cmp">
+    <div class="head">
+      <h3>Modal &amp; atoms</h3>
+      <span class="path">components/Modal.tsx</span>
+    </div>
+    <p class="role">The shared modal shell plus a set of form atoms used inside every modal and auth route. Use these — don't reinvent.</p>
+
+    <h4>Modal props</h4>
+    <pre><code><span class="k">type</span> <span class="t">ModalProps</span> = {
+  <span class="n">open</span>: <span class="t">boolean</span>;
+  <span class="n">onOpenChange</span>: (open: <span class="t">boolean</span>) =&gt; <span class="t">void</span>;
+  <span class="n">title</span>: <span class="t">string</span>;
+  <span class="n">kicker</span>?: <span class="t">string</span>;          <span class="c">// e.g. "I · Tavern"</span>
+  <span class="n">description</span>?: <span class="t">string</span>;
+  <span class="n">size</span>?: <span class="s">'sm'</span> | <span class="s">'md'</span> | <span class="s">'lg'</span>;  <span class="c">// 420 / 540 / 720</span>
+  <span class="n">footer</span>?: <span class="t">ReactNode</span>;
+  <span class="n">children</span>: <span class="t">ReactNode</span>;
+};</code></pre>
+
+    <h4>Exported atoms</h4>
+    <table class="tbl">
+      <thead><tr><th>Atom</th><th>What</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">Field</td><td class="desc">Labelled wrapper. <code>label</code>, <code>hint</code>, <code>error</code>.</td></tr>
+        <tr><td class="tok">TextInput</td><td class="desc">Standard input. Auto-focus when first field of an opening modal.</td></tr>
+        <tr><td class="tok">TextArea</td><td class="desc">Multiline. Auto-grows 2–6 rows.</td></tr>
+        <tr><td class="tok">PrimaryButton</td><td class="desc">Ember background, on-accent text. Disabled at 40% opacity.</td></tr>
+        <tr><td class="tok">GhostButton</td><td class="desc">Transparent + border-default. For Cancel / secondary.</td></tr>
+        <tr><td class="tok">ErrorAlert</td><td class="desc">Rust-tinted panel. <code>title</code> + <code>message</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Structural rules</h4>
+    <ul>
+      <li>Header carries <em>kicker → title → description → close</em>, in that order, with a border-bottom rule.</li>
+      <li>Body scrolls at <code>max-height: 60vh</code>. Internal padding <code>var(--space-5)</code> (20px).</li>
+      <li>Footer always lives on <code>bg-sunken</code> with a border-top rule. Actions right-aligned. Primary action is rightmost.</li>
+      <li>Backdrop is <code>bg-black/70</code> with <code>backdrop-blur-sm</code>. Click closes unless <code>preventOutsideClose</code>.</li>
+    </ul>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Compose every form modal with <code>&lt;Field&gt;&lt;TextInput …&gt;&lt;/Field&gt;</code>. Field handles label, hint, and error spacing consistently.</p></div>
+      <div class="dont"><b>don't</b><p>Build a modal with a custom backdrop or a different footer layout. Even the auth screens — which aren't modals — match this rhythm.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- CREATE MODALS -->
+<section id="cmp-create">
+  <div class="cmp">
+    <div class="head">
+      <h3>Create&hellip; modals</h3>
+      <span class="path">components/Create{Server,Channel,Campaign}Modal.tsx</span>
+    </div>
+    <p class="role">Three concrete modals built on the shared <code>Modal</code> shell + form atoms. They are the canonical example of how to compose a form modal in this app — copy their shape when adding a new one.</p>
+
+    <h4>Common shape</h4>
+    <ul>
+      <li>Each accepts <code>open</code>, <code>onOpenChange</code>, and (where relevant) the parent <code>serverId</code>.</li>
+      <li>Body is a stack of <code>&lt;Field&gt;&lt;TextInput&gt;&lt;/Field&gt;</code> rows.</li>
+      <li>Footer right-aligned: <code>GhostButton</code> ("Cancel") then <code>PrimaryButton</code> (the action verb in sentence case).</li>
+      <li>Errors render through <code>ErrorAlert</code> at the top of the body, never inline as toasts.</li>
+      <li>While submitting, the primary button shows its label as past tense or a present continuous — "Creating…", not a spinner.</li>
+    </ul>
+
+    <h4>Per-modal differences</h4>
+    <table class="tbl">
+      <thead><tr><th>Modal</th><th>Fields</th><th>On success</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">CreateServerModal</td><td class="desc">name, description.</td><td class="desc">Navigate to <code>/app/servers/{newId}</code>.</td></tr>
+        <tr><td class="tok">CreateChannelModal</td><td class="desc">type segmented control (text / voice / category) + name + topic. Topic only shown when type = text.</td><td class="desc">Close, refresh sidebar.</td></tr>
+        <tr><td class="tok">CreateCampaignModal</td><td class="desc">name, system, description, safety boundaries (chip array — add by typing + Enter, remove by ×).</td><td class="desc">Close, fire <code>onCreated</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <p class="muted">Two further create-modals — <code>CreateBoardGameModal</code> and <code>CreateGameNightModal</code> — currently live inline in <code>routes/games-page.tsx</code>. They are flagged for extraction into <code>components/</code> the next time that route is touched.</p>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Wrap each input in <code>&lt;Field label=… hint=… error=…&gt;</code> so spacing, focus rings, and error positioning stay consistent.</p></div>
+      <div class="dont"><b>don't</b><p>Roll your own <code>&lt;dialog&gt;</code> or backdrop — these all defer to the shared Modal so dismiss behaviour and z-index stay coherent.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- REPORT DIALOG -->
+<section id="cmp-report">
+  <div class="cmp">
+    <div class="head">
+      <h3>ReportDialog</h3>
+      <span class="path">components/ReportDialog.tsx</span>
+    </div>
+    <p class="role">The "report this" surface for users, messages, and posts. Posts to <code>/reports</code> with a category and optional notes. Used from the message hover-toolbar and the member hovercard.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Category select</b> — eleven values, ordered roughly by severity. The list is the canonical taxonomy from <code>@tavern/shared</code> and must not be silently extended in UI.</li>
+      <li><b>Notes textarea</b> — optional free text. Trimmed and dropped when empty.</li>
+      <li><b>Footer</b> — Cancel (ghost) + Submit report (primary, rust on confirmation hover).</li>
+      <li><b>Submitted state</b> — "Thanks. The mods will see this." in moss tint, then auto-dismisses after 1.5s.</li>
+    </ul>
+
+    <h4>States</h4>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">idle</td><td class="desc">Form interactive.</td></tr>
+        <tr><td class="tok">busy</td><td class="desc">Submit disabled, label "Sending…".</td></tr>
+        <tr><td class="tok">error</td><td class="desc">Rust <code>ErrorAlert</code> at top of body. Form re-enabled.</td></tr>
+        <tr><td class="tok">submitted</td><td class="desc">Body replaced with the moss confirmation. Closes itself.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Open inconsistency:</b> ReportDialog is built directly on Radix Dialog, not the shared <code>Modal</code> shell. The chrome differs subtly (no kicker, different header rule). Worth migrating to <code>Modal</code> the next time it's touched, so the form-atom set and footer rhythm stay consistent across modal surfaces.</div></div>
+  </div>
+</section>
+
+<!-- NOTIFICATIONS -->
+<section id="cmp-notifs">
+  <div class="cmp">
+    <div class="head">
+      <h3>NotificationBell &amp; NotificationInbox</h3>
+      <span class="path">components/NotificationInbox.tsx</span>
+    </div>
+    <p class="role">Drop-anywhere bell button with unread badge, plus the panel it opens. Lives in the channel-sidebar identity footer by default.</p>
+
+    <h4>Bell anatomy</h4>
+    <ul>
+      <li>36×36 ghost icon button, bell glyph in <code>fg-muted</code>.</li>
+      <li>Unread badge: ember pill top-right, mono count, caps at "99+".</li>
+      <li>Click toggles the inbox. Outside click + Escape close.</li>
+    </ul>
+
+    <h4>Inbox anatomy</h4>
+    <ul>
+      <li>380px wide, anchored to bell's right edge with the <code>lift</code> transition.</li>
+      <li>Serif "Inbox" heading, with mono "Mark all read" only shown when unreads &gt; 0.</li>
+      <li>Horizontally-scrolling tabs: <b>All · Mentions · Replies · DMs · Threads · Rolls · Invites · Reactions · Saved · System.</b> Each tab shows its own count.</li>
+      <li>Row: coloured icon chip (ember=mention/invite, moss=reply/thread, lavender=dm, mead=roll/saved, rust=reaction) + actor + verb + location + preview + mono timestamp.</li>
+      <li>Unread state: faint ember tint on row + 1.5px ember dot on the right.</li>
+      <li>Body cap: <code>max-height: 440px</code> scrollable.</li>
+    </ul>
+
+    <h4>Defensive shape</h4>
+    <p class="muted">Component accepts <code>items?: NotificationItem[]</code>. With no items it renders a mock fixture for previews. In production, pass the <code>useNotifications()</code> result.</p>
+  </div>
+</section>
+
+<!-- VOICE ROOM -->
+<section id="cmp-voice">
+  <div class="cmp">
+    <div class="head">
+      <h3>VoiceRoom</h3>
+      <span class="path">components/VoiceRoom.tsx</span>
+    </div>
+    <p class="role">The voice / video room surface. Connects to LiveKit, renders a tile grid of participants, and exposes the four call controls. Used by the <a href="#voice-page">voice route</a>; never embedded inline.</p>
+
+    <h4>Connection lifecycle</h4>
+    <table class="tbl">
+      <thead><tr><th>Status</th><th>UI</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">idle</td><td class="desc">Pre-mount placeholder. Briefly visible during route transition.</td></tr>
+        <tr><td class="tok">connecting</td><td class="desc">Centred mead "Joining {channel}…" with the <code>bars</code>-class pulse.</td></tr>
+        <tr><td class="tok">connected</td><td class="desc">Tile grid + control bar. Default state.</td></tr>
+        <tr><td class="tok">error</td><td class="desc">Rust <code>ErrorAlert</code> with the message and a "Try again" ghost button.</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Participant tile</h4>
+    <ul>
+      <li>Square tile with the participant's avatar centred when their video is off; the live <code>&lt;video&gt;</code> when it's on.</li>
+      <li>Bottom-left chip: serif display name in the participant's role colour, mic glyph in moss when speaking / rust when muted.</li>
+      <li><b>Active speaker</b> — 2px moss outline that fades in/out via the <code>tint</code> transition; LiveKit's <code>ActiveSpeakersChanged</code> drives it.</li>
+      <li><b>Screen-share tile</b> — the share gets its own tile rather than overlaying the publisher's video.</li>
+    </ul>
+
+    <h4>Control bar</h4>
+    <ul>
+      <li><b>Mic toggle</b> — <code>Mic</code> / <code>MicOff</code> from Lucide. Disabled when <code>allowedFeatures.canPublishAudio</code> is false (e.g. listen-only role).</li>
+      <li><b>Camera toggle</b> — <code>Video</code> / <code>VideoOff</code>. Disabled when video is not allowed.</li>
+      <li><b>Screen-share toggle</b> — <code>Monitor</code> / <code>MonitorOff</code>. Disabled when not allowed.</li>
+      <li><b>Leave</b> — <code>PhoneOff</code> in rust. Calls the parent <code>onLeave</code> after disconnecting the room.</li>
+    </ul>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Treat the moss "active speaker" outline as the only legal use of moss in this surface. Mic-muted is the only legal rust use. The grammar reads at a glance.</p></div>
+      <div class="dont"><b>don't</b><p>Add hover overlays on tiles that animate on every track event — the room churns these constantly.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- AUX COMPONENTS -->
+<section id="cmp-aux">
+  <div class="cmp">
+    <div class="head">
+      <h3>Aux components</h3>
+      <span class="path">components/AttachmentView.tsx · components/AuthGate.tsx · components/TavernLogo.tsx</span>
+    </div>
+    <p class="role">Three small components that don't belong in any other family. They are stable and rarely change shape.</p>
+
+    <h4>AttachmentView</h4>
+    <p class="muted">Renders an attachment by ID, fetching its metadata from <code>/attachments/:id</code> with an in-process cache. Branches on <code>kind</code> (image / gif / map → inline thumbnail; audio → waveform card; video → muted poster + play button; otherwise → file chip with size + type).</p>
+    <table class="tbl">
+      <thead><tr><th>State</th><th>Treatment</th></tr></thead>
+      <tbody>
+        <tr><td class="tok">loading</td><td class="desc">Inline pill: "attachment loading…" in <code>fg-muted</code> on <code>bg-sunken</code>.</td></tr>
+        <tr><td class="tok">scanning</td><td class="desc">"Scanning {filename}…" — same pill, different copy.</td></tr>
+        <tr><td class="tok">ready</td><td class="desc">Per-kind treatment.</td></tr>
+        <tr><td class="tok">quarantined / blocked</td><td class="desc">Rust card with <code>ShieldAlert</code> glyph and the line "This attachment was held by moderation." Never shows the file even if a URL is present.</td></tr>
+      </tbody>
+    </table>
+
+    <h4>AuthGate</h4>
+    <p class="muted">Wrapper that gates a subtree on the auth bootstrap. Reads <code>useAuth().status</code>: while <code>idle</code> or <code>loading</code>, renders a centred "Loading…" pulse; on <code>authenticated</code>, renders <code>children</code>; otherwise navigates to <code>/login</code>. Mount at the root of every authenticated route — never re-implement.</p>
+
+    <h4>TavernLogo</h4>
+    <p class="muted">The lockup of the tavern-door SVG mark plus the wordmark and tagline ("a cozy hall for friends"). Single optional <code>className</code> prop. Used on the welcome / server-home empty state and the auth screens.</p>
+
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Hard-coded colours in TavernLogo.</b> The SVG fills are still raw hex (the legacy ember + mead). When time permits, swap the <code>fill</code> attributes to <code>currentColor</code> + a wrapping <code>text-ember</code> so the mark adapts to future themes.</div></div>
+  </div>
+</section>
+
+<!-- ONBOARDING + AUTH -->
+<section id="cmp-auth">
+  <div class="cmp">
+    <div class="head">
+      <h3>Onboarding &amp; auth</h3>
+      <span class="path">routes/register.tsx · routes/login.tsx · routes/bootstrap-page.tsx</span>
+    </div>
+    <p class="role">Three routes, one visual language. Centred column on warm canvas, serif headline, mono kicker, ember primary CTA. All errors use the rust ErrorAlert pattern.</p>
+
+    <h4>Register flow</h4>
+    <p class="muted">Four-step stepped form with a top stepper. Each step has a bottom-anchored nav row (Back · Primary). Inline validation per step.</p>
+    <ol>
+      <li><b>Invite</b> — SSO buttons (placeholder), divider, invite code (mono, uppercase).</li>
+      <li><b>Account</b> — email + password with show/hide eye, four-segment strength meter (rust → mead → moss).</li>
+      <li><b>Identity</b> — <code>@username</code> with sanitisation, display name, live preview card showing how the avatar + name will appear in chat.</li>
+      <li><b>Welcome</b> — ember check, serif "Welcome, {name}.", CTA "Enter the hall" → routes to <code>/app</code>.</li>
+    </ol>
+
+    <h4>Login</h4>
+    <p class="muted">Single screen. SSO row above the password form. Show/hide password. Inline "Forgot?" link beside the password label.</p>
+
+    <h4>Bootstrap (first-run)</h4>
+    <p class="muted">Single screen, only reachable when <code>/auth/bootstrap-status</code> returns <code>needsBootstrap: true</code>. Two grouped cards: <b>The keeper</b> (display name, username, email, password) and <b>The room</b> (first server name). CTA: "Open the doors".</p>
+
+    <div class="callout"><div class="ico">!</div><div class="body"><b>Bootstrap is one-time.</b> Once any user exists, the endpoint refuses further calls and the route redirects to login. Don't add post-bootstrap state to this route — put it in an onboarding step instead.</div></div>
+  </div>
+</section>
+
+<!-- SURFACES -->
+<section id="surfaces">
+  <div class="sec-head"><div class="num">11</div><h2>Product routes</h2></div>
+  <p class="sub">The non-shell surfaces. Each is a route under <code>/app</code> and reuses the shell, the form atoms, and the message stack — no per-route chrome.</p>
+
+  <h3 id="app-home">app-home <span class="id">routes/app-home.tsx</span></h3>
+  <p class="muted">Default landing for <code>/app</code> when no server is selected. A centred TavernLogo and a short prompt ("Pick a tavern from the rail to get started") on <code>bg-canvas</code>. No CTA — the rail is the affordance.</p>
+
+  <h3 id="server-home">server-home <span class="id">routes/server-home.tsx</span></h3>
+  <p class="muted">Per-server landing. Auto-redirects to the first text channel as soon as the channel list loads; otherwise renders the TavernLogo welcome with one of two messages: <em>"No channels yet — ask the server owner to create some."</em> or <em>"Pick a channel from the sidebar."</em></p>
+
+  <h3 id="channel-page">channel-page <span class="id">routes/channel-page.tsx</span></h3>
+  <p class="muted">Hosts the <a href="#cmp-message">MessageList</a>, <a href="#cmp-typing">TypingIndicator</a>, and <a href="#cmp-composer">MessageComposer</a> in the centre column. All visual rules for messages live in the message component sections.</p>
+
+  <h3 id="voice-page">voice-page <span class="id">routes/voice-page.tsx</span></h3>
+  <p class="muted">Thin wrapper that mounts <a href="#cmp-voice">VoiceRoom</a> with the channel ID and name. Owns the <code>onLeave</code> callback that navigates back to the server's first text channel. No additional chrome — VoiceRoom fills the column.</p>
+
+  <h3 id="search-page">search-page <span class="id">routes/search-page.tsx</span></h3>
+  <p class="muted">Server-scoped full-text message search.</p>
+  <ul>
+    <li><b>Header</b> — <code>Search</code> glyph + serif "Search".</li>
+    <li><b>Input</b> — <code>autoFocus</code>, full-width <code>.input</code>, placeholder <em>"Search messages on this server (min 2 chars)…"</em></li>
+    <li><b>Debounce</b> — 250ms after typing stops; minimum 2 chars; max 30 results.</li>
+    <li><b>Result row</b> — <code>.card</code> with mead channel link (<code>#room-name</code>), mono timestamp, message body (whitespace preserved), and an attachment count line when applicable.</li>
+  </ul>
+  <table class="tbl">
+    <thead><tr><th>State</th><th>Copy / treatment</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">empty</td><td class="desc">No body — just the input. Don't show "0 results" until the user has typed.</td></tr>
+      <tr><td class="tok">loading</td><td class="desc">"Searching…" in <code>fg-muted</code>.</td></tr>
+      <tr><td class="tok">no matches</td><td class="desc">"No matches." in <code>fg-muted</code>. Calmer than "0 results".</td></tr>
+      <tr><td class="tok">error</td><td class="desc">Rust line, no card chrome.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 id="campaigns-page">campaigns-page <span class="id">routes/campaigns-page.tsx</span></h3>
+  <p class="muted">Two-pane: left list of campaigns for the server, right detail for the active campaign. Detail has three tabs.</p>
+  <ul>
+    <li><b>List pane</b> — <code>Swords</code> glyph header + "New campaign" primary button → <a href="#cmp-create">CreateCampaignModal</a>. Items are bordered cards with title (serif) + system tag + member count.</li>
+    <li><b>Sessions tab</b> — chronological list of past sessions and the next scheduled. RSVP buttons (Yes / Maybe / No) with mead/lavender/rust accents. Recap field per past session (markdown).</li>
+    <li><b>Notes tab</b> — markdown notes with visibility toggle (DM-only / players / public) and a pin toggle. Pinned notes float to the top of the list.</li>
+    <li><b>Handouts tab</b> — file uploads via <code>uploadFile()</code> from <code>lib/uploads</code>. Each handout has a visibility chip and a download link.</li>
+  </ul>
+
+  <h3 id="games-page">games-page <span class="id">routes/games-page.tsx</span></h3>
+  <p class="muted">Board-game library + scheduled game nights. <code>Dice5</code> glyph header.</p>
+  <ul>
+    <li><b>Library</b> — filter chips for player count and max play time (both numeric inputs). Game cards: cover art, name (serif), player range, play time, owner.</li>
+    <li><b>Game nights</b> — upcoming and past. Each card: scheduled time, host, RSVP buttons, and a "candidate games" list where members can vote with a thumbs-up. The host can lock in a candidate to convert it to the chosen game.</li>
+    <li><b>Inline modals</b> — <code>CreateBoardGameModal</code> and <code>CreateGameNightModal</code> live in this file today; flagged for extraction (see <a href="#cmp-create">Create… modals</a>).</li>
+  </ul>
+
+  <h3 id="moderation-page">moderation-page <span class="id">routes/moderation-page.tsx</span></h3>
+  <p class="muted"><code>Shield</code> glyph header. Two tabs: <b>Queue</b> and <b>Audit log</b>.</p>
+  <ul>
+    <li><b>Queue tab</b> — open reports. Each row: target type + target preview, reporter, category badge, age. Bulk select supports four actions: <em>Dismiss</em>, <em>Warn</em>, <em>Block</em>, <em>Quarantine</em>. Rust on Block; mead on Warn; ghost on Dismiss; ember on Quarantine.</li>
+    <li><b>Audit tab</b> — read-only chronological log: timestamp, action, actor, target. No filters in v1.</li>
+  </ul>
+
+  <h3 id="server-settings-page">server-settings-page <span class="id">routes/server-settings-page.tsx</span></h3>
+  <p class="muted"><code>Settings</code> glyph header with four tabs: <b>Roles · Members · Emoji · Safety policy</b>.</p>
+  <ul>
+    <li><b>Roles tab</b> — role list with colour swatch + name + member count. Detail pane is a permissions checkgrid covering all 34 permission bitflags from <code>@tavern/shared</code>. Drag-to-reorder for role hierarchy.</li>
+    <li><b>Members tab</b> — server members with avatar, display name, current role chips. Click a chip to edit; primary action is "Assign role".</li>
+    <li><b>Emoji tab</b> — custom emoji grid + an upload button (single image, &lt; 256KB after server-side resize).</li>
+    <li><b>Safety policy tab</b> — six toggles for the local Trust &amp; Safety Core (link previews, image scanning, etc.) and a profanity-filter dropdown (off / mild / strict). Save is debounced — no per-toggle network call.</li>
+  </ul>
+
+  <div class="callout note"><div class="ico">i</div><div class="body"><b>Permission gating.</b> Each route checks the relevant permission bitflag at mount and redirects to the channel page with a rust toast ("You don't have access to that.") on denial. The check happens in the route component, not the shell — keep it that way so the shell stays presentational.</div></div>
+</section>
+
+<!-- FOLLOWUPS -->
+<section id="followups">
+  <div class="sec-head"><div class="num">10</div><h2>Open follow-ups</h2></div>
+  <p class="sub">Not blocking design — these are backend, integration, or product decisions that the visual layer is already ready for. Each one is a self-contained PR.</p>
+  <table class="tbl">
+    <thead><tr><th>Item</th><th>Owner</th><th>What's needed</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">SSO endpoints</td><td class="val">backend</td><td class="desc">Google / GitHub / Discord OAuth routes + redirect handlers in <code>auth.ts</code>. UI buttons exist (Login + Register).</td></tr>
+      <tr><td class="tok">Password reset</td><td class="val">backend + UI</td><td class="desc">Reset request screen + email flow. Login "Forgot?" link is currently <code>href="#"</code>.</td></tr>
+      <tr><td class="tok">/notifications API</td><td class="val">backend</td><td class="desc">Endpoint + realtime topic. <code>NotificationInbox</code> runs on mock fixture until wired.</td></tr>
+      <tr><td class="tok">Theme + density wiring</td><td class="val">frontend</td><td class="desc">Settings → Appearance is local state. Needs theme provider writing a class to <code>&lt;html&gt;</code> + density data-attribute the CSS hooks into.</td></tr>
+      <tr><td class="tok">Avatar upload</td><td class="val">backend</td><td class="desc">Upload endpoint + storage. Placeholder button is disabled.</td></tr>
+      <tr><td class="tok">Per-tab "mark all read"</td><td class="val">frontend</td><td class="desc">Inbox only has global mark-all. Per-tab is a small addition.</td></tr>
+      <tr><td class="tok">Member hovercard</td><td class="val">design + frontend</td><td class="desc">Hovering a mention or member name should lift a hovercard. Not yet specced.</td></tr>
+      <tr><td class="tok">Empty-state illustrations</td><td class="val">design</td><td class="desc">Three or four serif-glyph illustrations for empty rooms, empty inbox, no search results. Currently text only.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>tavern · design system · v1.0 · handoff · 2026 · maintained alongside <code style="background:transparent;color:var(--mead);font-size:11px">CLAUDE.md</code></footer>
+
+</main>
+</div>
+
+<script>
+// Scroll-spy: highlight the TOC link whose section is most visible.
+const links = [...document.querySelectorAll('.toc a[href^="#"]')];
+const sections = links
+  .map(a => document.querySelector(a.getAttribute('href')))
+  .filter(Boolean);
+const visibility = new Map(sections.map(s => [s.id, 0]));
+
+function setActive(id) {
+  links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + id));
+}
+
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => visibility.set(e.target.id, e.intersectionRatio));
+  let bestId = null, bestRatio = 0;
+  for (const [id, ratio] of visibility) {
+    if (ratio > bestRatio) { bestRatio = ratio; bestId = id; }
+  }
+  if (bestId) setActive(bestId);
+}, { rootMargin: '-20% 0px -60% 0px', threshold: [0, 0.25, 0.5, 0.75, 1] });
+
+sections.forEach(s => io.observe(s));
+</script>
+</body>
+</html>

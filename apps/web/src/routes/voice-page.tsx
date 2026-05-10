@@ -14,7 +14,7 @@ export function VoicePage(): JSX.Element {
   });
 
   if (!serverId || !channelId) {
-    return <div className="grid h-full place-items-center">Pick a voice channel.</div>;
+    return <div className="grid h-full place-items-center">Pick a voice room.</div>;
   }
 
   return (

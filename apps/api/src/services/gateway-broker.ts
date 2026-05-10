@@ -124,7 +124,6 @@ class LazyBroker implements GatewayBrokerHandle {
     } catch (err) {
       // Stay with in-process if Redis can't be reached — better to keep
       // serving than to fail startup.
-      // eslint-disable-next-line no-console
       console.warn('[gateway-broker] falling back to in-process broker:', err);
     }
   }

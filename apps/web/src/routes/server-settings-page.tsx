@@ -23,13 +23,13 @@ export function ServerSettingsPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
   const [tab, setTab] = useState<Tab>('roles');
 
-  if (!serverId) return <div className="p-12">Pick a server.</div>;
+  if (!serverId) return <div className="p-12">Pick a den.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-        <Settings size={16} className="text-tavern-mist" />
-        <span className="font-semibold">Server settings</span>
+      <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
+        <Settings size={16} className="text-fg-muted" />
+        <span className="font-serif font-medium">Den settings</span>
         <div className="ml-auto flex gap-1 text-xs">
           <TabButton active={tab === 'roles'} onClick={() => setTab('roles')}>
             <Tag size={12} /> Roles
@@ -69,7 +69,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={`inline-flex items-center gap-1 rounded px-2 py-1 ${
-        active ? 'bg-tavern-oak text-tavern-parchment' : 'text-tavern-mist hover:bg-tavern-oak'
+        active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'
       }`}
     >
       {children}
@@ -80,7 +80,7 @@ function TabButton({
 // ---- Roles ----------------------------------------------------------------
 
 const ROLE_FLAGS: Array<{ flag: bigint; label: string }> = [
-  { flag: Permission.VIEW_CHANNEL, label: 'View channels' },
+  { flag: Permission.VIEW_CHANNEL, label: 'View rooms' },
   { flag: Permission.SEND_MESSAGES, label: 'Send messages' },
   { flag: Permission.READ_MESSAGE_HISTORY, label: 'Read history' },
   { flag: Permission.ATTACH_FILES, label: 'Attach files' },
@@ -88,9 +88,9 @@ const ROLE_FLAGS: Array<{ flag: bigint; label: string }> = [
   { flag: Permission.MENTION_EVERYONE, label: 'Mention everyone' },
   { flag: Permission.MANAGE_MESSAGES, label: 'Manage messages' },
   { flag: Permission.SEND_VOICE_MESSAGES, label: 'Send voice messages' },
-  { flag: Permission.MANAGE_CHANNELS, label: 'Manage channels' },
+  { flag: Permission.MANAGE_CHANNELS, label: 'Manage rooms' },
   { flag: Permission.MANAGE_ROLES, label: 'Manage roles' },
-  { flag: Permission.MANAGE_SERVER, label: 'Manage server' },
+  { flag: Permission.MANAGE_SERVER, label: 'Manage den' },
   { flag: Permission.CREATE_INVITES, label: 'Create invites' },
   { flag: Permission.MANAGE_EMOJIS, label: 'Manage emojis' },
   { flag: Permission.KICK_MEMBERS, label: 'Kick members' },
@@ -192,7 +192,7 @@ function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
     <div className="space-y-4">
       <div className="flex items-end gap-2">
         <label className="flex-1 text-sm">
-          <span className="mb-1 inline-block text-tavern-mist">New role name</span>
+          <span className="mb-1 inline-block text-fg-muted">New role name</span>
           <input
             className="input"
             value={newName}
@@ -209,7 +209,7 @@ function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
           Create role
         </button>
       </div>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
         {roles.map((r) => (
           <li key={r.id} className="card space-y-2">
@@ -218,11 +218,11 @@ function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
                 className="h-4 w-4 rounded-full"
                 style={{ background: `#${r.color.toString(16).padStart(6, '0')}` }}
               />
-              <span className="font-semibold">{r.name}</span>
+              <span className="font-serif font-medium">{r.name}</span>
               {r.isEveryone ? (
-                <span className="text-xs uppercase tracking-wider text-tavern-mead">default</span>
+                <span className="text-xs uppercase tracking-wider text-mead">default</span>
               ) : null}
-              <span className="ml-auto text-xs text-tavern-mist">
+              <span className="ml-auto text-xs text-fg-muted">
                 {countPerms(parsePermissions(r.permissions))} permissions
               </span>
               <button
@@ -233,7 +233,7 @@ function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
               </button>
               {!r.isEveryone ? (
                 <button
-                  className="btn-ghost text-xs text-red-300"
+                  className="btn-ghost text-xs text-danger"
                   onClick={() => void deleteRole(r)}
                   disabled={busy}
                 >
@@ -275,12 +275,12 @@ function RoleEditor({
   }
 
   return (
-    <div className="space-y-2 border-t border-tavern-oak pt-3">
+    <div className="space-y-2 border-t border-subtle pt-3">
       <div className="grid grid-cols-1 gap-1 text-sm sm:grid-cols-2 lg:grid-cols-3">
         {ROLE_FLAGS.map(({ flag, label }) => (
           <label
             key={String(flag)}
-            className="flex items-center gap-2 rounded px-2 py-1 hover:bg-tavern-oak"
+            className="flex items-center gap-2 rounded px-2 py-1 hover:bg-raised"
           >
             <input
               type="checkbox"
@@ -340,17 +340,20 @@ function MembersPanel({ serverId }: { serverId: string }): JSX.Element {
 
   return (
     <div className="space-y-4">
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
         {members.map((m) => (
           <li key={m.userId} className="card flex flex-wrap items-center gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-tavern-oak text-sm font-semibold">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-raised font-serif text-sm font-semibold">
               {m.userId.slice(-2).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium">{m.nickname ?? m.userId.slice(0, 8)}</div>
-              <div className="text-xs text-tavern-mist">
-                joined {new Date(m.joinedAt).toLocaleDateString()}
+              <div className="truncate font-serif font-medium">{m.nickname ?? m.userId.slice(0, 8)}</div>
+              <div className="text-xs text-fg-muted">
+                joined{' '}
+                <time className="font-mono">
+                  {new Date(m.joinedAt).toLocaleDateString()}
+                </time>
               </div>
             </div>
             <div className="flex flex-wrap gap-1">
@@ -363,8 +366,8 @@ function MembersPanel({ serverId }: { serverId: string }): JSX.Element {
                       key={r.id}
                       className={`rounded border px-2 py-0.5 text-xs ${
                         has
-                          ? 'border-tavern-ember bg-tavern-ember/10 text-tavern-mead'
-                          : 'border-tavern-oak text-tavern-mist hover:bg-tavern-oak'
+                          ? 'border-ember bg-tint-ember text-mead'
+                          : 'border-subtle text-fg-muted hover:bg-raised'
                       }`}
                       onClick={() => {
                         const next = has
@@ -452,18 +455,18 @@ function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
         />
         <span className="btn-primary">{busy ? 'Uploading…' : 'Upload custom emoji'}</span>
       </label>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
-      <p className="text-xs text-tavern-mist">
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
+      <p className="text-xs text-fg-muted">
         After upload, the worker scans &amp; processes the image. It may take a few seconds before
         the emoji shows below.
       </p>
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
         {emojis.map((e) => (
           <li key={e.id} className="card flex items-center gap-2">
-            <div className="grid h-10 w-10 place-items-center rounded bg-tavern-oak text-lg">🖼</div>
+            <div className="grid h-10 w-10 place-items-center rounded bg-raised text-lg">🖼</div>
             <div className="min-w-0 flex-1 truncate text-sm">:{e.name}:</div>
             <button
-              className="text-xs text-red-300 hover:underline"
+              className="text-xs text-danger hover:underline"
               onClick={() => void remove(e.id)}
             >
               ×
@@ -514,9 +517,9 @@ function SafetyPolicyPanel({ serverId }: { serverId: string }): JSX.Element {
 
   if (!policy) {
     return error ? (
-      <p className="text-sm text-red-400">{error}</p>
+      <p className="text-sm text-danger">{error}</p>
     ) : (
-      <p className="text-tavern-mist">Loading…</p>
+      <p className="text-fg-muted">Loading…</p>
     );
   }
 
@@ -535,7 +538,7 @@ function SafetyPolicyPanel({ serverId }: { serverId: string }): JSX.Element {
       | 'stripImageMetadata'
     >;
   }): JSX.Element => (
-    <label className="flex cursor-pointer items-center justify-between rounded border border-tavern-oak px-3 py-2 hover:bg-tavern-oak">
+    <label className="flex cursor-pointer items-center justify-between rounded border border-subtle px-3 py-2 hover:bg-raised">
       <span className="text-sm">{label}</span>
       <input
         type="checkbox"
@@ -548,17 +551,17 @@ function SafetyPolicyPanel({ serverId }: { serverId: string }): JSX.Element {
 
   return (
     <div className="space-y-4">
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-danger">{error}</p> : null}
       <div className="grid gap-2 sm:grid-cols-2">
         <Toggle label="SFW only" field="sfwOnly" />
-        <Toggle label="Allow NSFW channels" field="allowNsfwChannels" />
+        <Toggle label="Allow NSFW rooms" field="allowNsfwChannels" />
         <Toggle label="Spoiler tags enabled" field="spoilerTagsEnabled" />
         <Toggle label="Block executable uploads" field="blockExecutableUploads" />
         <Toggle label="Block archive uploads" field="blockArchiveUploads" />
         <Toggle label="Strip image EXIF metadata" field="stripImageMetadata" />
       </div>
       <label className="block">
-        <span className="mb-1 inline-block text-tavern-mist text-sm">Profanity filter</span>
+        <span className="mb-1 inline-block text-fg-muted text-sm">Profanity filter</span>
         <select
           className="input w-40"
           value={policy.profanityFilter}

@@ -33,7 +33,11 @@ export function TypingIndicator({ channelId }: { channelId: string }): JSX.Eleme
         : `${others.length} people are typing…`;
 
   return (
-    <div className="px-4 py-1 text-xs italic text-tavern-mist">
+    <div
+      role="status"
+      aria-live="polite"
+      className="px-4 py-1 text-xs italic text-fg-muted"
+    >
       <span aria-hidden className="mr-1 inline-block animate-pulse">●</span>
       {label}
     </div>
