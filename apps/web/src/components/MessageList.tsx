@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Dice5 } from 'lucide-react';
+import { Dice5, Flag, Trash2 } from 'lucide-react';
 import type { Message } from '@tavern/shared';
-import { api } from '../lib/api-client.js';
+import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { useAuth } from '../lib/auth.js';
+import { AttachmentView } from './AttachmentView.js';
+import { ReactionBar } from './ReactionBar.js';
+import { ReportDialog } from './ReportDialog.js';
 
 interface Props {
   channelId: string;
@@ -16,6 +19,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
   const me = useAuth((s) => s.me);
 
   const [loading, setLoading] = useState(false);
+  const [reportTarget, setReportTarget] = useState<Message | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -25,9 +29,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
       .then((data) => {
         if (!cancelled) setMessages(channelId, data);
       })
-      .catch(() => {
-        // surface errors elsewhere
-      })
+      .catch(() => undefined)
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -41,11 +43,10 @@ export function MessageList({ channelId }: Props): JSX.Element {
   const virtualizer = useVirtualizer({
     count: sorted.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 64,
+    estimateSize: () => 80,
     overscan: 8,
   });
 
-  // Auto-stick to bottom on new messages.
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
@@ -70,25 +71,41 @@ export function MessageList({ channelId }: Props): JSX.Element {
             <div
               key={message.id}
               className="absolute left-0 right-0"
-              style={{ transform: `translateY(${row.start}px)`, paddingBottom: '0.75rem' }}
+              style={{ transform: `translateY(${row.start}px)`, paddingBottom: '0.5rem' }}
               ref={virtualizer.measureElement}
               data-index={row.index}
             >
-              <MessageRow message={message} mine={me?.id === message.authorId} />
+              <MessageRow
+                message={message}
+                mine={me?.id === message.authorId}
+                onReport={() => setReportTarget(message)}
+              />
             </div>
           );
         })}
       </div>
+      {reportTarget ? (
+        <ReportDialog
+          targetType="message"
+          targetId={reportTarget.id}
+          serverId={reportTarget.serverId}
+          onClose={() => setReportTarget(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function MessageRow({ message, mine }: { message: Message; mine: boolean }): JSX.Element {
+interface RowProps {
+  message: Message;
+  mine: boolean;
+  onReport: () => void;
+}
+
+function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
   if (message.deletedAt) {
     return (
-      <div className="rounded px-3 py-2 text-sm italic text-tavern-mist">
-        message deleted
-      </div>
+      <div className="rounded px-3 py-2 text-sm italic text-tavern-mist">message deleted</div>
     );
   }
   if (message.type === 'dice_roll') {
@@ -99,6 +116,11 @@ function MessageRow({ message, mine }: { message: Message; mine: boolean }): JSX
           <span className="font-mono">{message.content}</span>
         </div>
       </div>
+    );
+  }
+  if (message.type === 'system') {
+    return (
+      <div className="px-3 py-1 text-sm italic text-tavern-mist">{message.content}</div>
     );
   }
   return (
@@ -116,23 +138,41 @@ function MessageRow({ message, mine }: { message: Message; mine: boolean }): JSX
           </span>
           {message.editedAt ? <span className="text-xs text-tavern-mist">(edited)</span> : null}
         </div>
-        <div className="whitespace-pre-wrap break-words text-sm text-tavern-parchment">
-          {message.content}
-        </div>
-        {message.reactions.length > 0 ? (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {message.reactions.map((r) => (
-              <span
-                key={r.emoji}
-                className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
-                  r.me ? 'border-tavern-ember bg-tavern-ember/10' : 'border-tavern-oak'
-                }`}
-              >
-                <span>{r.emoji.startsWith('custom:') ? '🖼️' : r.emoji}</span>
-                <span className="font-mono">{r.count}</span>
-              </span>
-            ))}
+        {message.content ? (
+          <div className="whitespace-pre-wrap break-words text-sm text-tavern-parchment">
+            {message.content}
           </div>
+        ) : null}
+        {message.attachmentIds.map((id) => (
+          <AttachmentView key={id} id={id} />
+        ))}
+        <ReactionBar message={message} />
+      </div>
+      <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={onReport}
+          aria-label="Report message"
+          title="Report"
+          className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+        >
+          <Flag size={14} />
+        </button>
+        {mine ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('Delete this message?')) return;
+              api(`/messages/${message.id}`, { method: 'DELETE' }).catch((err) => {
+                if (err instanceof ApiError) alert(err.message);
+              });
+            }}
+            aria-label="Delete message"
+            title="Delete"
+            className="rounded p-1 text-tavern-mist hover:bg-tavern-oak"
+          >
+            <Trash2 size={14} />
+          </button>
         ) : null}
       </div>
     </div>

@@ -3,13 +3,19 @@ import { useParams } from '@tanstack/react-router';
 import { Hash } from 'lucide-react';
 import { MessageList } from '../components/MessageList.js';
 import { MessageComposer } from '../components/MessageComposer.js';
+import { MemberSidebar } from '../components/MemberSidebar.js';
 import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import type { Channel } from '@tavern/shared';
 
 export function ChannelPage(): JSX.Element {
-  const params = useParams({ strict: false }) as { channelId?: string };
+  const params = useParams({ strict: false }) as {
+    serverId?: string;
+    channelId?: string;
+  };
   const channelId = params.channelId;
+  const serverId = params.serverId;
+
   const channel = useRealtime((s) => {
     if (!channelId) return null;
     for (const list of Object.values(s.channelsByServer)) {
@@ -30,16 +36,19 @@ export function ChannelPage(): JSX.Element {
   if (!channelId) return <div className="grid h-full place-items-center">Pick a channel.</div>;
 
   return (
-    <>
-      <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
-        <Hash size={16} className="text-tavern-mist" />
-        <span className="font-semibold">{channel?.name ?? '…'}</span>
-        {channel?.topic ? (
-          <span className="ml-3 truncate text-sm text-tavern-mist">{channel.topic}</span>
-        ) : null}
-      </header>
-      <MessageList channelId={channelId} />
-      <MessageComposer channelId={channelId} />
-    </>
+    <div className="flex h-full min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-2 border-b border-tavern-oak px-4 py-3">
+          <Hash size={16} className="text-tavern-mist" />
+          <span className="font-semibold">{channel?.name ?? '…'}</span>
+          {channel?.topic ? (
+            <span className="ml-3 truncate text-sm text-tavern-mist">{channel.topic}</span>
+          ) : null}
+        </header>
+        <MessageList channelId={channelId} />
+        <MessageComposer channelId={channelId} />
+      </div>
+      {serverId ? <MemberSidebar serverId={serverId} /> : null}
+    </div>
   );
 }

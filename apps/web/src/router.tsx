@@ -12,6 +12,9 @@ import { AppHomePage } from './routes/app-home.js';
 import { ChannelPage } from './routes/channel-page.js';
 import { VoicePage } from './routes/voice-page.js';
 import { ServerHomePage } from './routes/server-home.js';
+import { CampaignsPage } from './routes/campaigns-page.js';
+import { GamesPage } from './routes/games-page.js';
+import { ModerationPage } from './routes/moderation-page.js';
 import { AuthGate } from './components/AuthGate.js';
 import { useAuth } from './lib/auth.js';
 
@@ -74,11 +77,37 @@ const voiceRoute = createRoute({
   component: VoicePage,
 });
 
+const campaignsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/servers/$serverId/campaigns',
+  component: CampaignsPage,
+});
+
+const gamesRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/servers/$serverId/games',
+  component: GamesPage,
+});
+
+const moderationRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/servers/$serverId/moderation',
+  component: ModerationPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   loginRoute,
   registerRoute,
-  appLayoutRoute.addChildren([appHomeRoute, serverHomeRoute, channelRoute, voiceRoute]),
+  appLayoutRoute.addChildren([
+    appHomeRoute,
+    serverHomeRoute,
+    channelRoute,
+    voiceRoute,
+    campaignsRoute,
+    gamesRoute,
+    moderationRoute,
+  ]),
 ]);
 
 export const router = createRouter({ routeTree });
