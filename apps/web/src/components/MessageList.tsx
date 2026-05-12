@@ -15,6 +15,8 @@ interface Props {
   channelId: string;
 }
 
+const EMPTY_MESSAGES: never[] = [];
+
 /**
  * Threshold for the sticky-scroll behaviour: if the user is within this many
  * pixels of the bottom we follow new messages; further up we leave them
@@ -23,7 +25,10 @@ interface Props {
 const STICK_THRESHOLD_PX = 120;
 
 export function MessageList({ channelId }: Props): JSX.Element {
-  const messages = useRealtime((s) => s.messagesByChannel[channelId] ?? []);
+  // Subscribe to the dict; the `?? []` fallback would otherwise return a
+  // fresh array each getSnapshot read and trip React's useSyncExternalStore.
+  const messagesByChannel = useRealtime((s) => s.messagesByChannel);
+  const messages = messagesByChannel[channelId] ?? EMPTY_MESSAGES;
   const setMessages = useRealtime((s) => s.setMessages);
   const me = useAuth((s) => s.me);
 

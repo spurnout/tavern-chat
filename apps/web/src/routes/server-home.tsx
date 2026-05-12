@@ -1,11 +1,19 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useRealtime } from '../lib/store.js';
 import { TavernLogo } from '../components/TavernLogo.js';
 
+const EMPTY_CHANNELS: never[] = [];
+
 export function ServerHomePage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
-  const channels = useRealtime((s) => (serverId ? (s.channelsByServer[serverId] ?? []) : []));
+  // Subscribe to the dict; `?? []` would otherwise return a fresh array on
+  // every getSnapshot read and infinite-loop React's useSyncExternalStore.
+  const channelsByServer = useRealtime((s) => s.channelsByServer);
+  const channels = useMemo(
+    () => (serverId ? (channelsByServer[serverId] ?? EMPTY_CHANNELS) : EMPTY_CHANNELS),
+    [channelsByServer, serverId],
+  );
   const navigate = useNavigate();
 
   // Auto-select first text channel when one shows up.

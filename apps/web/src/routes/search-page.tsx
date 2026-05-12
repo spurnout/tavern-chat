@@ -11,7 +11,8 @@ export function SearchPage(): JSX.Element {
   const [results, setResults] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const channels = useRealtime((s) => (serverId ? (s.channelsByServer[serverId] ?? []) : []));
+  const channelsByServer = useRealtime((s) => s.channelsByServer);
+  const channels = serverId ? (channelsByServer[serverId] ?? []) : [];
 
   // Debounced search + in-flight cancellation. FE-15: an AbortController
   // attached to the fetch is aborted on rapid re-typing so older queries

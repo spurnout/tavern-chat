@@ -3,10 +3,13 @@ import { useRealtime } from '../lib/store.js';
 import { useAuth } from '../lib/auth.js';
 
 const TYPING_TTL_MS = 6_000;
+const EMPTY_TYPING: Record<string, number> = {};
 
 export function TypingIndicator({ channelId }: { channelId: string }): JSX.Element | null {
   const meId = useAuth((s) => s.me?.id ?? null);
-  const typing = useRealtime((s) => s.typingByChannel[channelId] ?? {});
+  // Subscribe to the dict; `?? {}` would create a fresh object every read.
+  const typingByChannel = useRealtime((s) => s.typingByChannel);
+  const typing = typingByChannel[channelId] ?? EMPTY_TYPING;
   const expire = useRealtime((s) => s.expireTyping);
   const [, force] = useState(0);
 

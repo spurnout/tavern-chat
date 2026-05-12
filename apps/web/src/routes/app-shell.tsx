@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router';
 import {
   Dice5,
@@ -29,7 +29,13 @@ export function AppShell(): JSX.Element {
   const logout = useAuth((s) => s.logout);
   const navigate = useNavigate();
 
-  const servers = useRealtime((s) => Object.values(s.serversById));
+  // Selector returns the dict directly; the Object.values derivation runs
+  // AFTER subscription so React's useSyncExternalStore compares the same
+  // dict reference between renders. The previous code inlined Object.values
+  // into the selector, returning a fresh array on every getSnapshot call,
+  // which made React think the store had changed every render and looped.
+  const serversById = useRealtime((s) => s.serversById);
+  const servers = useMemo(() => Object.values(serversById), [serversById]);
   const channelsByServer = useRealtime((s) => s.channelsByServer);
   const upsertServer = useRealtime((s) => s.upsertServer);
   const upsertChannels = useRealtime((s) => s.upsertChannels);
