@@ -1,0 +1,69 @@
+# Tavern CI — INF-009.
+#
+# Runs on every PR + push to main. Mirrors the local-gate command from the
+# review plan: typecheck, lint, test (unit). Integration tests are skipped
+# here because they require a real Postgres + Redis; those run nightly or
+# on a dedicated workflow when the testcontainers harness lands.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tavern
+          POSTGRES_PASSWORD: tavern-dev
+          POSTGRES_DB: tavern
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tavern -d tavern"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://tavern:tavern-dev@localhost:5432/tavern
+      JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET || 'ci-only-access-secret-48-bytes-of-hex-just-for-tests-padding-padding' }}
+      JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET || 'ci-only-refresh-secret-48-bytes-of-hex-just-for-tests-padding-padding' }}
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @tavern/db generate
+
+      - run: pnpm --filter @tavern/db migrate
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      - run: pnpm test
