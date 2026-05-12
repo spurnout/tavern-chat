@@ -18,6 +18,7 @@ import {
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
+import { awaitTerminal } from '../lib/attachment-ready.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
 
 type Tab = 'roles' | 'members' | 'bans' | 'emoji' | 'policy';
@@ -426,15 +427,25 @@ function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
     setError(null);
     try {
       const att = await uploadFile({ file, serverId, kind: 'image' });
-      // Wait briefly for worker to flip to ready (best-effort).
-      await new Promise((r) => setTimeout(r, 800));
+      // FE-17: wait for the worker's ATTACHMENT_READY gateway event instead
+      // of a fixed 800ms poll. The bus auto-resolves a short retry-poll
+      // fallback if the gateway isn't connected (e.g. cold-start, dev with
+      // no Redis), so a brief network blip doesn't strand the upload.
+      const status = att.status === 'ready' ? 'ready' : await awaitTerminal(att.id, 15_000).catch(() => 'pending');
+      if (status !== 'ready') {
+        throw new Error(
+          status === 'pending'
+            ? 'Worker is still processing the upload — try again in a moment.'
+            : `Attachment ${status} during processing.`,
+        );
+      }
       await api(`/servers/${serverId}/emojis`, {
         method: 'POST',
         body: { name, attachmentId: att.id },
       });
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Upload failed');
+      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Upload failed');
     } finally {
       setBusy(false);
     }

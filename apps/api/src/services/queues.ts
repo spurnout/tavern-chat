@@ -17,6 +17,7 @@ import { ClamAVScanner, runScanJob, type StorageBackend } from '@tavern/media';
 import type { FastifyBaseLogger } from 'fastify';
 import { prisma } from '@tavern/db';
 import type { Config } from '../config.js';
+import { gatewayBroker } from './gateway-broker.js';
 
 // Both pino's Logger and Fastify's FastifyBaseLogger satisfy the small subset
 // the pipeline uses. Accept either.
@@ -67,6 +68,17 @@ class InMemoryQueueClient implements QueueClient {
           prisma: prisma as unknown as Parameters<typeof runScanJob>[1]['prisma'],
           logger: this.deps.logger,
           allowUnscanned: this.deps.allowUnscanned,
+          // FE-17: notify the uploader's gateway connection that the
+          // attachment is ready (or terminally failed). Single-replica mode:
+          // we publish directly to the in-process broker, which the gateway
+          // already subscribes to.
+          onTerminalStatus: ({ attachmentId: id, uploaderId, status }) => {
+            gatewayBroker.publish({
+              type: 'ATTACHMENT_READY',
+              userId: uploaderId,
+              data: { attachmentId: id, status },
+            });
+          },
         },
       ).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);

@@ -88,7 +88,24 @@ export const GatewayDispatchEvent = {
    */
   GUILD_BAN_ADD: 'GUILD_BAN_ADD',
   GUILD_BAN_REMOVE: 'GUILD_BAN_REMOVE',
+
+  /**
+   * FE-17 — emitted to the uploader when their attachment finishes the
+   * worker pipeline (scan + image normalisation) and flips to status='ready'.
+   * Lets the SPA replace `setTimeout(800)` polls with a deterministic event
+   * for flows that need the attachment fully processed before they continue
+   * (emoji upload, voice-message playback, etc.).
+   */
+  ATTACHMENT_READY: 'ATTACHMENT_READY',
 } as const;
+
+export const attachmentReadyPayloadSchema = z.object({
+  attachmentId: z.string().min(1),
+  /** Final attachment status — usually 'ready', but may be 'failed' / 'blocked' / 'quarantined'. */
+  status: z.string().min(1),
+});
+
+export type AttachmentReadyPayload = z.infer<typeof attachmentReadyPayloadSchema>;
 
 export type GatewayDispatchEventName =
   (typeof GatewayDispatchEvent)[keyof typeof GatewayDispatchEvent];

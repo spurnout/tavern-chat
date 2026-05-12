@@ -61,6 +61,14 @@ async function main(): Promise<void> {
 
   const connection = new IORedis(cfg.REDIS_URL, { maxRetriesPerRequest: null });
 
+  // FE-17: a second Redis publisher so the worker can fan an
+  // ATTACHMENT_READY event into the same `tavern:gateway` channel the api
+  // process is already subscribed to. Going through Redis (rather than
+  // requiring the api process to poll DB) is the multi-replica equivalent
+  // of the in-process broker callback used in single-replica mode.
+  const gatewayPublisher = new IORedis(cfg.REDIS_URL, { maxRetriesPerRequest: null });
+  const GATEWAY_CHANNEL = 'tavern:gateway';
+
   const processor: Processor<{ attachmentId: string }> = async (job) => {
     log.info({ jobId: job.id, attachmentId: job.data.attachmentId }, 'scan job received');
     await runScanJob(job.data, {
@@ -72,6 +80,20 @@ async function main(): Promise<void> {
       prisma: prisma as unknown as Parameters<typeof runScanJob>[1]['prisma'],
       logger: log,
       allowUnscanned: cfg.ALLOW_UNSCANNED_UPLOADS,
+      onTerminalStatus: ({ attachmentId, uploaderId, status }) => {
+        void gatewayPublisher
+          .publish(
+            GATEWAY_CHANNEL,
+            JSON.stringify({
+              type: 'ATTACHMENT_READY',
+              userId: uploaderId,
+              data: { attachmentId, status },
+            }),
+          )
+          .catch((err: unknown) => {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, 'gateway publish failed');
+          });
+      },
     });
   };
 
@@ -137,13 +159,14 @@ async function main(): Promise<void> {
     log.info({ signal }, 'shutting down worker');
     await Promise.all([worker.close(), maintenanceWorker.close(), maintenanceQueue.close()]);
     // worker.close() above settles all in-flight jobs; only then is it safe
-    // to drop the Redis connection. `quit` waits for pending commands to be
+    // to drop the Redis connections. `quit` waits for pending commands to be
     // acked rather than `disconnect`'s fire-and-forget.
     try {
-      await connection.quit();
+      await Promise.all([connection.quit(), gatewayPublisher.quit()]);
     } catch (err) {
       log.warn({ err }, 'redis quit failed; forcing disconnect');
       connection.disconnect();
+      gatewayPublisher.disconnect();
     }
     process.exit(0);
   };

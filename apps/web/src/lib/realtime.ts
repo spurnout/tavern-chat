@@ -1,4 +1,5 @@
 import {
+  attachmentReadyPayloadSchema,
   voiceStateGatewayPayloadSchema,
   type Channel,
   type GatewayDispatchEventName,
@@ -7,6 +8,7 @@ import {
 } from '@tavern/shared';
 import { useRealtime } from './store.js';
 import { GatewayClient } from './gateway-client.js';
+import { resolveTerminal } from './attachment-ready.js';
 
 let client: GatewayClient | null = null;
 
@@ -87,6 +89,15 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
         return;
       }
       store.applyVoiceState(parsed.data);
+      return;
+    }
+    case 'ATTACHMENT_READY': {
+      // FE-17: resolve any awaitTerminal() promise registered for this
+      // attachmentId. The bus is single-purpose and short-lived; callers
+      // race against their own timeout, so a missed event self-cleans.
+      const parsed = attachmentReadyPayloadSchema.safeParse(data);
+      if (!parsed.success) return;
+      resolveTerminal(parsed.data.attachmentId, parsed.data.status);
       return;
     }
     default:

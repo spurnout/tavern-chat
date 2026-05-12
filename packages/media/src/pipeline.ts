@@ -33,6 +33,17 @@ export interface PipelineDeps {
   logger: Logger;
   /** When true, accept uploads even if no scanner is reachable. */
   allowUnscanned: boolean;
+  /**
+   * FE-17: invoked once the attachment reaches a terminal status (ready /
+   * failed / blocked / quarantined). Callers wire this to a gateway-broker
+   * publish so the SPA can replace `setTimeout` polls with a deterministic
+   * `ATTACHMENT_READY` event.
+   */
+  onTerminalStatus?: (input: {
+    attachmentId: string;
+    uploaderId: string;
+    status: 'ready' | 'failed' | 'blocked' | 'quarantined';
+  }) => void;
 }
 
 /**
@@ -57,6 +68,7 @@ interface AttachmentRow {
   status: string;
   storageBucket: string;
   storageKey: string;
+  uploaderId: string;
 }
 
 interface AttachmentUpdate {
@@ -211,6 +223,11 @@ export async function runScanJob(input: ScanJobInput, deps: PipelineDeps): Promi
         scanResult: { clean: true },
       },
     });
+    deps.onTerminalStatus?.({
+      attachmentId: att.id,
+      uploaderId: att.uploaderId,
+      status: 'ready',
+    });
   } catch (err) {
     deps.logger.error({ err, attachmentId: att.id }, 'scan job failed');
     await reject(deps, att, 'unexpected_error', 'failed');
@@ -246,5 +263,10 @@ async function reject(
   await deps.prisma.attachment.update({
     where: { id: att.id },
     data: { status, rejectionReason: reason, scannedAt: new Date() },
+  });
+  deps.onTerminalStatus?.({
+    attachmentId: att.id,
+    uploaderId: att.uploaderId,
+    status,
   });
 }
