@@ -15,6 +15,15 @@ this list. Items are ordered by impact.
 > Both paths share most of this list. Items only relevant to path 2 are
 > marked **(scaled)**.
 
+## Database extensions
+
+- [ ] `pg_trgm` is enabled on the Tavern database. The
+      `20260511193500_add_message_trgm` migration runs `CREATE EXTENSION
+      IF NOT EXISTS pg_trgm` automatically, so a `pnpm db:migrate` against a
+      stock Postgres 16+ install is sufficient. Without the extension, the
+      message-search GIN index won't apply and every search falls back to a
+      sequential scan on `Message.content`. (DB-003)
+
 ## Secrets
 
 - [ ] `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are 48+ random hex bytes,
@@ -22,7 +31,7 @@ this list. Items are ordered by impact.
 - [ ] `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` are freshly generated
       (`docker run --rm livekit/livekit-cli generate-keys`). Match between
       `LIVEKIT_*` env vars and `infra/livekit/livekit.yaml`'s `keys:` block.
-- [ ] MinIO `S3_ACCESS_KEY` / `S3_SECRET_KEY` are not the dev defaults.
+- [ ] Object storage `S3_ACCESS_KEY` / `S3_SECRET_KEY` are not the dev defaults (`tavernkey` / `tavern-dev-secret`).
 - [ ] Postgres password is not the dev default.
 - [ ] `.env` is `chmod 600`.
 - [ ] No secrets are baked into the docker images. Use `docker compose --env-file`
@@ -36,7 +45,7 @@ this list. Items are ordered by impact.
       (≥ 60s, larger than `HEARTBEAT_INTERVAL_MS`).
 - [ ] LiveKit UDP port `7882` is open from clients to the host.
       It cannot be proxied; it must reach the LiveKit container directly.
-- [ ] MinIO console (`:9001`) is **not** exposed to the public.
+- [ ] Garage admin API (`:3903`) is **not** exposed to the public.
 - [ ] Postgres / Redis / ClamAV are not exposed beyond the docker network.
 
 ## Storage
@@ -45,7 +54,7 @@ this list. Items are ordered by impact.
 - [ ] The quarantine bucket has read access locked down to API service
       identities only — clients should never get a signed URL for it.
 - [ ] Daily off-host backups of `tavern-media` are configured (e.g. mc mirror
-      to Backblaze B2, restic, or a second MinIO instance).
+      to Backblaze B2, restic, or a second Garage cluster).
 - [ ] Object lifecycle: orphaned `pending` attachments older than ~24h are
       deleted nightly. This isn't built; do it via a cron + mc.
 
@@ -97,19 +106,37 @@ Tavern's frontend is a Vite SPA served as static files. When fronting it:
 
 - [ ] Set a strict `Content-Security-Policy` that allows: `'self'` for scripts
       and styles, the API origin for `connect-src`, the LiveKit origin for
-      `connect-src` (ws/wss), and your MinIO public origin for `img-src`
-      / `media-src`.
+      `connect-src` (ws/wss). Attachments are served by the API itself
+      (`/api/_attachments/...`), so the API origin already covers `img-src`
+      / `media-src` — no separate object-storage origin needed in CSP.
 - [ ] Set `Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
       `Referrer-Policy: strict-origin-when-cross-origin`, and
       `Cross-Origin-Opener-Policy: same-origin`.
-- [ ] Cookies aren't currently used for auth; tokens live in `localStorage`.
-      If you change that, set `Secure; HttpOnly; SameSite=Lax`.
+- [ ] **Refresh token rides on the `tv_refresh` httpOnly+Secure+SameSite=Strict
+      cookie** (SEC-001). The access token is held only in memory by the SPA;
+      neither is in `localStorage`. If you fork and add a third token, follow
+      the same pattern.
+
+## Database tuning
+
+- [ ] Prisma connection pool sizing. Default is `num_cpus * 2 + 1` per
+      `PrismaClient`. For a multi-replica API behind Traefik with N replicas,
+      total live connections to Postgres = `N * (num_cpus * 2 + 1)`. Confirm
+      that is well under `max_connections` (default 100) — for a 4-replica
+      4-core deployment that's ~36 of 100, fine; for an 8-replica 8-core
+      deployment it's ~136 and you need either `max_connections=200` or
+      `?connection_limit=X` in `DATABASE_URL` to cap each replica.
+      DB-023.
+- [ ] `pg_trgm` extension installed (the `add_message_trgm` migration runs
+      `CREATE EXTENSION IF NOT EXISTS pg_trgm`; verify it applied). DB-003.
+- [ ] `AUDIT_RETENTION_DAYS` (default 90) reflects your retention policy.
+      The worker's `audit-retention` repeatable job sweeps daily. DB-009.
 
 ## Updates
 
 - [ ] Stay on supported Node 22 LTS.
 - [ ] Watch for upstream advisories: pino, fastify, prisma, sharp, livekit,
-      minio, ffmpeg.
+      garage, ffmpeg.
 - [ ] Reapply Prisma migrations and re-seed in a staging environment before
       pushing to production.
 

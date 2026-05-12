@@ -25,7 +25,8 @@ packages/
   shared/       zod schemas, permission bitset, dice parser, ULID, errors
   db/           Prisma schema + client + seed
 infra/
-  docker/       docker-compose for postgres, redis, minio, clamav, livekit
+  docker/       docker-compose for postgres, redis, garage, clamav, livekit
+  garage/       Garage S3-compatible storage config + bootstrap helper
   livekit/      example LiveKit config
   traefik/      example reverse proxy config (production)
 docs/
@@ -41,7 +42,7 @@ Prerequisites:
 - **pnpm 9+** (`corepack enable && corepack use pnpm@9`)
 - **PostgreSQL 16+** running locally (any install)
 
-That's it. Redis, MinIO, ClamAV, and LiveKit are all optional — Tavern uses
+That's it. Redis, object storage (Garage / any S3), ClamAV, and LiveKit are all optional — Tavern uses
 in-process / on-disk fallbacks when they're missing. See
 [`docs/native-setup.md`](docs/native-setup.md) for OS-specific Postgres
 install instructions and how to enable the optional services.
@@ -89,9 +90,22 @@ campaigns, board games, moderation, search) works.
 
 ### Prefer Docker?
 
-`pnpm docker:up` still brings up Postgres + Redis + MinIO + ClamAV +
-LiveKit in containers. See [`docs/docker-setup.md`](docs/docker-setup.md)
-for the env vars to set when switching to S3/Redis/etc.
+Two container modes:
+
+- `pnpm docker:up` — infra only (postgres + redis + garage + clamav).
+  Pair with `pnpm dev` on the host for fast iteration. Run
+  `pnpm garage:bootstrap` once after the first `up` to create the dev
+  access key and buckets.
+- `pnpm docker:up:all` — same as `docker:up` **plus** the LiveKit
+  voice/video server. DOC-010.
+- `pnpm docker:up:full` — same infra **plus** api + worker + web in
+  containers, with migrations applied automatically. Open
+  <http://localhost:3030>. This is the production-shaped path; nginx
+  serves the web build and proxies `/api/*` + `/gateway` to the api so
+  the browser only sees one origin.
+
+See [`docs/docker-setup.md`](docs/docker-setup.md) for the full picture
+and apps-mode env overrides.
 
 ## Status
 

@@ -7,7 +7,7 @@ else is optional and falls back to an in-process or on-disk equivalent.
 |----------|-----------|------------------------------|
 | Postgres | yes       | see below                    |
 | Redis    | no        | Memurai (Windows) / `redis-server` (mac/linux) |
-| MinIO    | no        | `minio.exe server ./data --console-address :9001` |
+| Garage (S3) | no    | `garage -c garage.toml server` (single Rust binary) |
 | ClamAV   | no        | clamav.net Windows installer / `apt install clamav-daemon` |
 | LiveKit  | no        | github.com/livekit/livekit/releases (single binary) |
 
@@ -16,14 +16,19 @@ What "no" means in practice:
 - **No Redis** → gateway uses an in-process EventEmitter (single replica
   only); upload pipeline runs in the API process; the worker daemon exits
   immediately because there's nothing for it to do.
-- **No MinIO** → files written to `./data/storage/<bucket>/<key>`, served
-  back through the API at `/api/_local-files/...`.
+- **No object storage** → files written to `./data/storage/<bucket>/<key>`,
+  served back through the API at `/api/_local-files/...`.
 - **No ClamAV** → upload virus scan is skipped; magic-byte checks and
   extension blocking still run.
 - **No LiveKit** → voice/video routes return HTTP 503; chat/dice/handouts
   all keep working.
 
 ## Postgres
+
+> Tavern uses the `pg_trgm` extension for full-text message search. It ships
+> with stock Postgres 16+; the migration enables it automatically. If your
+> distribution splits out `postgresql-contrib`, install that alongside the
+> base package.
 
 ### Windows
 
@@ -99,31 +104,68 @@ brew install redis && brew services start redis
 sudo apt install redis-server
 ```
 
-## Optional: MinIO
+## Optional: Garage (S3-compatible object storage)
 
-For S3-compatible storage. Defaults to `local` mode in `.env.example`, so
-you don't need this unless you want to.
+Defaults to `local` mode in `.env.example`, so you don't need this unless
+you want to exercise the S3 path.
 
-1. Download the single-binary release from <https://min.io/download>
-2. Run it: `minio.exe server ./minio-data --console-address :9001`
-3. Set in `.env`:
+[Garage](https://garagehq.deuxfleurs.fr/) is AGPL-3.0, written in Rust,
+ships as a single binary, and is designed for self-hosted deployments
+exactly like Tavern's. Or you can point Tavern at any other S3-compatible
+service (AWS, Cloudflare R2, Backblaze B2, …) — same env vars.
+
+1. Download the binary for your OS from
+   <https://garagehq.deuxfleurs.fr/download/>.
+2. Copy [`infra/garage/garage.toml.example`](../infra/garage/garage.toml.example)
+   to a working directory as `garage.toml` and **regenerate the three secrets**
+   at the top of the file (`rpc_secret`, `admin_token`, `metrics_token`) — the
+   values in the example are dev-only. (The non-example file is git-ignored
+   and produced at runtime by `scripts/garage-config.mjs` for docker mode; for
+   native mode you maintain your own.)
+
+   ```bash
+   node -e "const c=require('crypto'); \
+     console.log('rpc_secret=' + c.randomBytes(32).toString('hex')); \
+     console.log('admin_token=' + c.randomBytes(32).toString('base64')); \
+     console.log('metrics_token=' + c.randomBytes(32).toString('base64'));"
+   ```
+
+3. Start the server:
+
+   ```bash
+   garage -c ./garage.toml server
+   ```
+
+4. Bootstrap the cluster (one-time). Equivalent commands to what
+   `pnpm garage:bootstrap` runs in docker mode:
+
+   ```bash
+   NODE_ID=$(garage node id -q | head -1 | cut -d'@' -f1)
+   garage layout assign -z dc1 -c 1G "$NODE_ID"
+   garage layout apply --version 1
+   garage key import --yes -n tavern-key tavernkey tavern-dev-secret
+   garage bucket create tavern-media
+   garage bucket create tavern-quarantine
+   garage bucket allow --read --write --owner tavern-media --key tavern-key
+   garage bucket allow --read --write --owner tavern-quarantine --key tavern-key
+   ```
+
+5. Set in `.env`:
 
    ```
    STORAGE_BACKEND=s3
-   S3_ENDPOINT=http://localhost:9000
-   S3_ACCESS_KEY=minioadmin
-   S3_SECRET_KEY=minioadmin
-   S3_PUBLIC_BASE_URL=http://localhost:9000/tavern-media
+   S3_ENDPOINT=http://localhost:3900
+   S3_ACCESS_KEY=tavernkey
+   S3_SECRET_KEY=tavern-dev-secret
    ```
 
-4. Tavern auto-creates `tavern-media` and `tavern-quarantine` buckets on first
-   startup. For public reads you'll want to set the main bucket's anonymous
-   download policy via `mc`:
+   (Note: native Garage listens on port 3900 by default. The docker
+   compose file in this repo exposes that on host port 9000 for
+   convenience. Pick whichever endpoint matches your install.)
 
-   ```bash
-   mc alias set local http://localhost:9000 minioadmin minioadmin
-   mc anonymous set download local/tavern-media
-   ```
+   Public attachment reads go through the API's
+   `/api/_attachments/<bucket>/<key>` proxy — no anonymous bucket policy
+   needed.
 
 ## Optional: ClamAV
 

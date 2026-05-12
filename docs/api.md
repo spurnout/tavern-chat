@@ -1,6 +1,9 @@
 # API reference
 
-All routes are prefixed `/api`. All bodies are JSON.
+All routes are prefixed `/api`. All request and response bodies are JSON unless
+otherwise noted. Path params are written `:name` here even when the route file
+declares them as `:id` / `:serverId` etc. — the underlying Fastify route still
+expects the literal param name.
 
 ## Envelopes
 
@@ -22,112 +25,307 @@ Every response uses one of these two shapes:
 ```
 
 Error codes are enumerated in [`packages/shared/src/errors.ts`](../packages/shared/src/errors.ts).
+Notable codes added by the security review:
 
-## Auth
+| Code | When |
+|------|------|
+| `ROLE_HIERARCHY` | Actor tried to manage a role at or above their own, or grant permissions they don't hold. |
+| `MEMBER_BANNED` | Banned user attempted to rejoin a server. |
+| `BUFFER_GAP` | (gateway) `RESUME` lastSeq is older than the buffer floor; client must `IDENTIFY` fresh. |
 
-| Method | Path | Notes |
-|--------|------|-------|
-| POST | `/auth/register` | Invite-only; returns access + refresh tokens. |
-| POST | `/auth/login` | Identifier (username **or** email) + password. |
-| POST | `/auth/refresh` | Rotates refresh tokens; reuse triggers session revocation. |
-| POST | `/auth/logout` | Requires bearer token. Revokes the calling session. |
-| GET  | `/auth/me` | Returns the authenticated user. |
+## Authentication
 
-Tokens are HS256 JWTs. Access TTL = 15 min, refresh TTL = 30 days, both
-configurable via env vars.
+The API accepts a bearer access token in `Authorization: Bearer <jwt>`. The
+refresh token rides on an `httpOnly`, `Secure`, `SameSite=Strict` cookie
+named `tv_refresh`, scoped to `/api/auth`. The SPA holds the access token in
+memory only; the cookie is the only place the refresh token lives on the
+client (SEC-001 / FE-02).
 
-## Servers / channels / messages (Phase 1)
+JWT claims: HS256-signed, `iss=tavern`, `aud=tavern-api` (access) or
+`aud=tavern-refresh` (refresh) (SEC-005). Access TTL = 15 min, refresh TTL =
+30 days; both configurable via `ACCESS_TOKEN_TTL_SECONDS` /
+`REFRESH_TOKEN_TTL_SECONDS`.
+
+### Auth routes (`apps/api/src/routes/auth.ts`)
+
+| Method | Path | Rate limit | Notes |
+|--------|------|------------|-------|
+| GET    | `/auth/bootstrap-status` | 30/min | True only while `User.count = 0`. Unauthenticated. |
+| POST   | `/auth/bootstrap` | 5 / 5 min | First-run admin creation. 409 once any user exists. |
+| POST   | `/auth/register` | 10/min | Invite-only. Atomic invite consume (SEC-002); server-scoped invites refused (SEC-018). Sets `tv_refresh` cookie. |
+| POST   | `/auth/login` | 10/min | Username or email + password. Failed-attempt counter (SEC-006) locks for 15 min after 10. Sets `tv_refresh` cookie. |
+| POST   | `/auth/refresh` | 20/min | Reads `tv_refresh` cookie (or body `refreshToken` for deprecation runway). Rotates: replay of the old token revokes the session. Sets a fresh cookie. |
+| POST   | `/auth/logout` | n/a (authenticated) | Revokes the calling session; clears the cookie. |
+| PATCH  | `/auth/password` | 5 / 5 min | Body: `{ currentPassword, newPassword }`. Verifies the old password, rotates the Argon2 hash, **revokes every active session for the user including this one** (SEC-003). |
+| GET    | `/auth/me` | n/a | Returns the authenticated user profile. |
+
+## Servers (`apps/api/src/routes/servers.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| GET    | `/servers` | (your servers) |
+| POST   | `/servers` | (any user) |
+| GET    | `/servers/:id` | server member |
+| PATCH  | `/servers/:id` | `MANAGE_SERVER` |
+| DELETE | `/servers/:id` | server owner |
+| GET    | `/servers/:id/members` | server member |
+| GET    | `/servers/:id/roles` | server member |
+| GET    | `/servers/:id/channels` | server member; hidden channels filtered |
+
+## Channels (`apps/api/src/routes/channels.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| POST   | `/servers/:serverId/channels` | `MANAGE_CHANNELS` |
+| GET    | `/channels/:id` | `VIEW_CHANNEL` |
+| PATCH  | `/channels/:id` | `MANAGE_CHANNELS` |
+| DELETE | `/channels/:id` | `MANAGE_CHANNELS` |
+
+## Messages (`apps/api/src/routes/messages.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| GET    | `/channels/:id/messages?before=<id>&after=<id>&limit=50` | `READ_MESSAGE_HISTORY` |
+| POST   | `/channels/:id/messages` | `SEND_MESSAGES` + (`ATTACH_FILES` if attaching) |
+| PATCH  | `/messages/:id` | author only |
+| DELETE | `/messages/:id` | author OR `MANAGE_MESSAGES` |
+
+`POST /channels/:id/messages` supports an optional `nonce` for idempotent
+retries. The unique-by-`(channelId, nonce)` partial index plus the 24-hour
+worker sweep (DB-010) means nonces can be reused after a day.
+
+## Reactions (`apps/api/src/routes/reactions.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| PUT    | `/messages/:id/reactions/:emoji` | `ADD_REACTIONS` |
+| DELETE | `/messages/:id/reactions/:emoji` | (own reaction) |
+
+`:emoji` is URL-encoded. Custom emojis use the form `custom:<emojiId>`.
+
+## Roles (`apps/api/src/routes/roles.ts`)
+
+Every mutating route below enforces the role-hierarchy guard added in PERM-001:
+the actor cannot manage a role at or above their own highest role, and cannot
+grant permissions the actor doesn't themselves hold.
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| POST   | `/servers/:serverId/roles` | `MANAGE_ROLES` + hierarchy |
+| PATCH  | `/roles/:id` | `MANAGE_ROLES` + hierarchy |
+| DELETE | `/roles/:id` | `MANAGE_ROLES`; refuses to delete `@everyone` |
+| PUT    | `/servers/:serverId/members/:userId/roles` | `MANAGE_ROLES` + hierarchy |
+
+## Permission overwrites (`apps/api/src/routes/overwrites.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| GET    | `/channels/:id/overwrites` | `VIEW_CHANNEL` |
+| PUT    | `/channels/:id/overwrites/:targetType/:targetId` | `MANAGE_ROLES` + actor must hold every bit they're trying to allow (PERM-003) + target must belong to the channel's server (PERM-005) |
+| DELETE | `/channels/:id/overwrites/:targetType/:targetId` | `MANAGE_ROLES` |
+
+## Bans (`apps/api/src/routes/bans.ts`, PERM-002)
+
+A row in `ServerBan` hard-blocks the user from a server: the gateway IDENTIFY
+filter excludes them from READY, and an active session for the user is
+force-closed with WS code 4403 on a `GUILD_BAN_ADD` dispatch.
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| GET    | `/servers/:serverId/bans` | `BAN_MEMBERS` |
+| POST   | `/servers/:serverId/bans` | `BAN_MEMBERS` + role-hierarchy check; cannot ban the owner |
+| DELETE | `/servers/:serverId/bans/:userId` | `BAN_MEMBERS` |
+
+`POST` body: `{ userId, reason?, expiresAt? }`. `expiresAt` must be in the
+future; `null` = permanent.
+
+## Invites (`apps/api/src/routes/invites.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| POST   | `/invites` | `CREATE_INVITES` (server-scoped) or instance admin (instance-scoped) |
+| DELETE | `/invites/:id` | invite creator or `MANAGE_SERVER` |
+| POST   | `/invites/:code/join` | authenticated; refuses if user is banned from the target server |
+
+## Uploads & attachments
+
+Tavern uses presigned PUTs against either S3 (Garage) or a token-validated
+local-storage route, depending on `STORAGE_BACKEND`.
+
+### Upload pipeline (`apps/api/src/routes/uploads.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| POST   | `/uploads` | `ATTACH_FILES` (or `SEND_VOICE_MESSAGES` for voice-message kind) |
+| POST   | `/uploads/:id/complete` | uploader only |
+| POST   | `/attachments/:id/waveform` | uploader only; voice-message kind only |
+| GET    | `/attachments/:id` | viewer of the channel; quarantined/blocked attachments return 404 to non-owners (UPL-001) |
+
+`POST /uploads` validates the declared extension against a blocklist
+(`BLOCKED_EXTENSIONS`, `BLOCKED_ARCHIVE_EXTENSIONS`), rejects SVG outright,
+and runs a per-kind MIME and size check (UPL-003 MIME-vs-extension
+allow-list for `handout`/`file`). Filename is sanitised via the UPL-002
+hardening (NFC normalize, strip null bytes, strip Windows-reserved names,
+strip leading/trailing dots).
+
+### Object proxy routes
+
+`STORAGE_BACKEND=s3` (`apps/api/src/routes/attachments.ts`):
 
 | Method | Path |
 |--------|------|
-| GET    | `/servers` (mine) |
-| POST   | `/servers` |
-| GET    | `/servers/:id` |
-| PATCH  | `/servers/:id` |
-| DELETE | `/servers/:id` |
-| GET    | `/servers/:id/channels` |
-| POST   | `/servers/:id/channels` |
-| PATCH  | `/channels/:id` |
-| DELETE | `/channels/:id` |
-| GET    | `/channels/:id/messages?before=<id>&limit=50` |
-| POST   | `/channels/:id/messages` |
-| PATCH  | `/messages/:id` |
-| DELETE | `/messages/:id` |
+| GET    | `/_attachments/:bucket/:key` |
 
-## Roles & overwrites (Phase 2)
+The route streams from the S3 client. Reads on the quarantine bucket are
+hard-403 (STO-001 / UPL-001). `Content-Disposition` strips the storage-key
+path so the on-disk layout doesn't leak (STO-004).
+
+`STORAGE_BACKEND=local` (`apps/api/src/routes/local-files.ts`):
 
 | Method | Path |
 |--------|------|
-| GET    | `/servers/:id/roles` |
-| POST   | `/servers/:id/roles` |
-| PATCH  | `/roles/:id` |
-| DELETE | `/roles/:id` |
-| PUT    | `/members/:userId/roles` |
-| GET    | `/channels/:id/overwrites` |
-| PUT    | `/channels/:id/overwrites/:targetType/:targetId` |
-| DELETE | `/channels/:id/overwrites/:targetType/:targetId` |
+| PUT    | `/_local-uploads/:token` (consumes a presign) |
+| GET    | `/_local-files/:bucket/:key` |
 
-## Uploads & attachments (Phase 2/3)
+Same quarantine-bucket guard (STO-001).
 
-| Method | Path |
-|--------|------|
-| POST   | `/uploads` (request presigned PUT URL) |
-| POST   | `/uploads/:id/complete` |
-| GET    | `/attachments/:id` |
+## Voice / video (`apps/api/src/routes/voice.ts`)
 
-## Voice / video (Phase 3)
+| Method | Path | Rate limit | Notes |
+|--------|------|------------|-------|
+| POST   | `/voice/join` | n/a | Mints a LiveKit token with publish sources gated by `SPEAK_VOICE`, `ENABLE_CAMERA`, `STREAM_SCREEN`. Returns `liveKitUrl`, `token`, `roomName`, `allowedFeatures`, `expiresAt`. |
+| POST   | `/voice/refresh-token` | 30/min | Re-mints a token for an in-progress session before the 1-hour TTL (VC-001). Re-checks live permissions, so a role demote narrows the new token. |
+| POST   | `/voice/leave` | 30/min | Batched `updateMany` across the caller's voice states (RT-008); broadcasts `VOICE_STATE_UPDATE` with the previous `channelId` so per-channel permission filter applies (RT-001). |
+| POST   | `/voice/state` | 60/min | Partial state: `{ channelId, screenSharing?, cameraOn?, selfMute?, selfDeaf? }`. 409 `VOICE_STATE_STALE` if caller isn't currently in `channelId`. Re-checks publish permissions live. |
 
-| Method | Path |
-|--------|------|
-| POST   | `/voice/join` |
-| POST   | `/voice/leave` |
+## Tabletop
 
-## Tabletop (Phase 4)
+### Campaigns (`apps/api/src/routes/campaigns.ts`)
 
 | Method | Path |
 |--------|------|
-| GET    | `/servers/:id/campaigns` |
-| POST   | `/campaigns` |
+| GET    | `/servers/:serverId/campaigns` |
+| POST   | `/servers/:serverId/campaigns` |
 | GET    | `/campaigns/:id` |
 | PATCH  | `/campaigns/:id` |
-| GET    | `/campaigns/:id/sessions` |
-| POST   | `/campaigns/:id/sessions` |
-| PATCH  | `/sessions/:id` |
-| PUT    | `/sessions/:id/rsvp` |
-| GET    | `/campaigns/:id/notes` |
-| POST   | `/campaigns/:id/notes` |
-| GET    | `/campaigns/:id/handouts` |
-| POST   | `/campaigns/:id/handouts` |
-| POST   | `/dice/roll` |
 
-## Board games (Phase 5)
+### Sessions (`apps/api/src/routes/sessions.ts`)
 
 | Method | Path |
 |--------|------|
-| GET    | `/servers/:id/board-games` |
-| POST   | `/servers/:id/board-games` |
+| GET    | `/campaigns/:id/sessions` |
+| POST   | `/sessions` |
+| PATCH  | `/sessions/:id` |
+| PUT    | `/sessions/:id/rsvp` |
+
+### Notes (`apps/api/src/routes/notes.ts`)
+
+| Method | Path |
+|--------|------|
+| GET    | `/campaigns/:id/notes` |
+| POST   | `/notes` |
+| PATCH  | `/notes/:id` |
+| DELETE | `/notes/:id` |
+
+### Handouts (`apps/api/src/routes/handouts.ts`)
+
+| Method | Path |
+|--------|------|
+| GET    | `/campaigns/:id/handouts` |
+| POST   | `/handouts` |
+| PATCH  | `/handouts/:id` |
+
+### Dice (`apps/api/src/routes/dice.ts`)
+
+| Method | Path |
+|--------|------|
+| POST   | `/dice/roll` |
+| GET    | `/channels/:id/dice` |
+
+## Board games (`apps/api/src/routes/board-games.ts`)
+
+| Method | Path |
+|--------|------|
+| GET    | `/servers/:serverId/board-games` |
+| POST   | `/servers/:serverId/board-games` |
 | PATCH  | `/board-games/:id` |
-| GET    | `/servers/:id/game-nights` |
-| POST   | `/servers/:id/game-nights` |
+| DELETE | `/board-games/:id` |
+
+## Game nights (`apps/api/src/routes/game-nights.ts`)
+
+| Method | Path |
+|--------|------|
+| GET    | `/servers/:serverId/game-nights` |
+| POST   | `/servers/:serverId/game-nights` |
+| PATCH  | `/game-nights/:id` |
+| GET    | `/game-nights/:id/candidates` |
 | POST   | `/game-nights/:id/candidates` |
 | POST   | `/game-nights/:id/votes` |
 | PUT    | `/game-nights/:id/rsvp` |
 
-## Moderation & audit (Phase 2)
+## Custom emojis (`apps/api/src/routes/emojis.ts`)
 
 | Method | Path |
 |--------|------|
-| POST   | `/reports` |
-| GET    | `/servers/:id/moderation/queue` |
-| POST   | `/reports/:id/resolve` |
-| GET    | `/servers/:id/audit-log` |
-| GET    | `/servers/:id/safety-policy` |
-| PATCH  | `/servers/:id/safety-policy` |
+| GET    | `/servers/:serverId/emojis` |
+| POST   | `/servers/:serverId/emojis` |
+| DELETE | `/emojis/:id` |
+
+## Search (`apps/api/src/routes/search.ts`)
+
+| Method | Path |
+|--------|------|
+| GET    | `/servers/:serverId/search?q=<term>&limit=20` |
+
+Backed by the `pg_trgm` GIN index on `Message.content` (DB-003). Hidden channels
+are filtered before the search runs so they never appear in results.
+
+## Typing (`apps/api/src/routes/typing.ts`)
+
+| Method | Path | Rate limit |
+|--------|------|------------|
+| POST   | `/channels/:id/typing` | 30/min (one ping per ~3 s in practice) |
+
+## Moderation (`apps/api/src/routes/moderation.ts`)
+
+| Method | Path | Required permission |
+|--------|------|---------------------|
+| POST   | `/reports` | `REPORT_CONTENT` |
+| GET    | `/servers/:serverId/moderation/queue` | `VIEW_MODERATION_QUEUE` |
+| POST   | `/reports/:id/resolve` | `MANAGE_REPORT_WORKFLOW` |
+| GET    | `/servers/:serverId/audit-log` | `VIEW_AUDIT_LOG` |
+| GET    | `/servers/:serverId/safety-policy` | server member |
+| PATCH  | `/servers/:serverId/safety-policy` | `MANAGE_SERVER_SAFETY_POLICY` |
+
+## Misc
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET    | `/healthz` | Always 200 once the API is accepting requests. No auth. |
+| GET    | `/api/instance` | Public instance metadata: name, feature flags (`registrationOpen`, `trustSafetyCoreEnabled`, etc.). |
+
+## Rate limit headers
+
+Every rate-limited route returns `RateLimit-Limit`, `RateLimit-Remaining`, and
+`RateLimit-Reset` headers per the @fastify/rate-limit plugin. A 429 response
+also carries `Retry-After`.
+
+## Pagination
+
+Cursor-based; query params: `before=<ulid>`, `after=<ulid>`, `limit=N` (max 50
+on message list, 30 on game-night candidates). The compound
+`Message(channelId, id)` index (DB-021) supports the page-by-ulid pattern.
 
 ## Gateway
 
 WebSocket endpoint: `wss://<host>/gateway`
 
 See [`packages/shared/src/schemas/gateway.ts`](../packages/shared/src/schemas/gateway.ts)
-for opcodes and event names. The lifecycle is HELLO → IDENTIFY → READY →
-HEARTBEAT/HEARTBEAT_ACK loop with DISPATCH events in between.
+for opcodes and event names. Lifecycle: `HELLO` → `IDENTIFY` → `READY`,
+followed by a `HEARTBEAT`/`HEARTBEAT_ACK` loop with `DISPATCH` events.
+
+`RESUME` with a `lastSeq` newer than the gateway's `bufferFloor` replays the
+buffered window (RT-010); older `lastSeq` returns `INVALID_SESSION` with
+reason `BUFFER_GAP` (RT-003). Banned users are disconnected via a targeted
+`GUILD_BAN_ADD` followed by a 4403 close (PERM-002). The gateway closes
+slow consumers above ~1 MiB of `bufferedAmount` with code 1009 (RT-002).

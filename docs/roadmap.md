@@ -10,13 +10,13 @@ status, no aspiration.
 | pnpm monorepo + strict TS + ESLint/Prettier | Built |
 | `packages/shared` (zod schemas, errors, constants, ULID, dice parser) | Built |
 | `packages/db` (Prisma schema for all phases, seed) | Built |
-| `apps/api` Fastify + auth (register/login/refresh/logout/me) | Built |
-| Auth tests (Vitest + Fastify inject + in-memory prisma stub) | Built (8 tests) |
-| `apps/worker` BullMQ with real upload-scan handler | Built |
-| `apps/web` Vite/React shell, login + register, app shell | Built |
-| Docker Compose (postgres, redis, minio, clamav, livekit profile) | Built |
-| `.env.example`, LiveKit + Traefik examples | Built |
-| Docs: README, architecture, api, permissions, deployment, safety, tabletop | Built |
+| `apps/api` Fastify + auth (register/login/refresh/logout/me/password-change) | Built (DOC-004) |
+| Auth tests (Vitest + Fastify inject + in-memory prisma stub) | Built (14 tests, incl. cookie flow) |
+| `apps/worker` BullMQ with upload-scan + maintenance retention queues | Built (DOC-004) |
+| `apps/web` Vite/React shell, login + register + bootstrap, app shell | Built (DOC-004) |
+| Docker Compose: postgres, redis, garage, clamav, gated `apps` + `livekit` profiles | Built (DOC-004) |
+| `.env.example`, LiveKit + Traefik examples, governance files (SECURITY/CONTRIBUTING/CoC), CI workflow | Built |
+| Docs: README, architecture, api, permissions, deployment, safety, tabletop, design-system, hardening | Built |
 
 ## Phase 1 — Servers, channels, messages, gateway
 
@@ -44,7 +44,7 @@ status, no aspiration.
 | Audit log writes on moderation actions | Built |
 | Server safety policy + instance defaults | Built |
 | Quarantine bucket + status transitions | Built |
-| MinIO presigned upload pipeline | Built |
+| S3-compatible (Garage) presigned upload pipeline | Built |
 | Worker: magic-byte validation + ClamAV INSTREAM scanner | Built |
 | Worker: sharp-based image normalisation + EXIF strip + thumbnails | Built |
 | Web: report dialog, moderation queue + audit log pages | Built |

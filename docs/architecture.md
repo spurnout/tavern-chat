@@ -12,6 +12,15 @@ Tavern follows a service split inspired by Discord:
   pipeline (validate → scan → finalize), media post-processing (sharp /
   ffprobe / waveform), and scheduled maintenance.
 
+### Database extensions
+
+Tavern relies on Postgres's `pg_trgm` extension to power message search.
+The `20260511193500_add_message_trgm` migration enables the extension and
+creates a GIN index on `Message.content` (filtered to non-deleted rows); the
+Prisma `contains` query in `apps/api/src/routes/search.ts` then uses an
+indexed lookup instead of a sequential scan. `pg_trgm` ships with stock
+Postgres 16, so no operator action is needed beyond running migrations.
+
 ```
 ┌────────┐  fetch / WS    ┌──────────────┐
 │ web    │ ──────────────▶│  api         │
@@ -38,7 +47,7 @@ Tavern follows a service split inspired by Discord:
                               │
                               ▼
                         ┌──────────────┐
-                        │ MinIO        │
+                        │ Garage (S3)  │
                         └──────────────┘
 ```
 
@@ -56,7 +65,8 @@ Tavern follows a service split inspired by Discord:
 ## Data flow: posting a message with an image
 
 1. Browser uploads image: `POST /api/uploads` returns presigned PUT URL.
-2. Browser PUTs the bytes directly to MinIO.
+2. Browser PUTs the bytes directly to the S3 backend (Garage in the default
+   stack; any S3-compatible store works).
 3. Browser calls `POST /api/uploads/:id/complete`.
 4. API enqueues `tavern.upload.validate` and `tavern.upload.scan` jobs.
 5. Worker validates magic bytes / ClamAV scans the object. On success it
