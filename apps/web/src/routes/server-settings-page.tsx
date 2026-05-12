@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams } from '@tanstack/react-router';
-import { Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
+import { Ban, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
 import type {
   CustomEmoji,
   Member,
   Role,
   SafetyPolicy,
+  ServerBan,
   UpdateSafetyPolicyRequest,
 } from '@tavern/shared';
 import {
@@ -15,9 +16,11 @@ import {
   serializePermissions,
 } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
+import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 
-type Tab = 'roles' | 'members' | 'emoji' | 'policy';
+type Tab = 'roles' | 'members' | 'bans' | 'emoji' | 'policy';
 
 export function ServerSettingsPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
@@ -37,6 +40,9 @@ export function ServerSettingsPage(): JSX.Element {
           <TabButton active={tab === 'members'} onClick={() => setTab('members')}>
             <Users size={12} /> Members
           </TabButton>
+          <TabButton active={tab === 'bans'} onClick={() => setTab('bans')}>
+            <Ban size={12} /> Bans
+          </TabButton>
           <TabButton active={tab === 'emoji'} onClick={() => setTab('emoji')}>
             <Smile size={12} /> Emoji
           </TabButton>
@@ -48,6 +54,7 @@ export function ServerSettingsPage(): JSX.Element {
       <div className="p-6">
         {tab === 'roles' ? <RolesPanel serverId={serverId} /> : null}
         {tab === 'members' ? <MembersPanel serverId={serverId} /> : null}
+        {tab === 'bans' ? <BansPanel serverId={serverId} /> : null}
         {tab === 'emoji' ? <EmojiPanel serverId={serverId} /> : null}
         {tab === 'policy' ? <SafetyPolicyPanel serverId={serverId} /> : null}
       </div>
@@ -577,6 +584,148 @@ function SafetyPolicyPanel({ serverId }: { serverId: string }): JSX.Element {
           <option value="strict">Strict</option>
         </select>
       </label>
+    </div>
+  );
+}
+
+// ---- Bans -----------------------------------------------------------------
+
+function BansPanel({ serverId }: { serverId: string }): JSX.Element {
+  const [bans, setBans] = useState<ServerBan[]>([]);
+  const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [targetUserId, setTargetUserId] = useState('');
+  const [reason, setReason] = useState('');
+  const [unbanTarget, setUnbanTarget] = useState<ServerBan | null>(null);
+
+  const refresh = (): void => {
+    setLoadState('loading');
+    api<ServerBan[]>(`/servers/${serverId}/bans`)
+      .then((rows) => {
+        setBans(rows);
+        setLoadState('loaded');
+      })
+      .catch(() => setLoadState('error'));
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId]);
+
+  const onBan = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    e.preventDefault();
+    const trimmed = targetUserId.trim();
+    if (!trimmed) return;
+    try {
+      await api(`/servers/${serverId}/bans`, {
+        method: 'POST',
+        body: {
+          userId: trimmed,
+          reason: reason.trim() || undefined,
+        },
+      });
+      toast.success('Member banned.');
+      setTargetUserId('');
+      setReason('');
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not ban that member.');
+    }
+  };
+
+  const onUnban = async (ban: ServerBan): Promise<void> => {
+    try {
+      await api(`/servers/${serverId}/bans/${ban.userId}`, { method: 'DELETE' });
+      toast.success('Ban lifted.');
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not lift the ban.');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-2">
+        <h2 className="font-serif text-lg font-medium">Ban a member</h2>
+        <p className="text-xs text-fg-muted">
+          Banned members are removed from the tavern, their open connections are
+          severed, and they cannot rejoin until the ban is lifted.
+        </p>
+        <form onSubmit={(e) => void onBan(e)} className="flex flex-wrap items-end gap-2">
+          <label className="flex-1 text-xs">
+            <span className="mb-1 inline-block text-fg-muted">User ID</span>
+            <input
+              className="input"
+              value={targetUserId}
+              onChange={(e) => setTargetUserId(e.target.value)}
+              placeholder="01JX…"
+              required
+            />
+          </label>
+          <label className="flex-1 text-xs">
+            <span className="mb-1 inline-block text-fg-muted">Reason (optional)</span>
+            <input
+              className="input"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </label>
+          <button type="submit" className="btn-danger">Ban</button>
+        </form>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="font-serif text-lg font-medium">
+          Active bans
+          {loadState === 'loaded' ? ` (${bans.length})` : null}
+        </h2>
+        {loadState === 'loading' ? (
+          <p className="text-xs text-fg-muted">Loading…</p>
+        ) : loadState === 'error' ? (
+          <p className="text-xs text-fg-muted">Couldn&apos;t load the ban list.</p>
+        ) : bans.length === 0 ? (
+          <p className="text-xs text-fg-muted">No active bans.</p>
+        ) : (
+          <ul className="space-y-1">
+            {bans.map((b) => (
+              <li
+                key={b.userId}
+                className="flex flex-wrap items-center gap-3 rounded border border-subtle bg-surface px-3 py-2 text-sm"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="truncate font-mono text-xs">{b.userId}</div>
+                  {b.reason ? <div className="text-xs text-fg-muted">{b.reason}</div> : null}
+                  <div className="text-xs text-fg-muted">
+                    Banned {new Date(b.createdAt).toLocaleString()}
+                    {b.expiresAt ? ` · expires ${new Date(b.expiresAt).toLocaleString()}` : ' · permanent'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => setUnbanTarget(b)}
+                >
+                  Lift ban
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {unbanTarget ? (
+        <ConfirmDialog
+          title="Lift this ban?"
+          description={`The user will be able to rejoin via any valid invite.`}
+          confirmLabel="Lift ban"
+          onCancel={() => setUnbanTarget(null)}
+          onConfirm={async () => {
+            const target = unbanTarget;
+            setUnbanTarget(null);
+            await onUnban(target);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

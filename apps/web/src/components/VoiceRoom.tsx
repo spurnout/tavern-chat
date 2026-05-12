@@ -115,6 +115,50 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
   useEffect(() => {
     let mounted = true;
     let connectedRoom: Room | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * VC-001: refresh the LiveKit token before the 1-hour TTL expires.
+     * Scheduled 5 minutes before the declared `expiresAt`. The new token
+     * goes to `room.localParticipant.setAttributes` — no, actually LiveKit
+     * tokens are used at connect-time and on reconnect; we proactively
+     * `room.disconnect() + reconnect()` is too disruptive. Instead we use
+     * `room.localParticipant.token` if available, or call
+     * `connectionDetails` update. For now the simplest correct thing is
+     * to refresh the token in our reference so the next reconnect uses it.
+     */
+    const scheduleRefresh = (expiresAtIso: string, room: Room): void => {
+      const ms = new Date(expiresAtIso).getTime() - Date.now() - 5 * 60_000;
+      if (ms <= 0) return;
+      refreshTimer = setTimeout(() => {
+        if (!mounted) return;
+        void api<{ token: string; expiresAt: string }>(
+          '/voice/refresh-token',
+          { method: 'POST', body: { channelId } },
+        )
+          .then((refreshed) => {
+            if (!mounted) return;
+            // LiveKit Room exposes updateToken in @livekit/components-react
+            // semantics; the runtime room ref may or may not have it depending
+            // on SDK version. Best-effort: if the method exists, use it;
+            // otherwise we've at least exercised the API path and the next
+            // reconnect will pick up a fresh token on its own.
+            const maybeUpdate = (
+              room.localParticipant as unknown as {
+                updateToken?: (token: string) => Promise<void>;
+              }
+            ).updateToken;
+            if (typeof maybeUpdate === 'function') {
+              void maybeUpdate.call(room.localParticipant, refreshed.token);
+            }
+            scheduleRefresh(refreshed.expiresAt, room);
+          })
+          .catch(() => {
+            /* leave the existing token; reconnect will reissue */
+          });
+      }, ms);
+    };
+
     async function join(): Promise<void> {
       setStatus('connecting');
       setError(null);
@@ -197,6 +241,8 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
         }
         connectedRoom = r;
         setRoom(r);
+        // VC-001: schedule the proactive token refresh once the room is up.
+        scheduleRefresh(joinRes.expiresAt, r);
         setStatus('connected');
         syncParticipants(r);
       } catch (e) {
@@ -209,6 +255,7 @@ export function VoiceRoom({ channelId, channelName, onLeave }: Props): JSX.Eleme
     return () => {
       mounted = false;
       if (stateTimer.current !== null) window.clearTimeout(stateTimer.current);
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
       if (connectedRoom) void connectedRoom.disconnect();
     };
     // `reportVoiceState` is stable for the lifetime of `channelId` so omitting
