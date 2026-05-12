@@ -1,9 +1,9 @@
 # Tavern CI — INF-009.
 #
 # Runs on every PR + push to main. Mirrors the local-gate command from the
-# review plan: typecheck, lint, test (unit). Integration tests are skipped
-# here because they require a real Postgres + Redis; those run nightly or
-# on a dedicated workflow when the testcontainers harness lands.
+# review plan: typecheck, lint, test (unit), test:integration (testcontainers
+# against the Postgres service container — GitHub-hosted runners support
+# docker-in-docker so this works without extra setup).
 name: ci
 
 on:
@@ -67,3 +67,11 @@ jobs:
       - run: pnpm lint
 
       - run: pnpm test
+
+      # Integration tests boot their own Postgres testcontainer (so they're
+      # isolated from the `postgres` service used above for the migrate step).
+      # The testcontainers library uses the Docker socket exposed by the
+      # ubuntu-latest GitHub runner image — no extra service config needed.
+      - run: pnpm --filter @tavern/api test:integration
+
+      - run: pnpm build
