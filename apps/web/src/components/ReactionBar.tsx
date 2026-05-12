@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Smile } from 'lucide-react';
 import type { Message } from '@tavern/shared';
-import { api } from '../lib/api-client.js';
+import { api, ApiError } from '../lib/api-client.js';
+import { toast } from '../lib/toast.js';
 
 const QUICK_EMOJIS = ['👍', '❤️', '🎉', '😂', '🤔', '🎲', '🔥', '🏰'];
 
@@ -10,10 +11,15 @@ export function ReactionBar({ message }: { message: Message }): JSX.Element {
 
   async function toggle(emoji: string, currentlyMine: boolean): Promise<void> {
     const path = `/messages/${message.id}/reactions/${encodeURIComponent(emoji)}`;
-    if (currentlyMine) {
-      await api(path, { method: 'DELETE' }).catch(() => undefined);
-    } else {
-      await api(path, { method: 'PUT' }).catch(() => undefined);
+    // FE-11: previously the reaction round-trip was a silent .catch — a
+    // permission failure (e.g. ADD_REACTIONS denied) gave no feedback and
+    // the optimistic UI stayed wrong until the next gateway dispatch.
+    try {
+      await api(path, { method: currentlyMine ? 'DELETE' : 'PUT' });
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Couldn't update reaction.",
+      );
     }
   }
 

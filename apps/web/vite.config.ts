@@ -26,6 +26,10 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    // Emit .map files but omit the sourceMappingURL comment so browsers never
+    // load them. CI can archive maps for crash symbolication without shipping
+    // unminified TS source (and internal API/token field names) to every
+    // visitor. See docs/REVIEW/frontend.md FE-01.
+    sourcemap: 'hidden',
   },
 });

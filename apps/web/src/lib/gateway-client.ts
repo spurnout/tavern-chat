@@ -73,7 +73,13 @@ export class GatewayClient {
   private scheduleReconnect(): void {
     if (this.status === 'closed') return;
     this.setStatus('reconnecting');
-    const delay = Math.min(this.backoffMs, 30_000);
+    // RT-015: add ±20% jitter so a server restart that drops every client
+    // doesn't cause them all to reconnect on identical schedules. Without
+    // this, exponential backoff with the same base produces synchronized
+    // thundering-herd surges every 1s/2s/4s/8s/…
+    const base = Math.min(this.backoffMs, 30_000);
+    const jitter = base * 0.2 * (Math.random() * 2 - 1);
+    const delay = Math.max(250, Math.floor(base + jitter));
     this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }

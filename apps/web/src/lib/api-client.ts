@@ -2,37 +2,54 @@ import type { ApiResponse, TokenPair } from '@tavern/shared';
 
 const API_BASE = '/api';
 
+/**
+ * Token storage policy (SEC-001 / FE-02):
+ *   - **Access token:** held in memory only. A page refresh forces a `/refresh`
+ *     round-trip — the cost is a single HTTP call, and the win is that no
+ *     script-readable storage ever holds a bearer credential.
+ *   - **Refresh token:** delivered by the API as an httpOnly+Secure+SameSite=Strict
+ *     cookie (`tv_refresh`). Not visible to JS at all; cannot be exfiltrated by
+ *     XSS, cannot be sent on third-party navigations.
+ *   - **Expiry timestamp:** kept in `sessionStorage` so we know when to refresh
+ *     proactively. `sessionStorage` clears on tab close, matching the cookie's
+ *     session semantics, and only holds a non-secret number — losing it just
+ *     means we discover the expiry by failing a request.
+ */
 class TokenStore {
-  private static ACCESS = 'tavern.access';
-  private static REFRESH = 'tavern.refresh';
-  private static ACCESS_EXP = 'tavern.access_exp';
+  private static ACCESS_EXP_KEY = 'tavern.access_exp';
+  private memoryAccessToken: string | null = null;
 
   get accessToken(): string | null {
-    return localStorage.getItem(TokenStore.ACCESS);
-  }
-
-  get refreshToken(): string | null {
-    return localStorage.getItem(TokenStore.REFRESH);
+    return this.memoryAccessToken;
   }
 
   get accessExpiresAt(): number | null {
-    const v = localStorage.getItem(TokenStore.ACCESS_EXP);
+    if (typeof sessionStorage === 'undefined') return null;
+    const v = sessionStorage.getItem(TokenStore.ACCESS_EXP_KEY);
     return v ? Number(v) : null;
   }
 
+  /** True iff we believe we have a valid live session (subject to server confirmation). */
+  get hasSessionHint(): boolean {
+    const exp = this.accessExpiresAt;
+    return exp !== null && exp > Date.now();
+  }
+
   set(tokens: TokenPair): void {
-    localStorage.setItem(TokenStore.ACCESS, tokens.accessToken);
-    localStorage.setItem(TokenStore.REFRESH, tokens.refreshToken);
-    localStorage.setItem(
-      TokenStore.ACCESS_EXP,
-      String(new Date(tokens.accessTokenExpiresAt).getTime()),
-    );
+    this.memoryAccessToken = tokens.accessToken;
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(
+        TokenStore.ACCESS_EXP_KEY,
+        String(new Date(tokens.accessTokenExpiresAt).getTime()),
+      );
+    }
   }
 
   clear(): void {
-    localStorage.removeItem(TokenStore.ACCESS);
-    localStorage.removeItem(TokenStore.REFRESH);
-    localStorage.removeItem(TokenStore.ACCESS_EXP);
+    this.memoryAccessToken = null;
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(TokenStore.ACCESS_EXP_KEY);
+    }
   }
 }
 
@@ -78,7 +95,11 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
     headers,
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     signal: opts.signal,
-    credentials: 'omit',
+    // Refresh token is delivered as an httpOnly cookie scoped to /api/auth.
+    // 'include' is required for that cookie to ride along with /auth/refresh
+    // requests; the strict CORS allowlist in apps/api/src/app.ts gates which
+    // origins this is honoured for.
+    credentials: 'include',
   });
 
   let body: ApiResponse<T> | null = null;
@@ -114,13 +135,14 @@ let refreshInflight: Promise<boolean> | null = null;
 
 async function tryRefresh(): Promise<boolean> {
   if (refreshInflight) return refreshInflight;
-  const refreshToken = tokenStore.refreshToken;
-  if (!refreshToken) return false;
   refreshInflight = (async () => {
     try {
+      // The refresh token rides along as the tv_refresh httpOnly cookie —
+      // there's no body to send. If the cookie is missing or expired the
+      // API returns 401, which we convert to a clean clear-state below.
       const res = await rawRequest<{ tokens: TokenPair }>(`/auth/refresh`, {
         method: 'POST',
-        body: { refreshToken },
+        body: {},
         retryOn401: false,
       });
       tokenStore.set(res.tokens);

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router';
 import {
   Dice5,
   Hash,
   LogOut,
   Menu,
+  Monitor,
   Plus,
   Search,
   Settings,
@@ -14,9 +15,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.js';
-import { useRealtime } from '../lib/store.js';
+import { useAnyScreenSharing, useRealtime } from '../lib/store.js';
 import { startRealtime, stopRealtime } from '../lib/realtime.js';
 import { api } from '../lib/api-client.js';
+import { toast } from '../lib/toast.js';
 import type { Channel, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
 import { CreateServerModal } from '../components/CreateServerModal.js';
@@ -41,19 +43,28 @@ export function AppShell(): JSX.Element {
   const [createServerOpen, setCreateServerOpen] = useState(false);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
 
+  // FE-03: ref-guarded one-shot auto-navigate. The original effect had a
+  // blank deps array and captured the mount-time value of params.serverId; if
+  // a later navigation happened before /servers resolved, we'd land on a
+  // stale tavern. Using a ref means we only auto-redirect once per mount,
+  // and only if the user hasn't already navigated themselves.
+  const autoNavigatedRef = useRef(false);
   useEffect(() => {
     startRealtime();
     api<Server[]>('/servers')
       .then((list) => {
         for (const s of list) upsertServer(s);
-        if (!params.serverId && list[0]) {
+        if (!autoNavigatedRef.current && !params.serverId && list[0]) {
+          autoNavigatedRef.current = true;
           void navigate({
             to: '/app/servers/$serverId',
             params: { serverId: list[0].id },
           });
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        toast.error('Could not load your taverns. Please reload.');
+      });
     return () => stopRealtime();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -62,7 +73,10 @@ export function AppShell(): JSX.Element {
     if (!params.serverId) return;
     api<Channel[]>(`/servers/${params.serverId}/channels`)
       .then((channels) => upsertChannels(params.serverId!, channels))
-      .catch(() => undefined);
+      .catch(() => {
+        // FE-23: surface the failure instead of leaving the sidebar blank.
+        toast.error('Could not load rooms in this tavern.');
+      });
   }, [params.serverId, upsertChannels]);
 
   // Close drawer on navigation (mobile UX)
@@ -365,7 +379,9 @@ function SidebarChannelLink({
     'flex items-center gap-2 rounded px-2 py-1.5 text-fg',
     active ? 'bg-raised' : 'hover:bg-raised',
   );
-  if (channel.type === 'voice') {
+  const isVoice = channel.type === 'voice';
+  const someoneSharing = useAnyScreenSharing(isVoice ? channel.id : null);
+  if (isVoice) {
     return (
       <Link
         to="/app/servers/$serverId/voice/$channelId"
@@ -373,7 +389,13 @@ function SidebarChannelLink({
         className={className}
       >
         <span className="text-fg-muted">{icon}</span>
-        <span className="truncate">{channel.name}</span>
+        <span className="truncate flex-1">{channel.name}</span>
+        {someoneSharing ? (
+          <>
+            <Monitor size={12} className="text-ember shrink-0" aria-hidden />
+            <span className="sr-only">(screen share active)</span>
+          </>
+        ) : null}
       </Link>
     );
   }

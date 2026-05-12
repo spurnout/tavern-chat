@@ -1,8 +1,9 @@
-import type {
-  Channel,
-  GatewayDispatchEventName,
-  Message,
-  Server,
+import {
+  voiceStateGatewayPayloadSchema,
+  type Channel,
+  type GatewayDispatchEventName,
+  type Message,
+  type Server,
 } from '@tavern/shared';
 import { useRealtime } from './store.js';
 import { GatewayClient } from './gateway-client.js';
@@ -73,6 +74,19 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
     case 'TYPING_START': {
       const d = data as { channelId: string; userId: string };
       store.noteTyping(d.channelId, d.userId, Date.now());
+      return;
+    }
+    case 'VOICE_STATE_UPDATE': {
+      // A malformed payload should not crash the dispatch loop — drop and skip.
+      // Dev gets a console hint; production stays silent.
+      const parsed = voiceStateGatewayPayloadSchema.safeParse(data);
+      if (!parsed.success) {
+        if (import.meta.env.DEV) {
+          console.warn('VOICE_STATE_UPDATE failed validation', parsed.error.issues);
+        }
+        return;
+      }
+      store.applyVoiceState(parsed.data);
       return;
     }
     default:

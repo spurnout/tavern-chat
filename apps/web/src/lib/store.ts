@@ -2,15 +2,16 @@
  * Realtime client store.
  *
  * Mirrors the slice of server state we care about for chat: known servers,
- * channels, recent messages per channel, and a few convenience selectors.
+ * channels, recent messages per channel, voice presence per channel, and a
+ * few convenience selectors.
  *
  * Mutations come from two sources:
  *   1. Direct REST calls (initial fetches, optimistic creates).
- *   2. Gateway dispatches (MESSAGE_CREATE, etc.).
+ *   2. Gateway dispatches (MESSAGE_CREATE, VOICE_STATE_UPDATE, etc.).
  */
 
 import { create } from 'zustand';
-import type { Channel, Message, Server } from '@tavern/shared';
+import type { Channel, Message, Server, VoiceStateGatewayPayload } from '@tavern/shared';
 
 interface RealtimeState {
   serversById: Record<string, Server>;
@@ -18,6 +19,11 @@ interface RealtimeState {
   messagesByChannel: Record<string, Message[]>;
   /** channelId -> map of userId -> last typing timestamp (ms) */
   typingByChannel: Record<string, Record<string, number>>;
+  /**
+   * channelId -> map of userId -> current voice state. Only contains users
+   * actively in the channel; we evict on `channelId: null` updates.
+   */
+  voiceStatesByChannel: Record<string, Record<string, VoiceStateGatewayPayload>>;
   ready: boolean;
   setReady: (ready: boolean) => void;
   upsertServer: (server: Server) => void;
@@ -29,6 +35,7 @@ interface RealtimeState {
   removeMessage: (channelId: string, id: string) => void;
   noteTyping: (channelId: string, userId: string, ts: number) => void;
   expireTyping: (channelId: string, before: number) => void;
+  applyVoiceState: (state: VoiceStateGatewayPayload) => void;
 }
 
 function uniqById<T extends { id: string }>(arr: T[]): T[] {
@@ -42,6 +49,7 @@ export const useRealtime = create<RealtimeState>((set) => ({
   channelsByServer: {},
   messagesByChannel: {},
   typingByChannel: {},
+  voiceStatesByChannel: {},
   ready: false,
   setReady: (ready) => set({ ready }),
 
@@ -130,4 +138,48 @@ export const useRealtime = create<RealtimeState>((set) => ({
         },
       };
     }),
+
+  applyVoiceState: (state) =>
+    set((s) => {
+      // Two-pass immutable update: evict the user from every prior channel,
+      // then place them in the new one (if any). Voice presence is
+      // single-channel per user; mutating a freshly-spread copy in place
+      // would break the project's immutability rule.
+      const evicted: Record<string, Record<string, VoiceStateGatewayPayload>> = {};
+      for (const [chId, byUser] of Object.entries(s.voiceStatesByChannel)) {
+        if (byUser[state.userId]) {
+          const { [state.userId]: _gone, ...rest } = byUser;
+          evicted[chId] = rest;
+        } else {
+          evicted[chId] = byUser;
+        }
+      }
+      if (state.channelId === null) {
+        return { voiceStatesByChannel: evicted };
+      }
+      const byUser = evicted[state.channelId] ?? {};
+      return {
+        voiceStatesByChannel: {
+          ...evicted,
+          [state.channelId]: { ...byUser, [state.userId]: state },
+        },
+      };
+    }),
 }));
+
+/**
+ * True iff at least one participant in `channelId` is currently screen-sharing.
+ * Returns a boolean so consumers don't have to worry about array-identity
+ * stability across renders.
+ */
+export function useAnyScreenSharing(channelId: string | null | undefined): boolean {
+  return useRealtime((s) => {
+    if (!channelId) return false;
+    const byUser = s.voiceStatesByChannel[channelId];
+    if (!byUser) return false;
+    for (const state of Object.values(byUser)) {
+      if (state.screenSharing) return true;
+    }
+    return false;
+  });
+}

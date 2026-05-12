@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Dice5, Mic, Paperclip, Send, Square, X } from 'lucide-react';
-import type { Attachment, Message } from '@tavern/shared';
+import {
+  ALLOWED_AUDIO_MIMES,
+  ALLOWED_IMAGE_MIMES,
+  ALLOWED_VIDEO_MIMES,
+  UPLOAD_LIMITS,
+  type Attachment,
+  type Message,
+} from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
+import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
 
 interface Props {
@@ -28,10 +36,39 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   // Tracks whether the component is still mounted so async callbacks (recorder
   // onstop, upload completions) can skip setState on a teardown.
   const mountedRef = useRef(true);
+  // FE-06: hold the active MediaRecorder + its stream in refs so the unmount
+  // cleanup can tear them down. The state copy is the source of truth for
+  // rendering; the refs are the source of truth for cleanup, because they
+  // survive the React-render that nulls out the state value.
+  const activeRecorderRef = useRef<MediaRecorder | null>(null);
+  const activeStreamRef = useRef<MediaStream | null>(null);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // FE-06: if the user closed the tab / navigated away mid-recording, the
+      // browser would otherwise leave the mic indicator lit indefinitely.
+      // Tear down both the recorder and its media tracks.
+      const rec = activeRecorderRef.current;
+      if (rec && rec.state !== 'inactive') {
+        try {
+          rec.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      const s = activeStreamRef.current;
+      if (s) {
+        for (const t of s.getTracks()) {
+          try {
+            t.stop();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      activeRecorderRef.current = null;
+      activeStreamRef.current = null;
     };
   }, []);
 
@@ -93,15 +130,43 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
     for (const file of files) {
+      // FE-24: validate size and MIME type client-side before burning an
+      // upload slot. The server is still authoritative — these mirror the
+      // server's UploadValidator allow-lists in packages/shared/constants.ts
+      // so a malicious client can't bypass them.
+      const sizeLimit = pickSizeLimitFor(file.type);
+      if (file.size > sizeLimit) {
+        toast.error(
+          `${file.name} is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max is ${(sizeLimit / 1024 / 1024).toFixed(0)} MB.`,
+        );
+        continue;
+      }
+      if (file.type === 'image/svg+xml') {
+        toast.error('SVG uploads are blocked for security reasons.');
+        continue;
+      }
       try {
         const att = await uploadFile({ file, channelId });
         const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
         setPending((p) => [...p, { attachment: att, previewUrl }]);
       } catch (err) {
         const msg = err instanceof ApiError ? err.message : 'Upload failed';
-        setError(msg);
+        toast.error(msg);
       }
     }
+  }
+
+  function pickSizeLimitFor(mime: string): number {
+    if ((ALLOWED_IMAGE_MIMES as readonly string[]).includes(mime)) {
+      return UPLOAD_LIMITS.MAX_IMAGE_BYTES;
+    }
+    if ((ALLOWED_VIDEO_MIMES as readonly string[]).includes(mime)) {
+      return UPLOAD_LIMITS.MAX_VIDEO_BYTES;
+    }
+    if ((ALLOWED_AUDIO_MIMES as readonly string[]).includes(mime)) {
+      return UPLOAD_LIMITS.MAX_AUDIO_BYTES;
+    }
+    return UPLOAD_LIMITS.MAX_GENERIC_FILE_BYTES;
   }
 
   function removePending(id: string): void {
@@ -125,6 +190,8 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
       };
       recorder.onstop = async () => {
         for (const t of recorderStream.getTracks()) t.stop();
+        activeRecorderRef.current = null;
+        activeStreamRef.current = null;
         const blob = new Blob(recordingChunks.current, { type: 'audio/webm' });
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
         try {
@@ -145,9 +212,11 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
             return;
           }
           const msg = err instanceof ApiError ? err.message : 'Voice message failed';
-          setError(msg);
+          toast.error(msg);
         }
       };
+      activeRecorderRef.current = recorder;
+      activeStreamRef.current = recorderStream;
       recorder.start();
       setRecording(recorder);
     } catch (err) {
@@ -155,7 +224,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         for (const t of stream.getTracks()) t.stop();
       }
       const msg = err instanceof Error ? err.message : 'Could not access microphone';
-      setError(msg);
+      toast.error(msg);
     }
   }
 

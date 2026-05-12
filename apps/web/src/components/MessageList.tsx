@@ -1,17 +1,26 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Dice5, Flag, Trash2 } from 'lucide-react';
 import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { useAuth } from '../lib/auth.js';
+import { toast } from '../lib/toast.js';
 import { AttachmentView } from './AttachmentView.js';
 import { ReactionBar } from './ReactionBar.js';
 import { ReportDialog } from './ReportDialog.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 interface Props {
   channelId: string;
 }
+
+/**
+ * Threshold for the sticky-scroll behaviour: if the user is within this many
+ * pixels of the bottom we follow new messages; further up we leave them
+ * where they are. FE-07.
+ */
+const STICK_THRESHOLD_PX = 120;
 
 export function MessageList({ channelId }: Props): JSX.Element {
   const messages = useRealtime((s) => s.messagesByChannel[channelId] ?? []);
@@ -20,6 +29,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
 
   const [loading, setLoading] = useState(false);
   const [reportTarget, setReportTarget] = useState<Message | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,7 +39,9 @@ export function MessageList({ channelId }: Props): JSX.Element {
       .then((data) => {
         if (!cancelled) setMessages(channelId, data);
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (!cancelled) toast.error('Could not load messages. Try again in a moment.');
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
@@ -38,7 +50,9 @@ export function MessageList({ channelId }: Props): JSX.Element {
     };
   }, [channelId, setMessages]);
 
-  const sorted = useMemo(() => messages, [messages]);
+  // FE-08: drop the no-op useMemo over `messages` (deps:[messages] meant it
+  // recomputed every render anyway). Just consume the array directly.
+  const sorted = messages;
 
   const virtualizer = useVirtualizer({
     count: sorted.length,
@@ -47,10 +61,16 @@ export function MessageList({ channelId }: Props): JSX.Element {
     overscan: 8,
   });
 
+  // FE-07: sticky scroll-to-bottom — only follow new messages when the user
+  // is already near the bottom. Previously every incoming message yanked the
+  // viewport to the bottom even if the user was scrolled up reading history.
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom <= STICK_THRESHOLD_PX) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [sorted.length]);
 
   return (
@@ -86,6 +106,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
                 message={message}
                 mine={me?.id === message.authorId}
                 onReport={() => setReportTarget(message)}
+                onDelete={() => setDeleteTarget(message)}
               />
             </div>
           );
@@ -99,6 +120,24 @@ export function MessageList({ channelId }: Props): JSX.Element {
           onClose={() => setReportTarget(null)}
         />
       ) : null}
+      {deleteTarget ? (
+        <ConfirmDialog
+          title="Delete this message?"
+          description="The message will be removed for everyone in this room."
+          confirmLabel="Delete"
+          destructive
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            const id = deleteTarget.id;
+            setDeleteTarget(null);
+            try {
+              await api(`/messages/${id}`, { method: 'DELETE' });
+            } catch (err) {
+              toast.error(err instanceof ApiError ? err.message : 'Could not delete the message.');
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -107,9 +146,10 @@ interface RowProps {
   message: Message;
   mine: boolean;
   onReport: () => void;
+  onDelete: () => void;
 }
 
-function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
+function MessageRow({ message, mine, onReport, onDelete }: RowProps): JSX.Element {
   if (message.deletedAt) {
     return (
       <div className="rounded px-3 py-2 text-sm italic text-fg-muted">message deleted</div>
@@ -168,12 +208,7 @@ function MessageRow({ message, mine, onReport }: RowProps): JSX.Element {
         {mine ? (
           <button
             type="button"
-            onClick={() => {
-              if (!confirm('Delete this message?')) return;
-              api(`/messages/${message.id}`, { method: 'DELETE' }).catch((err) => {
-                if (err instanceof ApiError) alert(err.message);
-              });
-            }}
+            onClick={onDelete}
             aria-label="Delete message"
             title="Delete"
             className="rounded p-1 text-fg-muted hover:bg-raised"

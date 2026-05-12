@@ -39,6 +39,11 @@ function cacheSet(id: string, att: Attachment): void {
 // the previous attachment.
 export function AttachmentView({ id }: { id: string }): JSX.Element {
   const [att, setAtt] = useState<Attachment | null>(cachePeek(id) ?? null);
+  // FE-09: distinguish "still loading" from "fetch failed". Previously the
+  // loading state was sticky on failure and showed "attachment loading…"
+  // forever, which made transient errors indistinguishable from an attachment
+  // the server just hasn't finished scanning.
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     if (att) {
@@ -46,17 +51,28 @@ export function AttachmentView({ id }: { id: string }): JSX.Element {
       return;
     }
     let cancelled = false;
+    setLoadError(false);
     api<Attachment>(`/attachments/${id}`)
       .then((a) => {
         if (cancelled) return;
         cacheSet(id, a);
         setAtt(a);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setLoadError(true);
+      });
     return () => {
       cancelled = true;
     };
   }, [id, att]);
+
+  if (loadError) {
+    return (
+      <div className="my-1 inline-block rounded border border-subtle bg-surface px-2 py-1 text-xs text-fg-muted">
+        Couldn&apos;t load attachment.
+      </div>
+    );
+  }
 
   if (!att) {
     return (

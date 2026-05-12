@@ -53,16 +53,17 @@ export const useAuth = create<AuthState>((set) => ({
       needsBootstrap = false; // be lenient — if the API is down, fall through to login
     }
 
-    if (!tokenStore.accessToken && !tokenStore.refreshToken) {
-      set({ status: 'unauthenticated', needsBootstrap });
-      return;
-    }
+    // After SEC-001/FE-02 the refresh token lives in an httpOnly cookie we
+    // can't see from JS. The sessionHint expiry tells us we likely have an
+    // access token in memory; if we don't (page reload), the api() 401
+    // handler will try to refresh from the cookie automatically. Either way,
+    // attempting /auth/me is the cheapest "do I have a session?" probe.
     try {
       const me = await fetchMe();
       set({ me, status: 'authenticated', needsBootstrap, error: null });
     } catch (err) {
       tokenStore.clear();
-      const msg = err instanceof ApiError ? err.message : 'Could not load profile';
+      const msg = err instanceof ApiError ? err.message : null;
       set({ me: null, status: 'unauthenticated', needsBootstrap, error: msg });
     }
   },

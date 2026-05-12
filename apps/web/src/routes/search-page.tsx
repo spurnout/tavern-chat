@@ -13,28 +13,39 @@ export function SearchPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const channels = useRealtime((s) => (serverId ? (s.channelsByServer[serverId] ?? []) : []));
 
-  // Debounced search.
+  // Debounced search + in-flight cancellation. FE-15: an AbortController
+  // attached to the fetch is aborted on rapid re-typing so older queries
+  // can't overwrite newer results when the network is jittery, and the
+  // server isn't asked to run obsolete searches.
   useEffect(() => {
     if (!serverId) return;
     if (q.trim().length < 2) {
       setResults([]);
       return;
     }
+    const controller = new AbortController();
     const handle = setTimeout(async () => {
       setBusy(true);
       setError(null);
       try {
         const r = await api<{ messages: Message[] }>(`/servers/${serverId}/search`, {
           query: { q: q.trim(), limit: 30 },
+          signal: controller.signal,
         });
         setResults(r.messages);
       } catch (err) {
+        // AbortError is the expected outcome when a newer keystroke fired —
+        // don't surface it as a search failure.
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         setError(err instanceof ApiError ? err.message : 'Search failed');
       } finally {
         setBusy(false);
       }
     }, 250);
-    return () => clearTimeout(handle);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
   }, [q, serverId]);
 
   if (!serverId) return <div className="p-12">Pick a den.</div>;
