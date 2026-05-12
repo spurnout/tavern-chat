@@ -11,8 +11,12 @@ bind_addresses:
 
 rtc:
   tcp_port: 7881
-  port_range_start: 50000
-  port_range_end: 50100
+  # INF-005: single-UDP-port mode so the compose file only needs to expose
+  # 7882/udp (matches the production-hardening doc's "open UDP 7882" guidance).
+  # Single port supports up to ~100 simultaneous participants, comfortably
+  # above the room cap below. Switch back to a port range only if you need
+  # to scale beyond that — and remember to expose the full range in compose.
+  udp_port: 7882
   use_external_ip: false
 
 keys:

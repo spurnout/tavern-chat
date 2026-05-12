@@ -25,7 +25,7 @@ e2e/         Playwright suite + walkthrough scripts
 ## Stack
 
 - **Node 22+, pnpm 9+** (corepack)
-- **PostgreSQL 16+** required. Redis, MinIO, ClamAV, LiveKit are optional — Tavern uses in-process / on-disk fallbacks when missing.
+- **PostgreSQL 16+** required. Redis, object storage (Garage / any S3-compatible), ClamAV, LiveKit are optional — Tavern uses in-process / on-disk fallbacks when missing.
 - Web: Vite + React + TanStack Router + Tailwind + Radix primitives + Lucide icons
 - API: Fastify with WebSocket gateway
 - Worker: BullMQ

@@ -11,7 +11,8 @@ const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3030';
  *                  records video. Output lands under
  *                  `test-results/<test>-walkthrough/video.webm`.
  *
- * Both projects assume a running dev stack (`pnpm docker:up && pnpm dev`).
+ * Both projects assume a running dev stack (`pnpm dev`; Postgres is
+ * required, Docker is optional for Redis/Garage/ClamAV/LiveKit).
  * The walkthrough additionally needs the seed: `pnpm db:seed`.
  */
 export default defineConfig({

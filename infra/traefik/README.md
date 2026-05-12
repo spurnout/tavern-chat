@@ -19,5 +19,7 @@ docker-compose** — they're starting points for production.
    `LIVEKIT_API_SECRET`.
 4. Open UDP `7882` on your firewall — LiveKit's TURN/UDP relay needs direct
    reachability from clients.
-5. Put MinIO behind a CDN or restrict the `tavern-media` bucket to authenticated
-   reads if you don't want media to be world-readable via signed URLs.
+5. Note that Tavern proxies S3 attachment fetches through the API
+   (`/api/_attachments/...`), so the object-storage backend (Garage by default)
+   is never directly exposed to the public — no separate CDN config is needed
+   for correctness. Add a CDN in front of the API if you want offload.

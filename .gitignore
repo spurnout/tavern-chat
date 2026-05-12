@@ -30,6 +30,10 @@ e2e/walkthrough.mp4
 .env.*.local
 !.env.example
 
+# Garage config — materialized from infra/garage/garage.toml.example by
+# scripts/garage-config.mjs on first `pnpm docker:up`. Contains secrets.
+infra/garage/garage.toml
+
 # IDE
 .vscode/*
 !.vscode/extensions.json

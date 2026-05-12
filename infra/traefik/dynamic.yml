@@ -7,6 +7,7 @@ http:
       rule: "Host(`tavern.example.com`)"
       entryPoints: ["websecure"]
       service: tavern-web
+      middlewares: ["tavern-security-headers"]
       tls:
         certResolver: letsencrypt
 
@@ -14,6 +15,7 @@ http:
       rule: "Host(`tavern.example.com`) && PathPrefix(`/api`)"
       entryPoints: ["websecure"]
       service: tavern-api
+      middlewares: ["tavern-security-headers"]
       tls:
         certResolver: letsencrypt
 
@@ -21,14 +23,34 @@ http:
       rule: "Host(`tavern.example.com`) && PathPrefix(`/gateway`)"
       entryPoints: ["websecure"]
       service: tavern-api
+      middlewares: ["tavern-security-headers"]
       tls:
         certResolver: letsencrypt
+
+  # INF-014: security headers applied to every Tavern router. Mirrors the
+  # production-hardening checklist (HSTS + nosniff + frame-deny + referrer
+  # policy + Permissions-Policy). CSP is left for the upstream nginx because
+  # Traefik's middleware doesn't easily express the dynamic LiveKit origin
+  # the SPA needs in `connect-src`.
+  middlewares:
+    tavern-security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: false
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
 
   services:
     tavern-web:
       loadBalancer:
         servers:
-          - url: "http://tavern-web:3000"
+          # apps/web ships as nginx (Dockerfile FROM nginx:alpine), which
+          # listens on the default HTTP port 80. Don't change this to 3000 —
+          # that's the dev Vite port, not the container port.
+          - url: "http://tavern-web:80"
     tavern-api:
       loadBalancer:
         servers:

@@ -33,9 +33,14 @@
     "db:migrate": "pnpm --filter @tavern/db migrate",
     "db:seed": "pnpm --filter @tavern/db seed",
     "db:reset": "pnpm --filter @tavern/db reset",
-    "docker:up": "docker compose -f infra/docker/docker-compose.yml up -d",
-    "docker:down": "docker compose -f infra/docker/docker-compose.yml down",
-    "docker:logs": "docker compose -f infra/docker/docker-compose.yml logs -f"
+    "garage:config": "node scripts/garage-config.mjs",
+    "docker:up": "node scripts/garage-config.mjs && docker compose -f infra/docker/docker-compose.yml up -d",
+    "docker:up:all": "node scripts/garage-config.mjs && docker compose -f infra/docker/docker-compose.yml --profile livekit up -d",
+    "docker:up:full": "node scripts/garage-config.mjs && docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit up -d --build",
+    "docker:build": "docker compose -f infra/docker/docker-compose.yml --profile apps build",
+    "docker:down": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit down",
+    "docker:logs": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit logs -f",
+    "garage:bootstrap": "node scripts/garage-bootstrap.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

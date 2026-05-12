@@ -1,0 +1,42 @@
+# Tavern Garage config template — single-node, local-only.
+#
+# Garage is an S3-compatible object store (AGPL-3.0) by Deuxfleurs, used here
+# as a drop-in replacement for MinIO. https://garagehq.deuxfleurs.fr/
+#
+# This file is a TEMPLATE. `scripts/garage-config.mjs` materializes the real
+# `garage.toml` (git-ignored) on first `pnpm docker:up` — with fresh secrets
+# in development, or from $GARAGE_RPC_SECRET / $GARAGE_ADMIN_TOKEN /
+# $GARAGE_METRICS_TOKEN env vars otherwise. The three secrets below are the
+# dev fallback used only when NODE_ENV in {development, test} and only when
+# the materialized file doesn't already exist. They are SAFE for local dev
+# (the container binds only to 127.0.0.1 via docker-compose) but MUST NOT be
+# used for any deployment.
+# Regenerate with:
+#   node -e "const c=require('crypto'); console.log('rpc_secret=' + c.randomBytes(32).toString('hex')); console.log('admin_token=' + c.randomBytes(32).toString('base64')); console.log('metrics_token=' + c.randomBytes(32).toString('base64'));"
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+
+# RPC: how Garage nodes talk to each other (and how the bootstrap sidecar
+# reaches this node). rpc_public_addr points at the docker-compose service
+# name so the bootstrap container can connect over the compose network.
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "tavern-garage:3901"
+rpc_secret = "c483409522a12fc217f1fd0bebfb7e8dd2bee14ff87ef030695e5424aafd344e"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.garage.localhost"
+index = "index.html"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "crYKD9FI7gRwd468whjLiwH24XddADZ5NcPFthDKvTc="
+metrics_token = "tuYPZE/FQq286nHWorKoSN1WU5AetqDH7BifgxHO7wY="

@@ -1,0 +1,48 @@
+# Don't ship local dependency installs into the image. Each stage runs its
+# own pnpm install inside the container so the lockfile resolves identically.
+**/node_modules
+**/dist
+**/build
+**/.turbo
+**/.next
+**/.cache
+**/*.tsbuildinfo
+
+# Tests + dev artefacts — not needed in runtime images
+e2e/test-results
+e2e/playwright-report
+e2e/playwright/.cache
+e2e/walkthrough-frames
+e2e/walkthrough.html
+e2e/walkthrough.mp4
+coverage
+.nyc_output
+
+# Secrets and local-only state
+.env
+.env.local
+.env.*.local
+infra/garage/garage.toml
+infra/data
+infra/docker/data
+data
+
+# Git + IDE
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+*-debug.log*
+
+# Docs / non-runtime
+docs
+*.md
+!packages/*/README.md

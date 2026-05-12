@@ -9,7 +9,8 @@ import { test, expect } from '@playwright/test';
  *   5. Send a /roll 1d20 dice command; see a dice-roll bubble.
  *
  * The test uses the dev seed defaults (admin@example.com / change-me-in-dev).
- * Run with the dev stack already up (`pnpm docker:up && pnpm dev`).
+ * Run with `pnpm dev` (Postgres required; Docker only needed for the
+ * optional services like Redis/Garage/ClamAV).
  */
 
 test.describe('Tavern golden path', () => {

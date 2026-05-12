@@ -68,9 +68,6 @@ importers:
       bullmq:
         specifier: ^5.21.2
         version: 5.76.6
-      dotenv:
-        specifier: ^16.4.7
-        version: 16.6.1
       fastify:
         specifier: ^5.1.0
         version: 5.8.5
@@ -80,9 +77,6 @@ importers:
       jose:
         specifier: ^5.9.6
         version: 5.10.0
-      minio:
-        specifier: ^8.0.2
-        version: 8.0.7
       pino:
         specifier: ^9.5.0
         version: 9.14.0
@@ -92,6 +86,9 @@ importers:
       sanitize-html:
         specifier: ^2.13.1
         version: 2.17.3
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -105,9 +102,6 @@ importers:
       testcontainers:
         specifier: ^10.13.2
         version: 10.28.0
-      tsx:
-        specifier: ^4.19.2
-        version: 4.21.0
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
@@ -202,6 +196,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@prisma/client':
+        specifier: ^5.22.0
+        version: 5.22.0(prisma@5.22.0)
       '@tavern/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -214,9 +211,6 @@ importers:
       bullmq:
         specifier: ^5.21.2
         version: 5.76.6
-      dotenv:
-        specifier: ^16.4.7
-        version: 16.6.1
       ioredis:
         specifier: ^5.4.1
         version: 5.10.1
@@ -226,13 +220,13 @@ importers:
       pino-pretty:
         specifier: ^11.3.0
         version: 11.3.0
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      tsx:
-        specifier: ^4.19.2
-        version: 4.21.0
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
@@ -298,6 +292,9 @@ importers:
 
   packages/shared:
     dependencies:
+      dotenv:
+        specifier: ^16.4.7
+        version: 16.6.1
       zod:
         specifier: ^3.23.8
         version: 3.25.76
