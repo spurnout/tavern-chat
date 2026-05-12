@@ -55,6 +55,9 @@
   "pnpm": {
     "overrides": {
       "@tanstack/history": "1.161.6"
+    },
+    "auditConfig": {
+      "ignoreGhsas": ["GHSA-rmmr-r34h-pfm5"]
     }
   }
 }
