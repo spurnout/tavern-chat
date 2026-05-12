@@ -176,7 +176,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerOverwriteRoutes(app);
     await registerInviteRoutes(app);
     await registerBanRoutes(app);
-    await registerLocalFileRoutes(app, storage);
+    await registerLocalFileRoutes(app, {
+      storage,
+      uploadMaxBytes: opts.config.UPLOAD_MAX_BYTES,
+    });
     await registerAttachmentRoutes(app, storage);
     await registerUploadRoutes(app, { config: opts.config, storage, queues });
     await registerReactionRoutes(app);

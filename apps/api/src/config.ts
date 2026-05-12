@@ -103,6 +103,16 @@ const envSchema = z.object({
    * STO-005.
    */
   S3_PRESIGN_EXPIRY_SECONDS: z.coerce.number().int().positive().default(600),
+
+  /**
+   * Maximum upload payload size, in bytes (INF-017). Default 100 MiB.
+   * Applied to:
+   *  - the local-uploads route's per-request body limit
+   *  - the validator's generic-file size cap (existing)
+   * The nginx `client_max_body_size` (apps/web/nginx.conf) MUST be raised
+   * in tandem; nginx doesn't read env vars at request time.
+   */
+  UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
 });
 
 export type Config = z.infer<typeof envSchema>;

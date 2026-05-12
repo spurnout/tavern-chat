@@ -51,19 +51,27 @@ function isSafeKey(key: string): boolean {
   return true;
 }
 
+export interface LocalFileRouteDeps {
+  storage: StorageBackend;
+  uploadMaxBytes: number;
+}
+
 export async function registerLocalFileRoutes(
   app: FastifyInstance,
-  storage: StorageBackend,
+  deps: LocalFileRouteDeps,
 ): Promise<void> {
+  const { storage, uploadMaxBytes } = deps;
   if (!(storage instanceof LocalStorageBackend)) return;
   const local = storage;
 
-  // PUT: receive presigned local uploads.
-  // Larger than the default Fastify body limit — uploads can be hundreds of MB.
+  // PUT: receive presigned local uploads. bodyLimit threaded through from
+  // UPLOAD_MAX_BYTES (INF-017) so the local route, S3 presign, and worker
+  // stat verification all agree on the same cap. nginx's client_max_body_size
+  // must match in deployments that put nginx in front.
   app.route({
     method: 'PUT',
     url: '/api/_local-uploads/:token',
-    bodyLimit: 256 * 1024 * 1024,
+    bodyLimit: uploadMaxBytes,
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
       const { token } = z.object({ token: z.string().min(8).max(96) }).parse(req.params);
