@@ -3,8 +3,9 @@
  *
  * Tavern uses two backends, picked at construction time:
  *
- *   S3StorageBackend    — MinIO / any S3-compatible store. Real presigned
- *                          PUT URLs go directly to the storage host.
+ *   S3StorageBackend    — Garage / any S3-compatible store. Real presigned
+ *                          PUT URLs go directly to the storage host; GETs are
+ *                          proxied via the API at `/api/_attachments/...`.
  *   LocalStorageBackend — files written to a directory on disk; "presigned"
  *                          URLs are short-lived tokens pointing back at the
  *                          API, which streams the body to disk.

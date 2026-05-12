@@ -110,6 +110,7 @@ export const PERMISSION_DEFAULT_EVERYONE: bigint =
   Permission.CONNECT_VOICE |
   Permission.SPEAK_VOICE |
   Permission.ENABLE_CAMERA |
+  Permission.STREAM_SCREEN |
   Permission.USE_VAD |
   Permission.ROLL_DICE |
   Permission.REPORT_CONTENT;

@@ -22,13 +22,24 @@ interface JwtConfig {
   issuer?: string;
 }
 
+const DEFAULT_ISSUER = 'tavern';
+/**
+ * Audience claim for access tokens. Distinct from refresh-token audience so a
+ * stolen refresh token can't be replayed as an access token even if a future
+ * change accidentally cross-validates against the wrong key. SEC-005.
+ */
+const ACCESS_AUDIENCE = 'tavern-api';
+const REFRESH_AUDIENCE = 'tavern-refresh';
+
 export class JwtService {
   private readonly accessKey: Uint8Array;
   private readonly refreshKey: Uint8Array;
+  private readonly issuer: string;
 
   constructor(private readonly cfg: JwtConfig) {
     this.accessKey = new TextEncoder().encode(cfg.accessSecret);
     this.refreshKey = new TextEncoder().encode(cfg.refreshSecret);
+    this.issuer = cfg.issuer ?? DEFAULT_ISSUER;
   }
 
   async signAccess(payload: AccessTokenPayload): Promise<{ token: string; expiresAt: Date }> {
@@ -37,7 +48,8 @@ export class JwtService {
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setIssuedAt()
       .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
-      .setIssuer(this.cfg.issuer ?? 'tavern')
+      .setIssuer(this.issuer)
+      .setAudience(ACCESS_AUDIENCE)
       .sign(this.accessKey);
     return { token, expiresAt };
   }
@@ -48,7 +60,8 @@ export class JwtService {
       .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
       .setIssuedAt()
       .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
-      .setIssuer(this.cfg.issuer ?? 'tavern')
+      .setIssuer(this.issuer)
+      .setAudience(REFRESH_AUDIENCE)
       .sign(this.refreshKey);
     return { token, expiresAt };
   }
@@ -56,7 +69,9 @@ export class JwtService {
   async verifyAccess(token: string): Promise<AccessTokenPayload> {
     try {
       const { payload } = await jwtVerify(token, this.accessKey, {
-        issuer: this.cfg.issuer ?? 'tavern',
+        issuer: this.issuer,
+        audience: ACCESS_AUDIENCE,
+        algorithms: ['HS256'],
       });
       if (payload.typ !== 'access' || typeof payload.sub !== 'string' || typeof payload.sid !== 'string') {
         throw TavernError.unauthorized('Malformed token');
@@ -74,7 +89,9 @@ export class JwtService {
   async verifyRefresh(token: string): Promise<RefreshTokenPayload> {
     try {
       const { payload } = await jwtVerify(token, this.refreshKey, {
-        issuer: this.cfg.issuer ?? 'tavern',
+        issuer: this.issuer,
+        audience: REFRESH_AUDIENCE,
+        algorithms: ['HS256'],
       });
       if (
         payload.typ !== 'refresh' ||

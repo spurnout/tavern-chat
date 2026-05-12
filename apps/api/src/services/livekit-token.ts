@@ -33,6 +33,14 @@ export interface LiveKitTokenInput {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * `nbf` leeway: LiveKit servers reject tokens whose `nbf` is in the future.
+ * A small backdating window absorbs the clock skew between the API host that
+ * signs the token and the LiveKit host that validates it. 5 seconds is the
+ * LiveKit SDK default. VC-010.
+ */
+const LIVEKIT_NBF_LEEWAY_SECONDS = 5;
+
 export async function signLiveKitToken(input: LiveKitTokenInput): Promise<{
   token: string;
   expiresAt: Date;
@@ -44,7 +52,7 @@ export async function signLiveKitToken(input: LiveKitTokenInput): Promise<{
   const claims: Record<string, unknown> = {
     sub: input.identity,
     name: input.name,
-    nbf: Math.floor(Date.now() / 1000) - 5,
+    nbf: Math.floor(Date.now() / 1000) - LIVEKIT_NBF_LEEWAY_SECONDS,
     iss: input.apiKey,
     video: input.grant,
   };

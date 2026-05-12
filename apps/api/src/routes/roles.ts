@@ -15,7 +15,7 @@ import {
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
 import { serializeRole } from '../lib/serializers.js';
-import { requireServerPermission } from '../services/permissions-service.js';
+import { requireRoleHierarchy, requireServerPermission } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 
@@ -31,18 +31,25 @@ export async function registerRoleRoutes(app: FastifyInstance): Promise<void> {
       orderBy: { position: 'desc' },
       select: { position: true },
     });
+    const newPosition = (last?.position ?? 0) + 1;
+    const newPerms = parsePermissions(body.permissions ?? '0');
+
+    // Hierarchy gate: actor cannot create a role with permissions they do not
+    // themselves hold, even though they have MANAGE_ROLES. See PERM-001.
+    await requireRoleHierarchy(serverId, ctx.userId, [
+      { position: newPosition, permissions: newPerms },
+    ]);
+
     const role = await prisma.role.create({
       data: {
         id: ulid(),
         serverId,
         name: body.name,
         color: body.color ?? 0,
-        permissions: new Prisma.Decimal(
-          serializePermissions(parsePermissions(body.permissions ?? '0')),
-        ),
+        permissions: new Prisma.Decimal(serializePermissions(newPerms)),
         mentionable: body.mentionable ?? false,
         hoist: body.hoist ?? false,
-        position: (last?.position ?? 0) + 1,
+        position: newPosition,
       },
     });
     await writeAuditEntry({
@@ -64,6 +71,19 @@ export async function registerRoleRoutes(app: FastifyInstance): Promise<void> {
     if (!role) throw TavernError.notFound('Role not found');
     await requireServerPermission(role.serverId, ctx.userId, Permission.MANAGE_ROLES);
 
+    // Hierarchy gate: the role's existing position and permissions must both
+    // be below the actor's, and the post-update permissions must still be a
+    // subset of the actor's own. Otherwise MANAGE_ROLES alone could let a
+    // mid-tier moderator add ADMINISTRATOR to any role. See PERM-001.
+    const existingPerms = parsePermissions(role.permissions.toString());
+    const proposedPerms =
+      body.permissions !== undefined ? parsePermissions(body.permissions) : existingPerms;
+    const proposedPosition = body.position !== undefined ? body.position : role.position;
+    await requireRoleHierarchy(role.serverId, ctx.userId, [
+      { position: role.position, permissions: existingPerms },
+      { position: proposedPosition, permissions: proposedPerms },
+    ]);
+
     const updated = await prisma.role.update({
       where: { id },
       data: {
@@ -74,9 +94,7 @@ export async function registerRoleRoutes(app: FastifyInstance): Promise<void> {
         ...(body.position !== undefined ? { position: body.position } : {}),
         ...(body.permissions !== undefined
           ? {
-              permissions: new Prisma.Decimal(
-                serializePermissions(parsePermissions(body.permissions)),
-              ),
+              permissions: new Prisma.Decimal(serializePermissions(proposedPerms)),
             }
           : {}),
       },
@@ -131,12 +149,25 @@ export async function registerRoleRoutes(app: FastifyInstance): Promise<void> {
 
     const roles = await prisma.role.findMany({
       where: { id: { in: body.roleIds }, serverId, isEveryone: false },
-      select: { id: true },
+      select: { id: true, position: true, permissions: true },
     });
     const validIds = new Set(roles.map((r) => r.id));
     if (validIds.size !== body.roleIds.length) {
       throw TavernError.validation('Unknown role id');
     }
+
+    // Hierarchy gate: every role being assigned must be below the actor's
+    // highest role AND must only carry permissions the actor themselves has.
+    // Prevents a mid-tier MANAGE_ROLES holder from granting ADMINISTRATOR.
+    // See PERM-001.
+    await requireRoleHierarchy(
+      serverId,
+      ctx.userId,
+      roles.map((r) => ({
+        position: r.position,
+        permissions: parsePermissions(r.permissions.toString()),
+      })),
+    );
 
     await prisma.$transaction(async (tx) => {
       await tx.serverMemberRole.deleteMany({ where: { serverId, userId } });

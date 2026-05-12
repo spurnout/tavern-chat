@@ -1,5 +1,4 @@
 export const APP_NAME = 'Tavern';
-export const APP_TAGLINE = 'A cozy hall for friends, gaming groups, and tabletop crews';
 
 export const MESSAGE_LIMITS = {
   MAX_CONTENT_LENGTH: 4000,

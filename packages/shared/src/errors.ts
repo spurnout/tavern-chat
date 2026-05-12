@@ -23,6 +23,8 @@ export const ErrorCodes = {
   CHANNEL_HIDDEN: 'CHANNEL_HIDDEN',
   WRONG_CHANNEL_TYPE: 'WRONG_CHANNEL_TYPE',
   MEMBER_TIMED_OUT: 'MEMBER_TIMED_OUT',
+  ROLE_HIERARCHY: 'ROLE_HIERARCHY',
+  MEMBER_BANNED: 'MEMBER_BANNED',
 
   // Uploads / media
   UPLOAD_BLOCKED: 'UPLOAD_BLOCKED',
@@ -40,6 +42,7 @@ export const ErrorCodes = {
 
   // Voice
   VOICE_UNAVAILABLE: 'VOICE_UNAVAILABLE',
+  VOICE_STATE_STALE: 'VOICE_STATE_STALE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

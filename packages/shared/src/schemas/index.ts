@@ -18,3 +18,4 @@ export * from './board-games.js';
 export * from './game-nights.js';
 export * from './moderation.js';
 export * from './voice.js';
+export * from './bans.js';

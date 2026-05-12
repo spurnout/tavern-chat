@@ -81,6 +81,13 @@ export const GatewayDispatchEvent = {
   GAME_NIGHT_CREATE: 'GAME_NIGHT_CREATE',
   GAME_NIGHT_UPDATE: 'GAME_NIGHT_UPDATE',
   MODERATION_EVENT_CREATE: 'MODERATION_EVENT_CREATE',
+  /**
+   * PERM-002 — emitted to the banned user (and audit-log viewers) on a fresh
+   * ban. When the banned user's gateway client receives this, the server
+   * closes their socket so any open WebSocket session is severed immediately.
+   */
+  GUILD_BAN_ADD: 'GUILD_BAN_ADD',
+  GUILD_BAN_REMOVE: 'GUILD_BAN_REMOVE',
 } as const;
 
 export type GatewayDispatchEventName =

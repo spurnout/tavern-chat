@@ -25,7 +25,7 @@ export function createStorage(cfg: Config): StorageBackend {
       useSsl: cfg.S3_USE_SSL,
       mainBucket: cfg.S3_BUCKET,
       quarantineBucket: cfg.S3_QUARANTINE_BUCKET,
-      publicBaseUrl: cfg.S3_PUBLIC_BASE_URL,
+      apiBaseUrl: cfg.PUBLIC_BASE_URL,
     });
   }
   return new LocalStorageBackend({

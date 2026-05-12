@@ -16,6 +16,7 @@ export const voiceJoinResponseSchema = z.object({
     canPublishScreenShare: z.boolean(),
     canSubscribe: z.boolean(),
   }),
+  expiresAt: z.string().datetime(),
 });
 
 export const voiceStateSchema = z.object({
@@ -31,6 +32,39 @@ export const voiceStateSchema = z.object({
   joinedAt: z.string().datetime().nullable(),
 });
 
+/**
+ * Client → server: partial voice state update.
+ *
+ * The client sends only the fields that have changed (e.g. `{ screenSharing: true }`).
+ * Server applies them to the row keyed by (serverId, userId), then fans out a
+ * full {@link voiceStateGatewayPayloadSchema} via the gateway broker.
+ */
+export const voiceStateUpdateRequestSchema = z.object({
+  channelId: idSchema,
+  selfMute: z.boolean().optional(),
+  selfDeaf: z.boolean().optional(),
+  cameraOn: z.boolean().optional(),
+  screenSharing: z.boolean().optional(),
+});
+
+/**
+ * Server → client: fan-out payload for VOICE_STATE_UPDATE dispatch events.
+ *
+ * `channelId: null` means the user left the channel (all transient flags zeroed).
+ */
+export const voiceStateGatewayPayloadSchema = z.object({
+  serverId: idSchema,
+  userId: idSchema,
+  channelId: idSchema.nullable(),
+  selfMute: z.boolean(),
+  selfDeaf: z.boolean(),
+  cameraOn: z.boolean(),
+  screenSharing: z.boolean(),
+  joinedAt: z.string().datetime().nullable(),
+});
+
 export type VoiceJoinRequest = z.infer<typeof voiceJoinRequestSchema>;
 export type VoiceJoinResponse = z.infer<typeof voiceJoinResponseSchema>;
 export type VoiceState = z.infer<typeof voiceStateSchema>;
+export type VoiceStateUpdateRequest = z.infer<typeof voiceStateUpdateRequestSchema>;
+export type VoiceStateGatewayPayload = z.infer<typeof voiceStateGatewayPayloadSchema>;

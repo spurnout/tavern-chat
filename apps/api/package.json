@@ -26,21 +26,19 @@
     "@tavern/shared": "workspace:*",
     "argon2": "^0.41.1",
     "bullmq": "^5.21.2",
-    "dotenv": "^16.4.7",
     "fastify": "^5.1.0",
     "ioredis": "^5.4.1",
     "jose": "^5.9.6",
-    "minio": "^8.0.2",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "sanitize-html": "^2.13.1",
+    "tsx": "^4.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.13.2",
     "@types/sanitize-html": "^2.13.0",
     "testcontainers": "^10.13.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   }

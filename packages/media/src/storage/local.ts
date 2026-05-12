@@ -5,12 +5,13 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StorageBackend, type ObjectStat, type StorageMode, type UploadTicket } from './types.js';
 
@@ -39,7 +40,7 @@ interface PendingUpload {
  * Public reads go through `/api/_local-files/<bucket>/<key>`.
  *
  * Suitable for dev and small self-hosted instances. For larger deployments,
- * use the S3 backend backed by MinIO (or a real cloud store).
+ * use the S3 backend backed by Garage (or a real cloud store).
  */
 export class LocalStorageBackend extends StorageBackend {
   readonly mode: StorageMode = 'local';
@@ -49,6 +50,15 @@ export class LocalStorageBackend extends StorageBackend {
   private readonly dataDir: string;
   private readonly apiBaseUrl: string;
   private readonly tickets = new Map<string, PendingUpload>();
+  /**
+   * Periodic sweep of expired tickets. Without this, a client that requests
+   * presigned PUT URLs but never completes them leaks ~80 bytes per request
+   * forever. The 60s cadence is a balance between memory cost and the worst-
+   * case "ticket expired N seconds ago but still in the map" window, which
+   * is harmless since `acceptUpload` re-checks expiresAt before honouring it.
+   * STO-002.
+   */
+  private readonly sweepInterval: ReturnType<typeof setInterval>;
 
   constructor(cfg: LocalStorageConfig) {
     super();
@@ -56,6 +66,16 @@ export class LocalStorageBackend extends StorageBackend {
     this.mainBucket = cfg.mainBucket;
     this.quarantineBucket = cfg.quarantineBucket;
     this.apiBaseUrl = cfg.apiBaseUrl.replace(/\/$/, '');
+    this.sweepInterval = setInterval(() => this.purgeExpired(), 60_000);
+    // unref so the timer doesn't keep the Node event loop alive on shutdown.
+    if (typeof (this.sweepInterval as { unref?: () => void }).unref === 'function') {
+      (this.sweepInterval as { unref: () => void }).unref();
+    }
+  }
+
+  /** Stop the periodic ticket sweep. Called on app shutdown. */
+  close(): void {
+    clearInterval(this.sweepInterval);
   }
 
   bucketFor(quarantined: boolean): string {
@@ -89,7 +109,8 @@ export class LocalStorageBackend extends StorageBackend {
 
   /**
    * Called by the API's local-upload route. Validates the token, streams the
-   * incoming body to disk, returns the (bucket, key) the upload landed at.
+   * incoming body to disk while enforcing the declared size, and returns the
+   * (bucket, key) the upload landed at.
    */
   async acceptUpload(
     token: string,
@@ -104,7 +125,36 @@ export class LocalStorageBackend extends StorageBackend {
     this.tickets.delete(token);
     const targetPath = this.absPath(ticket.bucket, ticket.key);
     mkdirSync(path.dirname(targetPath), { recursive: true });
-    await pipeline(body, createWriteStream(targetPath));
+
+    // Enforce the declared size: count bytes through a Transform stream and
+    // abort the pipeline if the body overflows. Without this guard, a client
+    // can stream up to the route-level bodyLimit (256 MiB) regardless of the
+    // sizeBytes the presigned ticket declared.
+    let bytesWritten = 0;
+    const limit = ticket.sizeBytes;
+    const sizeGuard = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        bytesWritten += chunk.length;
+        if (bytesWritten > limit) {
+          cb(new Error(`Upload exceeds declared size (${limit} bytes)`));
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
+
+    try {
+      await pipeline(body, sizeGuard, createWriteStream(targetPath));
+    } catch (err) {
+      // Pipeline failed mid-write — clean up the partial file so we don't
+      // leave junk in the bucket directory.
+      try {
+        rmSync(targetPath, { force: true });
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
     return { bucket: ticket.bucket, key: ticket.key };
   }
 
@@ -145,7 +195,6 @@ export class LocalStorageBackend extends StorageBackend {
     if (!existsSync(src)) throw new Error(`Source not found: ${fromBucket}/${fromKey}`);
     mkdirSync(path.dirname(dst), { recursive: true });
     copyFileSync(src, dst);
-    void statSync(dst); // touch to verify
   }
 
   async removeObject(bucket: string, key: string): Promise<void> {
@@ -160,17 +209,30 @@ export class LocalStorageBackend extends StorageBackend {
   /**
    * Resolve an absolute on-disk path for a (bucket, key). Refuses any path
    * that would escape the bucket directory — defensive against malicious
-   * keys with `..` segments.
+   * keys with `..` segments and against symlinks under the data dir.
    */
   resolveSafe(bucket: string, key: string): string | null {
     if (bucket !== this.mainBucket && bucket !== this.quarantineBucket) return null;
+    if (!key) return null;
     const bucketDir = path.join(this.dataDir, bucket);
     const target = path.join(bucketDir, key);
     const normalised = path.resolve(target);
-    if (!normalised.startsWith(path.resolve(bucketDir) + path.sep)) {
+    const safeBucket = path.resolve(bucketDir);
+    if (normalised !== safeBucket && !normalised.startsWith(safeBucket + path.sep)) {
       return null;
     }
-    return normalised;
+    // If a symlink chain exists under the data dir, follow it and re-check
+    // containment. realpathSync throws if the file doesn't exist yet, which
+    // is expected for fresh writes — fall back to the textual check.
+    try {
+      const real = realpathSync(normalised);
+      if (real !== safeBucket && !real.startsWith(safeBucket + path.sep)) {
+        return null;
+      }
+      return real;
+    } catch {
+      return normalised;
+    }
   }
 
   private absPath(bucket: string, key: string): string {

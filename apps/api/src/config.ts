@@ -23,11 +23,23 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 15),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
 
-  ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
+  ALLOWED_ORIGINS: z.string().default('http://localhost:3030,http://localhost:3000'),
   ALLOW_PUBLIC_REGISTRATION: z
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * SEC-017: `trustProxy` must be enabled when the API runs behind a reverse
+   * proxy (Traefik, nginx, an AWS ALB, etc.) so `req.ip` reflects the real
+   * client and not the proxy. Enabling it when NOT behind a proxy lets any
+   * client spoof `X-Forwarded-For` to evade rate limits. Default is true in
+   * production (deployments use Traefik per docs/deployment.md) and false in
+   * dev/test where the API is reached directly.
+   */
+  TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
 
   // Trust & safety -----------------------------------------------------------
   TRUST_SAFETY_CORE_ENABLED: z
@@ -75,13 +87,22 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  S3_PUBLIC_BASE_URL: z.string().default('http://localhost:9000/tavern-media'),
 
   // LiveKit ------------------------------------------------------------------
   /** Optional. When blank, voice/video routes return 503. */
   LIVEKIT_URL: optionalString,
   LIVEKIT_API_KEY: optionalString,
   LIVEKIT_API_SECRET: optionalString,
+
+  /** Pino log level. See SEC-013. */
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+
+  /**
+   * S3 presigned-PUT URL expiry, in seconds. Default 600 (10 minutes). Lower
+   * for stricter time-to-upload windows; higher for slow client connections.
+   * STO-005.
+   */
+  S3_PRESIGN_EXPIRY_SECONDS: z.coerce.number().int().positive().default(600),
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -113,6 +134,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           `Either set them, or switch to STORAGE_BACKEND=local.`,
       );
     }
+  }
+  // UPL-007: in production, refuse to launch with ALLOW_UNSCANNED_UPLOADS=true
+  // *and* no scanner configured. Together that's "accept any binary the
+  // client sends, unscanned" — fine for dev, dangerous on a public instance.
+  if (cfg.NODE_ENV === 'production' && cfg.ALLOW_UNSCANNED_UPLOADS && !cfg.CLAMAV_HOST) {
+    throw new Error(
+      `NODE_ENV=production refuses ALLOW_UNSCANNED_UPLOADS=true without a CLAMAV_HOST.\n` +
+        `Either set CLAMAV_HOST or set ALLOW_UNSCANNED_UPLOADS=false.`,
+    );
   }
   return cfg;
 }

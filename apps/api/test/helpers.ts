@@ -21,6 +21,8 @@ export interface UserRow {
   bio: string | null;
   postingLockedUntil: Date | null;
   uploadsLockedUntil: Date | null;
+  failedLoginAttempts: number;
+  loginLockedUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -119,11 +121,26 @@ export function makeFakePrismaClient(db: FakeDb) {
           bio: data.bio ?? null,
           postingLockedUntil: data.postingLockedUntil ?? null,
           uploadsLockedUntil: data.uploadsLockedUntil ?? null,
+          failedLoginAttempts: data.failedLoginAttempts ?? 0,
+          loginLockedUntil: data.loginLockedUntil ?? null,
           createdAt: now,
           updatedAt: now,
         };
         db.users.set(row.id, row);
         return row;
+      },
+      async update({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: Partial<UserRow>;
+      }) {
+        const existing = db.users.get(where.id);
+        if (!existing) throw new Error('User not found');
+        const updated = { ...existing, ...data, updatedAt: new Date() };
+        db.users.set(existing.id, updated);
+        return updated;
       },
     },
     session: {
@@ -170,11 +187,25 @@ export function makeFakePrismaClient(db: FakeDb) {
       },
     },
     invite: {
-      async findUnique({ where }: { where: { code: string } }) {
-        for (const i of db.invites.values()) {
-          if (i.code === where.code) return i;
+      async findUnique({
+        where,
+        select,
+      }: {
+        where: { code?: string; id?: string };
+        select?: Record<string, boolean>;
+      }) {
+        let row: InviteRow | undefined;
+        if (where.id) row = db.invites.get(where.id);
+        else if (where.code) {
+          for (const i of db.invites.values()) {
+            if (i.code === where.code) {
+              row = i;
+              break;
+            }
+          }
         }
-        return null;
+        if (!row) return null;
+        return projectRow(row, select);
       },
       async update({ where, data }: { where: { id: string }; data: { uses?: { increment: number } } }) {
         const existing = db.invites.get(where.id);
@@ -185,6 +216,47 @@ export function makeFakePrismaClient(db: FakeDb) {
         };
         db.invites.set(existing.id, updated);
         return updated;
+      },
+      /**
+       * Minimal updateMany emulation for the atomic invite-consume path in
+       * AuthService.register (SEC-002). Matches: id, revokedAt:null, scope,
+       * expiresAt OR list, optional uses: { lt: N }, applies a uses increment.
+       */
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: {
+          id?: string;
+          revokedAt?: null;
+          scope?: string;
+          OR?: Array<{ expiresAt?: null | { gt?: Date } }>;
+          uses?: { lt?: number };
+        };
+        data: { uses?: { increment: number } };
+      }) {
+        let count = 0;
+        for (const i of db.invites.values()) {
+          if (where.id !== undefined && i.id !== where.id) continue;
+          if (where.revokedAt === null && i.revokedAt !== null) continue;
+          if (where.scope !== undefined && i.scope !== where.scope) continue;
+          if (where.OR) {
+            const expOk = where.OR.some((cond) => {
+              if (cond.expiresAt === null) return i.expiresAt === null;
+              if (cond.expiresAt && cond.expiresAt.gt) return i.expiresAt !== null && i.expiresAt > cond.expiresAt.gt;
+              return false;
+            });
+            if (!expOk) continue;
+          }
+          if (where.uses?.lt !== undefined && !(i.uses < where.uses.lt)) continue;
+          const updated: InviteRow = {
+            ...i,
+            uses: data.uses?.increment ? i.uses + data.uses.increment : i.uses,
+          };
+          db.invites.set(i.id, updated);
+          count++;
+        }
+        return { count };
       },
     },
     async $transaction<T>(fn: (tx: ReturnType<typeof makeFakePrismaClient>) => Promise<T>): Promise<T> {

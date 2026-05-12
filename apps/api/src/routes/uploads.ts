@@ -170,6 +170,16 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
     const { id } = z.object({ id: idSchema }).parse(req.params);
     const att = await prisma.attachment.findUnique({ where: { id } });
     if (!att) throw TavernError.notFound();
+
+    // Quarantined / blocked attachments must not be visible to anyone except
+    // the uploader and instance admins (for incident response). Return 404 to
+    // viewers rather than 403 so the existence of the malicious upload isn't
+    // confirmed to other channel members.
+    const isOwnerOrAdmin = att.uploaderId === ctx.userId || ctx.isInstanceAdmin;
+    if (!isOwnerOrAdmin && (att.status === 'quarantined' || att.status === 'blocked' || att.status === 'failed')) {
+      throw TavernError.notFound();
+    }
+
     if (att.uploaderId !== ctx.userId) {
       if (att.channelId) {
         await requireChannelPermission(att.channelId, ctx.userId, Permission.VIEW_CHANNEL);
@@ -181,9 +191,41 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
   });
 }
 
+/**
+ * Sanitize a user-supplied filename before it lands in storage. UPL-002.
+ *
+ * The output is restricted to a narrow ASCII alphabet (letters, digits,
+ * underscore, dash, dot). Beyond what the original regex covered we also:
+ *   - Strip null bytes (would otherwise truncate the name on some FS layers).
+ *   - Normalize to NFC and strip the RTL-override + other bidi controls so
+ *     the filename a user sees matches what's on disk.
+ *   - Refuse Windows-reserved device names (CON, PRN, AUX, NUL, COM1-9,
+ *     LPT1-9), case-insensitive, with or without an extension.
+ *   - Strip trailing dots and spaces (Windows silently strips them, so
+ *     `foo.exe.` would resolve to `foo.exe`).
+ *   - Strip leading dots (prevents accidentally creating hidden files on
+ *     POSIX hosts).
+ *   - Fall back to a stable default when the sanitised name is empty,
+ *     instead of returning "" and producing an empty storage key segment.
+ */
+const WINDOWS_RESERVED = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
 function sanitizeFilename(filename: string): string {
-  return filename
-    .replace(/[\\/]/g, '_')
-    .replace(/[^A-Za-z0-9._-]/g, '_')
-    .slice(-128);
+  let out = filename.normalize('NFC');
+  // Strip control characters incl. null bytes (\x00-\x1F) and bidi overrides.
+  // The subsequent allow-list regex would also strip them, but doing it first
+  // means the regex never sees them and we can't accidentally allow one
+  // through a future tweak.
+  out = out.replace(/[ -‪-‮⁦-⁩]/g, '');
+  out = out.replace(/[\\/]/g, '_').replace(/[^A-Za-z0-9._-]/g, '_');
+  out = out.replace(/^\.+/, '').replace(/[. ]+$/, '');
+  // Reject Windows-reserved device names. Check the part before the first dot.
+  const base = out.split('.')[0]?.toUpperCase() ?? '';
+  if (WINDOWS_RESERVED.has(base)) out = `_${out}`;
+  if (out.length === 0) out = 'upload';
+  return out.slice(-128);
 }

@@ -85,11 +85,29 @@ export class UploadValidator {
         }
         return;
       case 'handout':
-      case 'file':
+      case 'file': {
         if (input.sizeBytes > UPLOAD_LIMITS.MAX_GENERIC_FILE_BYTES) {
           throw new TavernError(ErrorCodes.PAYLOAD_TOO_LARGE, 'File too large', 413);
         }
+        // UPL-003: even for free-form attachments, the declared MIME type
+        // must look sane for the declared extension. Mismatches like
+        // `evil.exe` claiming `application/pdf` were the gap; we trust the
+        // worker's magic-byte scan to be authoritative, but the cheap
+        // pre-flight check turns away the easy cases without burning an
+        // upload slot.
+        const ext = extensionOf(input.filename);
+        if (ext && EXT_MIME_HINTS[ext]) {
+          const expected = EXT_MIME_HINTS[ext];
+          if (expected && !expected.includes(input.mimeType)) {
+            throw new TavernError(
+              ErrorCodes.UNSUPPORTED_MEDIA_TYPE,
+              'Declared content-type does not match the file extension',
+              415,
+            );
+          }
+        }
         return;
+      }
       default:
         throw new TavernError(ErrorCodes.VALIDATION_ERROR, 'Unknown attachment kind', 400);
     }
@@ -101,3 +119,28 @@ function extensionOf(filename: string): string {
   if (idx < 0) return '';
   return filename.slice(idx + 1).toLowerCase();
 }
+
+/**
+ * UPL-003: small allow-list of (extension → expected MIME types) that the
+ * pre-flight check uses for `handout`/`file` kinds. Not exhaustive — the
+ * worker re-validates against magic bytes after upload — but catches obvious
+ * lies like an .exe declaring application/pdf.
+ */
+const EXT_MIME_HINTS: Record<string, readonly string[]> = {
+  pdf: ['application/pdf'],
+  txt: ['text/plain'],
+  md: ['text/markdown', 'text/plain'],
+  csv: ['text/csv', 'application/vnd.ms-excel'],
+  json: ['application/json'],
+  rtf: ['application/rtf', 'text/rtf'],
+  png: ['image/png'],
+  jpg: ['image/jpeg'],
+  jpeg: ['image/jpeg'],
+  gif: ['image/gif'],
+  webp: ['image/webp'],
+  mp3: ['audio/mpeg'],
+  ogg: ['audio/ogg'],
+  wav: ['audio/wav', 'audio/wave', 'audio/x-wav'],
+  mp4: ['video/mp4', 'audio/mp4'],
+  webm: ['video/webm', 'audio/webm'],
+};

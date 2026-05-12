@@ -12,11 +12,12 @@
  *       header (mirroring the S3 presigned-PUT contract).
  *   GET serves files publicly within the dev/self-hosted threat model. The
  *       attachment metadata layer still enforces who can *see* a URL; the
- *       URL itself, once known, is fetchable without auth — same as MinIO's
- *       `mc anonymous set download` config in the docker stack.
+ *       URL itself, once known, is fetchable without auth — same model as
+ *       the S3 proxy in `attachments.ts` (URL secrecy + metadata gating).
  */
 
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { extname } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -38,6 +39,17 @@ const MIME_BY_EXT: Record<string, string> = {
   '.flac': 'audio/flac',
   '.pdf': 'application/pdf',
 };
+
+const INLINE_MIME_PREFIXES = ['image/', 'video/', 'audio/'];
+
+const KEY_PATTERN = /^[A-Za-z0-9._\-/]+$/;
+function isSafeKey(key: string): boolean {
+  if (!KEY_PATTERN.test(key)) return false;
+  for (const segment of key.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') return false;
+  }
+  return true;
+}
 
 export async function registerLocalFileRoutes(
   app: FastifyInstance,
@@ -69,31 +81,62 @@ export async function registerLocalFileRoutes(
   app.get<{
     Params: { bucket: string; key: string };
   }>('/api/_local-files/:bucket/:key', async (req, reply) => {
-    const { bucket } = req.params;
-    const key = decodeURIComponent(req.params.key);
+    const { bucket, key: rawKey } = req.params;
+
+    // Quarantined objects (ClamAV-flagged uploads) must never be streamed to
+    // clients. Hard 403 even if the storage key is known — mirrors the same
+    // guard in apps/api/src/routes/attachments.ts for the S3 proxy.
+    if (bucket === local.quarantineBucket) {
+      reply.status(403).send({
+        ok: false,
+        error: { code: 'FORBIDDEN', message: 'Quarantined content is not retrievable' },
+      });
+      return;
+    }
+    if (bucket !== local.mainBucket) {
+      reply.status(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found' } });
+      return;
+    }
+
+    // Fastify already URL-decodes path params; don't double-decode.
+    if (!isSafeKey(rawKey)) {
+      reply.status(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'Bad key' } });
+      return;
+    }
+    const key = rawKey;
+
     const resolved = local.resolveSafe(bucket, key);
     if (!resolved) {
       reply.status(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found' } });
       return;
     }
 
-    let stat;
+    let info;
     try {
-      stat = statSync(resolved);
+      info = await stat(resolved);
     } catch {
       reply.status(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found' } });
       return;
     }
-    if (!stat.isFile()) {
+    if (!info.isFile()) {
       reply.status(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found' } });
       return;
     }
 
     const mime = MIME_BY_EXT[extname(key).toLowerCase()] ?? 'application/octet-stream';
+    const inline = INLINE_MIME_PREFIXES.some((p) => mime.startsWith(p));
     reply
       .type(mime)
-      .header('content-length', String(stat.size))
-      .header('cache-control', 'public, max-age=31536000, immutable');
-    return reply.send(createReadStream(resolved));
+      .header('content-length', String(info.size))
+      .header('cache-control', 'public, max-age=31536000, immutable')
+      .header('x-content-type-options', 'nosniff')
+      .header('content-disposition', inline ? 'inline' : `attachment; filename="${key.split('/').pop() ?? key}"`);
+
+    const stream = createReadStream(resolved);
+    stream.on('error', (err) => {
+      req.log.warn({ err, bucket, key }, 'local-file stream error after headers');
+      reply.raw.destroy(err instanceof Error ? err : new Error('stream error'));
+    });
+    return reply.send(stream);
   });
 }

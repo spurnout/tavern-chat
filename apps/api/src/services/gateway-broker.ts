@@ -38,7 +38,7 @@ export interface GatewayBrokerHandle {
 }
 
 class InProcessBroker implements GatewayBrokerHandle {
-  private emitter = new EventEmitter();
+  readonly emitter = new EventEmitter();
 
   constructor() {
     this.emitter.setMaxListeners(0);
@@ -61,27 +61,50 @@ class InProcessBroker implements GatewayBrokerHandle {
 class RedisBroker implements GatewayBrokerHandle {
   private static CHANNEL = 'tavern:gateway';
   private emitter = new EventEmitter();
+  private readonly log: (msg: unknown) => void;
   private constructor(
     private readonly publisher: Redis,
     private readonly subscriber: Redis,
+    log: (msg: unknown) => void,
   ) {
     this.emitter.setMaxListeners(0);
+    this.log = log;
     this.subscriber.on('message', (_channel, message) => {
       try {
         const event = JSON.parse(message) as GatewayEvent;
         this.emitter.emit('event', event);
-      } catch {
-        // Ignore malformed payloads. We don't want a bad message from a peer
-        // to crash the gateway.
+      } catch (err) {
+        // RT-004: a malformed payload is a peer bug or a protocol break, not a
+        // benign event. Log so it shows up in dashboards and can be alerted on;
+        // truncate the message body so a runaway peer can't flood logs.
+        this.log({
+          msg: 'gateway.broker.malformed_payload',
+          err: err instanceof Error ? err.message : String(err),
+          preview: typeof message === 'string' ? message.slice(0, 200) : null,
+        });
       }
     });
   }
 
-  static async create(url: string): Promise<RedisBroker> {
+  static async create(
+    url: string,
+    log: (msg: unknown) => void = (m) => console.warn('[gateway-broker]', m),
+  ): Promise<RedisBroker> {
     const publisher = new IORedis(url, { maxRetriesPerRequest: null });
     const subscriber = new IORedis(url, { maxRetriesPerRequest: null });
     await subscriber.subscribe(RedisBroker.CHANNEL);
-    return new RedisBroker(publisher, subscriber);
+    return new RedisBroker(publisher, subscriber, log);
+  }
+
+  /**
+   * RT-006 plumbing: the in-process broker exposes its EventEmitter so the
+   * LazyBroker can re-attach existing subscribers to the Redis-backed
+   * emitter when it promotes.
+   */
+  attachListenersFrom(other: EventEmitter): void {
+    for (const listener of other.listeners('event')) {
+      this.emitter.on('event', listener as (event: GatewayEvent) => void);
+    }
   }
 
   publish<T>(event: GatewayEvent<T>): void {
@@ -106,25 +129,32 @@ class LazyBroker implements GatewayBrokerHandle {
 
   /**
    * Promote to a Redis-backed broker. Existing subscriptions on the
-   * in-process emitter are preserved by re-subscribing.
+   * in-process emitter are migrated to the new Redis broker — the previous
+   * implementation simply swapped `inner` and `close()`-d the old emitter,
+   * orphaning every listener registered before promotion and silently
+   * disabling all cross-replica fanout. RT-006.
    */
-  async useRedis(url: string): Promise<void> {
+  async useRedis(
+    url: string,
+    log: (msg: unknown) => void = (m) => console.warn('[gateway-broker]', m),
+  ): Promise<void> {
     if (this.inited) return;
     try {
-      const redis = await RedisBroker.create(url);
-      // Re-route subscribers from in-process -> redis. Easiest path is to
-      // forward redis events through the same EventEmitter the in-process
-      // broker exposes. We swap the inner reference and let the existing
-      // listeners stay attached to the in-process emitter — but the new
-      // events will only flow through redis. Cleanest: just swap.
+      const redis = await RedisBroker.create(url, log);
       const old = this.inner;
+      if (old instanceof InProcessBroker) {
+        // Re-attach every existing handler to the Redis broker's internal
+        // emitter so that future events delivered via Redis pub/sub still
+        // reach handlers that subscribed before promotion.
+        redis.attachListenersFrom(old.emitter);
+      }
       this.inner = redis;
       await old.close();
       this.inited = true;
     } catch (err) {
       // Stay with in-process if Redis can't be reached — better to keep
       // serving than to fail startup.
-      console.warn('[gateway-broker] falling back to in-process broker:', err);
+      log({ msg: 'gateway-broker fallback to in-process', err: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -146,9 +176,14 @@ export const gatewayBroker = new LazyBroker();
 /**
  * Promote the broker to Redis-backed pub/sub. Call once during startup with
  * the API's REDIS_URL. Safe to call multiple times — second call is a no-op.
+ * The optional logger is forwarded to the broker for structured malformed-
+ * payload reporting (RT-004) and fallback diagnostics (RT-006).
  */
-export async function initRedisBroker(url: string): Promise<void> {
-  await gatewayBroker.useRedis(url);
+export async function initRedisBroker(
+  url: string,
+  log?: (msg: unknown) => void,
+): Promise<void> {
+  await gatewayBroker.useRedis(url, log);
 }
 
 export type GatewayBroker = GatewayBrokerHandle;

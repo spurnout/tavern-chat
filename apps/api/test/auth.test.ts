@@ -46,7 +46,7 @@ const TEST_CONFIG: Config = {
   JWT_REFRESH_SECRET: 'b'.repeat(48),
   ACCESS_TOKEN_TTL_SECONDS: 60 * 15,
   REFRESH_TOKEN_TTL_SECONDS: 60 * 60 * 24 * 30,
-  ALLOWED_ORIGINS: 'http://localhost:3000',
+  ALLOWED_ORIGINS: 'http://localhost:3030,http://localhost:3000',
   ALLOW_PUBLIC_REGISTRATION: false,
   TRUST_SAFETY_CORE_ENABLED: true,
   CLAMAV_HOST: 'localhost',
@@ -56,14 +56,17 @@ const TEST_CONFIG: Config = {
   BLOCK_ARCHIVE_UPLOADS: true,
   STRIP_IMAGE_METADATA: true,
   MAX_MESSAGE_LENGTH: 4000,
-  S3_ENDPOINT: 'http://localhost:9000',
+  // Storage config — auth tests use authOnly:true so the storage backend
+  // never instantiates, but the schema still expects the defaults to parse.
+  STORAGE_BACKEND: 'local',
+  LOCAL_STORAGE_DIR: './data/storage',
+  S3_ENDPOINT: undefined,
   S3_REGION: 'us-east-1',
-  S3_ACCESS_KEY: 'tavern',
-  S3_SECRET_KEY: 'tavern-dev-secret',
+  S3_ACCESS_KEY: undefined,
+  S3_SECRET_KEY: undefined,
   S3_BUCKET: 'tavern-media',
   S3_QUARANTINE_BUCKET: 'tavern-quarantine',
   S3_USE_SSL: false,
-  S3_PUBLIC_BASE_URL: 'http://localhost:9000/tavern-media',
   LIVEKIT_URL: 'ws://localhost:7880',
   LIVEKIT_API_KEY: 'devkey',
   LIVEKIT_API_SECRET: 'devsecret-change-me',
@@ -195,6 +198,8 @@ describe('GET /api/auth/bootstrap-status', () => {
       bio: null,
       postingLockedUntil: null,
       uploadsLockedUntil: null,
+      failedLoginAttempts: 0,
+      loginLockedUntil: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -221,6 +226,8 @@ describe('POST /api/auth/bootstrap (conflict)', () => {
       bio: null,
       postingLockedUntil: null,
       uploadsLockedUntil: null,
+      failedLoginAttempts: 0,
+      loginLockedUntil: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -268,6 +275,8 @@ describe('POST /api/auth/login', () => {
       bio: null,
       postingLockedUntil: null,
       uploadsLockedUntil: null,
+      failedLoginAttempts: 0,
+      loginLockedUntil: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -349,6 +358,72 @@ describe('POST /api/auth/refresh', () => {
       payload: { refreshToken: tokens1.refreshToken },
     });
     expect(replay.statusCode).toBe(401);
+    await app.close();
+  });
+});
+
+describe('refresh-token cookie (SEC-001 / FE-02)', () => {
+  it('sets an httpOnly tv_refresh cookie on register/login/refresh', async () => {
+    const app = await makeApp();
+    const reg = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: {
+        username: 'eli',
+        displayName: 'Eli',
+        email: 'eli@example.com',
+        password: 'hunter22hunter22',
+        inviteCode: 'TEST-INVITE',
+      },
+    });
+    expect(reg.statusCode).toBe(201);
+    const setCookie = reg.headers['set-cookie'];
+    expect(setCookie).toBeDefined();
+    const cookieHeader = Array.isArray(setCookie) ? setCookie.join('\n') : String(setCookie);
+    expect(cookieHeader).toMatch(/tv_refresh=/);
+    expect(cookieHeader).toMatch(/HttpOnly/i);
+    expect(cookieHeader).toMatch(/SameSite=Strict/i);
+    expect(cookieHeader).toMatch(/Path=\/api\/auth/);
+    await app.close();
+  });
+
+  it('accepts a refresh request that supplies the refresh token via cookie only', async () => {
+    const app = await makeApp();
+    const reg = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: {
+        username: 'fae',
+        displayName: 'Fae',
+        email: 'fae@example.com',
+        password: 'hunter22hunter22',
+        inviteCode: 'TEST-INVITE',
+      },
+    });
+    const tokens1 = (reg.json() as { data: { tokens: { refreshToken: string } } }).data.tokens;
+
+    // No body — token rides as a cookie only.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      headers: { cookie: `tv_refresh=${tokens1.refreshToken}` },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const tokens2 = (res.json() as { data: { tokens: { refreshToken: string } } }).data.tokens;
+    expect(tokens2.refreshToken).not.toBe(tokens1.refreshToken);
+    await app.close();
+  });
+
+  it('refresh with neither cookie nor body returns 401', async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/refresh',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('UNAUTHORIZED');
     await app.close();
   });
 });

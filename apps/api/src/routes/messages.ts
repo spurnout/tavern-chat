@@ -129,8 +129,11 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
 
     const messageId = ulid();
     const cleanContent = sanitizeContent(body.content);
-    const created = await prisma.$transaction(async (tx) => {
-      const m = await tx.message.create({
+    // DB-004: do the include-fetch inside the transaction after attachments
+    // are linked, eliminating the prior post-commit findUnique round-trip
+    // (which was a hot-path extra DB hit on every message send).
+    const fullRow = await prisma.$transaction(async (tx) => {
+      await tx.message.create({
         data: {
           id: messageId,
           serverId: result.serverId,
@@ -148,17 +151,14 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
           data: { messageId, channelId, serverId: result.serverId },
         });
       }
-      return m;
+      return tx.message.findUniqueOrThrow({
+        where: { id: messageId },
+        include: {
+          attachments: { select: { id: true } },
+          reactions: { select: { emoji: true, userId: true } },
+        },
+      });
     });
-
-    const fullRow = await prisma.message.findUnique({
-      where: { id: created.id },
-      include: {
-        attachments: { select: { id: true } },
-        reactions: { select: { emoji: true, userId: true } },
-      },
-    });
-    if (!fullRow) throw TavernError.internal();
 
     const dto = serializeMessage(fullRow as MessageRow, ctx.userId);
     gatewayBroker.publish({

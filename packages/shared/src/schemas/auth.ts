@@ -51,7 +51,12 @@ export const loginRequestSchema = z.object({
 });
 
 export const refreshRequestSchema = z.object({
-  refreshToken: z.string().min(1),
+  /**
+   * Optional: the refresh token may now arrive via the httpOnly `tv_refresh`
+   * cookie (SEC-001 / FE-02). The body form is preserved for one release as a
+   * deprecation runway and for headless integration tests.
+   */
+  refreshToken: z.string().min(1).optional(),
 });
 
 export const tokenPairSchema = z.object({
@@ -61,9 +66,20 @@ export const tokenPairSchema = z.object({
   refreshTokenExpiresAt: z.string().datetime(),
 });
 
+/**
+ * Change the current user's password (SEC-003). Requires the existing
+ * password as proof of session continuity; revokes every other session for
+ * the user so a leaked credential can't outlive the rotation.
+ */
+export const changePasswordRequestSchema = z.object({
+  currentPassword: passwordSchema,
+  newPassword: passwordSchema,
+});
+
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type BootstrapRequest = z.infer<typeof bootstrapRequestSchema>;
 export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type TokenPair = z.infer<typeof tokenPairSchema>;
+export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;

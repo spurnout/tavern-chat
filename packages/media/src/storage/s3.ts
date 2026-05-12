@@ -1,4 +1,4 @@
-import { Client as MinioClient, type ClientOptions } from 'minio';
+import { Client as S3Client, type ClientOptions } from 'minio';
 import { StorageBackend, type ObjectStat, type StorageMode, type UploadTicket } from './types.js';
 
 export interface S3StorageConfig {
@@ -9,21 +9,29 @@ export interface S3StorageConfig {
   useSsl: boolean;
   mainBucket: string;
   quarantineBucket: string;
-  /** Public base URL clients will fetch ready objects from. e.g. http://localhost:9000/tavern-media */
-  publicBaseUrl: string;
+  /**
+   * API base URL — public attachment URLs are routed through
+   * `${apiBaseUrl}/api/_attachments/<bucket>/<key>`, which the API streams
+   * from the S3 backend with authenticated calls. Lets Tavern target any
+   * S3-compatible store without exposing the bucket publicly.
+   */
+  apiBaseUrl: string;
 }
 
 /**
- * S3 / MinIO storage backend.
- * Issues real presigned PUT URLs that the browser uploads to directly.
+ * S3-compatible storage backend (Garage, AWS, MinIO, Backblaze B2, R2, …).
+ *
+ * Uses the `minio` npm package for the wire protocol (works against any
+ * S3-compatible server). Presigned PUT URLs go straight to the bucket; public
+ * GETs are proxied via the API so we don't need anonymous bucket policies.
  */
 export class S3StorageBackend extends StorageBackend {
   readonly mode: StorageMode = 's3';
   readonly mainBucket: string;
   readonly quarantineBucket: string;
 
-  private readonly client: MinioClient;
-  private readonly publicBaseUrl: string;
+  private readonly client: S3Client;
+  private readonly apiBaseUrl: string;
 
   constructor(cfg: S3StorageConfig) {
     super();
@@ -36,10 +44,10 @@ export class S3StorageBackend extends StorageBackend {
       secretKey: cfg.secretKey,
       region: cfg.region,
     };
-    this.client = new MinioClient(opts);
+    this.client = new S3Client(opts);
     this.mainBucket = cfg.mainBucket;
     this.quarantineBucket = cfg.quarantineBucket;
-    this.publicBaseUrl = cfg.publicBaseUrl.replace(/\/$/, '');
+    this.apiBaseUrl = cfg.apiBaseUrl.replace(/\/$/, '');
   }
 
   bucketFor(quarantined: boolean): string {
@@ -112,7 +120,7 @@ export class S3StorageBackend extends StorageBackend {
     await this.client.removeObject(bucket, key);
   }
 
-  getPublicUrl(_bucket: string, key: string): string {
-    return `${this.publicBaseUrl}/${key}`;
+  getPublicUrl(bucket: string, key: string): string {
+    return `${this.apiBaseUrl}/api/_attachments/${bucket}/${encodeURIComponent(key)}`;
   }
 }

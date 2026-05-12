@@ -78,4 +78,13 @@ export abstract class StorageBackend {
     await this.copyObject(this.mainBucket, key, this.quarantineBucket, key);
     await this.removeObject(this.mainBucket, key);
   }
+
+  /**
+   * Release any resources held by the backend (timers, sockets). The default
+   * is a no-op; concrete backends override when they own state that outlives
+   * a request (e.g. the local backend's ticket-sweep interval, STO-002).
+   */
+  close(): void {
+    /* no-op */
+  }
 }

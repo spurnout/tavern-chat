@@ -92,7 +92,19 @@ class RedisQueueClient implements QueueClient {
   }
 
   async enqueueScan(attachmentId: string): Promise<void> {
-    await this.queue.add('scan', { attachmentId }, { jobId: `scan:${attachmentId}` });
+    await this.queue.add(
+      'scan',
+      { attachmentId },
+      {
+        jobId: `scan:${attachmentId}`,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2_000 },
+        // Keep a small ring of completed/failed jobs for observability,
+        // not unbounded history.
+        removeOnComplete: { count: 200 },
+        removeOnFail: { count: 200 },
+      },
+    );
   }
 
   async close(): Promise<void> {

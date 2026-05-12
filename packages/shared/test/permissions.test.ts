@@ -140,6 +140,21 @@ describe('permissions: channel overwrite resolution', () => {
   });
 });
 
+describe('permissions: default @everyone bundle', () => {
+  it('grants the voice/video media bits, including screen sharing', () => {
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.CONNECT_VOICE)).toBe(true);
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.SPEAK_VOICE)).toBe(true);
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.ENABLE_CAMERA)).toBe(true);
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.STREAM_SCREEN)).toBe(true);
+  });
+
+  it('does not leak moderator-only bits into @everyone', () => {
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.MANAGE_CHANNELS)).toBe(false);
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.KICK_MEMBERS)).toBe(false);
+    expect(hasFlag(PERMISSION_DEFAULT_EVERYONE, Permission.ADMINISTRATOR)).toBe(false);
+  });
+});
+
 describe('permissions: hidden channel reasoning', () => {
   it('VIEW_CHANNEL deny removes view but ADMINISTRATOR still sees', () => {
     const member = computeChannelPermissions({

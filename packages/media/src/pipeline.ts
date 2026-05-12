@@ -86,7 +86,23 @@ const MAGIC_BYTES: Array<{ mime: string; sig: number[]; offset?: number }> = [
 
 function checkMagic(buf: Buffer, declaredMime: string): boolean {
   const candidates = MAGIC_BYTES.filter((m) => m.mime === declaredMime);
-  if (candidates.length === 0) return true; // we don't have a signature; trust the kind+ext check
+  if (candidates.length === 0) {
+    // UPL-009: for the heavily-typed kinds (image/video/audio) we always
+    // expect a magic signature. If the declared MIME is in those families
+    // and we don't have one in the table, that's a config drift / a new MIME
+    // we haven't whitelisted — reject rather than silently accept. For
+    // free-form `handout`/`file` kinds (application/pdf, text/plain, …) we
+    // can't reasonably enumerate signatures; trust the kind+ext check and
+    // ClamAV downstream.
+    if (
+      declaredMime.startsWith('image/') ||
+      declaredMime.startsWith('video/') ||
+      declaredMime.startsWith('audio/')
+    ) {
+      return false;
+    }
+    return true;
+  }
   return candidates.some((m) => {
     const offset = m.offset ?? 0;
     if (buf.length < offset + m.sig.length) return false;

@@ -29,6 +29,18 @@ export interface SessionContext {
   deviceName?: string | null | undefined;
 }
 
+/** Number of consecutive failed logins before the account is temporarily locked. */
+const FAILED_LOGIN_LOCKOUT_THRESHOLD = 10;
+/** How long a locked account stays locked after the threshold is hit. */
+const FAILED_LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+/**
+ * Per-user active session cap (SEC-009). When a new session is issued and the
+ * user already has more than this many active sessions, the oldest are
+ * revoked. Catches both runaway test suites and credential-stuffing attacks
+ * that survive lockout by rotating IPs.
+ */
+const MAX_ACTIVE_SESSIONS_PER_USER = 20;
+
 export class AuthService {
   constructor(private readonly deps: AuthServiceDeps) {}
 
@@ -40,14 +52,32 @@ export class AuthService {
       throw TavernError.validation('Username too short');
     }
 
-    const invite = await prisma.invite.findUnique({
+    // Pre-flight invite check — surfaces "invite is invalid" before we spend
+    // CPU on the Argon2 hash. The authoritative check is the atomic UPDATE
+    // inside the transaction below; that is what prevents the race where two
+    // registrations consume a maxUses:1 invite concurrently (SEC-002).
+    const inviteLookup = await prisma.invite.findUnique({
       where: { code: req.inviteCode },
+      select: { id: true, scope: true, revokedAt: true, expiresAt: true, uses: true, maxUses: true },
     });
-    if (!invite || invite.revokedAt || (invite.expiresAt && invite.expiresAt < new Date())) {
+    if (!inviteLookup || inviteLookup.revokedAt) {
       throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite is invalid or expired', 400);
     }
-    if (invite.maxUses !== null && invite.uses >= invite.maxUses) {
+    if (inviteLookup.expiresAt && inviteLookup.expiresAt < new Date()) {
+      throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite is invalid or expired', 400);
+    }
+    if (inviteLookup.maxUses !== null && inviteLookup.uses >= inviteLookup.maxUses) {
       throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite has been fully used', 400);
+    }
+    // Server-scoped invites are for adding existing users to a server; they
+    // are not registration tickets. Only instance-scoped invites may be used
+    // to create an account (SEC-018).
+    if (inviteLookup.scope !== 'instance') {
+      throw new TavernError(
+        ErrorCodes.INVALID_INVITE,
+        'This invite cannot be used for registration',
+        400,
+      );
     }
 
     const existing = await prisma.user.findFirst({
@@ -64,6 +94,30 @@ export class AuthService {
     const passwordHash = await hashPassword(req.password);
 
     const user = await prisma.$transaction(async (tx) => {
+      // Atomic consume: a single conditional UPDATE that increments uses
+      // only if every validity predicate still holds. Postgres serializes
+      // concurrent UPDATEs on the same row, so if two registrations race
+      // for a maxUses:1 invite, the second's WHERE clause will no longer
+      // match and result.count comes back 0. Avoids the classic
+      // check-then-act race (SEC-002).
+      const result = await tx.invite.updateMany({
+        where: {
+          id: inviteLookup.id,
+          revokedAt: null,
+          scope: 'instance',
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          // maxUses is immutable for the lifetime of an invite, so reading
+          // it into a literal here doesn't introduce a TOCTOU window. If
+          // maxUses is null the invite has unlimited uses.
+          ...(inviteLookup.maxUses !== null
+            ? { uses: { lt: inviteLookup.maxUses } }
+            : {}),
+        },
+        data: { uses: { increment: 1 } },
+      });
+      if (result.count === 0) {
+        throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite has been fully used', 400);
+      }
       const u = await tx.user.create({
         data: {
           id: ulid(),
@@ -74,10 +128,6 @@ export class AuthService {
           emailLower,
           passwordHash,
         },
-      });
-      await tx.invite.update({
-        where: { id: invite.id },
-        data: { uses: { increment: 1 } },
       });
       return u;
     });
@@ -122,7 +172,11 @@ export class AuthService {
     const inviteCode = generateInviteCode();
     const serverName = req.serverName?.trim() || 'The Tavern';
 
-    await prisma.$transaction(async (tx) => {
+    // DB-013: bootstrap is a one-shot at instance creation time; two concurrent
+    // calls must not both succeed. Serializable isolation makes the `count()`
+    // check + the `user.create()` atomically observable as a single unit.
+    await prisma.$transaction(
+      async (tx) => {
       const count = await tx.user.count();
       if (count > 0) {
         throw new TavernError(
@@ -209,7 +263,9 @@ export class AuthService {
           content: `Welcome to ${serverName}.`,
         },
       });
-    });
+    },
+      { isolationLevel: 'Serializable' },
+    );
 
     return this.issueSession(userId, sessionCtx);
   }
@@ -225,9 +281,43 @@ export class AuthService {
       // Same error for "user not found" and "wrong password" so attackers can't enumerate.
       throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
     }
+
+    if (user.loginLockedUntil && user.loginLockedUntil > new Date()) {
+      // Account locked from previous failures — reject without even checking
+      // the password so distributed attackers can't keep probing.
+      throw new TavernError(
+        ErrorCodes.INVALID_CREDENTIALS,
+        'Invalid credentials',
+        401,
+      );
+    }
+
     const ok = await verifyPassword(user.passwordHash, req.password);
     if (!ok) {
+      // SEC-006: keep the failed-attempt counter monotonically increasing
+      // through threshold breaches. Resetting it to 0 at the threshold (the
+      // previous behaviour) gave attackers 10 fresh attempts every 15 minutes
+      // after the lockout expired. Now the next failure after expiry locks
+      // immediately; only a successful login clears the counter.
+      const nextAttempts = user.failedLoginAttempts + 1;
+      const reachedThreshold = nextAttempts >= FAILED_LOGIN_LOCKOUT_THRESHOLD;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: nextAttempts,
+          loginLockedUntil: reachedThreshold
+            ? new Date(Date.now() + FAILED_LOGIN_LOCKOUT_MS)
+            : user.loginLockedUntil,
+        },
+      });
       throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
+    }
+
+    if (user.failedLoginAttempts > 0 || user.loginLockedUntil) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: 0, loginLockedUntil: null },
+      });
     }
 
     return this.issueSession(user.id, ctx);
@@ -271,6 +361,46 @@ export class AuthService {
     });
   }
 
+  /**
+   * Change a user's password while logged in (SEC-003).
+   *
+   * Verifies the current password (so an XSS/CSRF or a stolen access token
+   * cannot silently rotate the credential), then rewrites the Argon2 hash
+   * and revokes every active session for the user. The current session is
+   * not exempted — the caller must re-authenticate after a successful
+   * change. Same `INVALID_CREDENTIALS` error code as login so attackers
+   * can't enumerate which accounts still hold the original password.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    if (newPassword === currentPassword) {
+      throw TavernError.validation('New password must differ from current password');
+    }
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user) throw TavernError.unauthorized();
+    const ok = await verifyPassword(user.passwordHash, currentPassword);
+    if (!ok) {
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
+    }
+    const nextHash = await hashPassword(newPassword);
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { passwordHash: nextHash },
+      });
+      await tx.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    });
+  }
+
   private async issueSession(userId: string, ctx: SessionContext): Promise<TokenPair> {
     const sessionId = ulid();
     const refreshTtl = this.deps.config.REFRESH_TOKEN_TTL_SECONDS ?? TOKEN_TTL.REFRESH_SECONDS;
@@ -294,6 +424,12 @@ export class AuthService {
       },
     });
 
+    // SEC-009: enforce a per-user active-session cap. If this user now has
+    // more than MAX_ACTIVE_SESSIONS_PER_USER unrevoked sessions, revoke the
+    // oldest ones. Fire-and-forget so the happy path isn't blocked; a
+    // failure here just leaves the next /me / /refresh to do it.
+    void this.pruneOldestSessions(userId).catch(() => undefined);
+
     const access = await this.deps.jwt.signAccess({ sub: userId, sid: sessionId, typ: 'access' });
 
     return {
@@ -302,5 +438,26 @@ export class AuthService {
       accessTokenExpiresAt: access.expiresAt.toISOString(),
       refreshTokenExpiresAt: refresh.expiresAt.toISOString(),
     };
+  }
+
+  /**
+   * Revoke any sessions for this user beyond the cap, oldest-first. Cheap when
+   * the user is under the cap (a single COUNT). SEC-009.
+   */
+  private async pruneOldestSessions(userId: string): Promise<void> {
+    const active = await prisma.session.count({ where: { userId, revokedAt: null } });
+    if (active <= MAX_ACTIVE_SESSIONS_PER_USER) return;
+    const overflow = active - MAX_ACTIVE_SESSIONS_PER_USER;
+    const oldest = await prisma.session.findMany({
+      where: { userId, revokedAt: null },
+      orderBy: { createdAt: 'asc' },
+      take: overflow,
+      select: { id: true },
+    });
+    if (oldest.length === 0) return;
+    await prisma.session.updateMany({
+      where: { id: { in: oldest.map((s) => s.id) } },
+      data: { revokedAt: new Date() },
+    });
   }
 }
