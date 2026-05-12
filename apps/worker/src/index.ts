@@ -3,7 +3,7 @@ import './load-env.js';
 
 import pino from 'pino';
 import path from 'node:path';
-import { Worker, type Processor } from 'bullmq';
+import { Queue, Worker, type Processor } from 'bullmq';
 import IORedis from 'ioredis';
 import {
   ClamAVScanner,
@@ -16,6 +16,10 @@ import { prisma } from '@tavern/db';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 
 const SCAN_QUEUE = 'tavern.upload.scan';
+const MAINTENANCE_QUEUE = 'tavern.maintenance';
+type MaintenanceJob =
+  | { kind: 'audit-retention'; retentionDays: number }
+  | { kind: 'nonce-cleanup'; retentionHours: number };
 
 async function main(): Promise<void> {
   const cfg = loadWorkerConfig();
@@ -28,10 +32,23 @@ async function main(): Promise<void> {
   });
 
   if (!cfg.REDIS_URL) {
+    // INF-006: when running under `restart: unless-stopped` (the previous
+    // default), a clean process exit caused a restart loop because the
+    // container kept being told "stay up". The worker has nothing to do
+    // without Redis but it must still not exit; idle until SIGTERM/SIGINT.
     log.info(
       'REDIS_URL is not set. In-process mode: the api runs the upload ' +
-        'pipeline directly, so this worker has nothing to do. Exiting.',
+        'pipeline directly. Idling until the process is signalled.',
     );
+    const idleSignals = (sig: string) => {
+      log.info({ signal: sig }, 'worker idle -> shutdown');
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => idleSignals('SIGTERM'));
+    process.on('SIGINT', () => idleSignals('SIGINT'));
+    await new Promise<void>(() => {
+      /* never resolves; keeps the event loop alive */
+    });
     return;
   }
 
@@ -67,6 +84,48 @@ async function main(): Promise<void> {
     log.error({ jobId: job?.id, err: err.message }, 'job failed');
   });
 
+  // Scheduled maintenance: audit-log retention (DB-009) and message-nonce
+  // cleanup (DB-010). BullMQ repeatable jobs run on a cron-style cadence and
+  // are idempotent — re-registering with the same key just refreshes them.
+  const maintenanceQueue = new Queue<MaintenanceJob>(MAINTENANCE_QUEUE, { connection });
+  const maintenanceProcessor: Processor<MaintenanceJob> = async (job) => {
+    if (job.data.kind === 'audit-retention') {
+      const cutoff = new Date(Date.now() - job.data.retentionDays * 86_400_000);
+      const result = await prisma.auditLogEntry.deleteMany({
+        where: { createdAt: { lt: cutoff } },
+      });
+      log.info({ deleted: result.count, retentionDays: job.data.retentionDays }, 'audit retention sweep');
+    } else if (job.data.kind === 'nonce-cleanup') {
+      const cutoff = new Date(Date.now() - job.data.retentionHours * 3_600_000);
+      const result = await prisma.message.updateMany({
+        where: { nonce: { not: null }, createdAt: { lt: cutoff } },
+        data: { nonce: null },
+      });
+      log.info({ cleared: result.count, retentionHours: job.data.retentionHours }, 'nonce cleanup sweep');
+    }
+  };
+  const maintenanceWorker = new Worker<MaintenanceJob>(MAINTENANCE_QUEUE, maintenanceProcessor, {
+    connection,
+    concurrency: 1,
+  });
+  maintenanceWorker.on('failed', (job, err) => {
+    log.error({ jobId: job?.id, kind: job?.data.kind, err: err.message }, 'maintenance job failed');
+  });
+
+  // Daily at 03:00 UTC for both. The retention sweep is the heavier of the
+  // two; staggering would matter if there were more jobs, but for two cheap
+  // queries it doesn't.
+  await maintenanceQueue.add(
+    'audit-retention',
+    { kind: 'audit-retention', retentionDays: cfg.AUDIT_RETENTION_DAYS },
+    { repeat: { pattern: '0 3 * * *' }, removeOnComplete: true, removeOnFail: false, jobId: 'audit-retention' },
+  );
+  await maintenanceQueue.add(
+    'nonce-cleanup',
+    { kind: 'nonce-cleanup', retentionHours: cfg.NONCE_RETENTION_HOURS },
+    { repeat: { pattern: '15 * * * *' }, removeOnComplete: true, removeOnFail: false, jobId: 'nonce-cleanup' },
+  );
+
   scanner
     ?.ping()
     .then((ok) =>
@@ -76,8 +135,16 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, 'shutting down worker');
-    await worker.close();
-    connection.disconnect();
+    await Promise.all([worker.close(), maintenanceWorker.close(), maintenanceQueue.close()]);
+    // worker.close() above settles all in-flight jobs; only then is it safe
+    // to drop the Redis connection. `quit` waits for pending commands to be
+    // acked rather than `disconnect`'s fire-and-forget.
+    try {
+      await connection.quit();
+    } catch (err) {
+      log.warn({ err }, 'redis quit failed; forcing disconnect');
+      connection.disconnect();
+    }
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
@@ -96,7 +163,7 @@ function createStorage(cfg: WorkerConfig): StorageBackend {
       useSsl: cfg.S3_USE_SSL,
       mainBucket: cfg.S3_BUCKET,
       quarantineBucket: cfg.S3_QUARANTINE_BUCKET,
-      publicBaseUrl: cfg.S3_PUBLIC_BASE_URL,
+      apiBaseUrl: cfg.API_BASE_URL,
     });
   }
   return new LocalStorageBackend({

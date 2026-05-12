@@ -36,7 +36,18 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  S3_PUBLIC_BASE_URL: z.string().default('http://localhost:9000/tavern-media'),
+
+  /**
+   * Retention window for `AuditLogEntry` rows. Beyond this age, the
+   * `audit-retention` worker job deletes them. Default 90 days. (DB-009)
+   */
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  /**
+   * Retention window for the `Message.nonce` column. Beyond this age the
+   * `nonce-cleanup` worker nulls the value so the partial unique index
+   * doesn't permanently block legitimate retries. Default 24 hours. (DB-010)
+   */
+  NONCE_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
 });
 
 export type WorkerConfig = z.infer<typeof envSchema>;

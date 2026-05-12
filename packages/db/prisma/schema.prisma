@@ -12,6 +12,9 @@
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["fullTextSearch"]
+  // `native` covers the host the dev runs on; `linux-musl-openssl-3.0.x` is
+  // for the node:22-alpine container images (Alpine 3.20 ships OpenSSL 3).
+  binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -36,6 +39,13 @@ model User {
   isInstanceAdmin     Boolean   @default(false)
   postingLockedUntil  DateTime?
   uploadsLockedUntil  DateTime?
+  // Failed-login lockout — incremented on each invalid login, reset on
+  // success. When the threshold is reached, loginLockedUntil is set; further
+  // attempts inside the window are rejected before the password is even
+  // checked. Defends against slow-and-low credential stuffing without
+  // requiring Redis.
+  failedLoginAttempts Int       @default(0)
+  loginLockedUntil    DateTime?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -64,6 +74,8 @@ model User {
   ownedBoardGames      BoardGame[]           @relation("BoardGameOwner")
   createdGameNights    GameNight[]           @relation("GameNightCreator")
   handoutAccess        HandoutVisibleUser[]
+  bans                 ServerBan[]           @relation("BannedUser")
+  bansIssued           ServerBan[]           @relation("BannedByUser")
 }
 
 model Session {
@@ -140,6 +152,7 @@ model Server {
   reports        Report[]
   auditEntries   AuditLogEntry[]
   safetyPolicy   SafetyPolicy?
+  bans           ServerBan[]
 
   @@index([ownerUserId])
 }
@@ -157,6 +170,29 @@ model ServerMember {
 
   @@id([serverId, userId])
   @@index([userId])
+}
+
+/// PERM-002: BAN_MEMBERS enforcement table.
+///
+/// A row here means the user is banned from the server. The gateway IDENTIFY
+/// handler and invite-consume path both consult this table; an active row
+/// blocks both new connections and rejoin attempts. `expiresAt` supports
+/// temporary bans (e.g. 30-day timeouts); a NULL value is a permanent ban.
+model ServerBan {
+  serverId       String
+  userId         String
+  bannedByUserId String?
+  reason         String?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  server   Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user     User   @relation("BannedUser", fields: [userId], references: [id], onDelete: Cascade)
+  bannedBy User?  @relation("BannedByUser", fields: [bannedByUserId], references: [id], onDelete: SetNull)
+
+  @@id([serverId, userId])
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model Role {
@@ -309,6 +345,7 @@ model Message {
   diceRoll      DiceRoll?         @relation("DiceRollMessage", fields: [diceRollId], references: [id])
 
   @@index([channelId, createdAt])
+  @@index([channelId, id])
   @@index([authorId])
   @@unique([channelId, nonce])
 }
@@ -618,6 +655,12 @@ model DiceRoll {
 // BOARD GAMES & GAME NIGHTS  (Phase 5)
 // ============================================================================
 
+/// Single-tenant by design: every row is scoped to a Server (and most to a
+/// User within that Server). There is no Row-Level Security policy because
+/// the application layer is the only client of the database — each
+/// PrismaClient connection serves a single Tavern instance. If you fork
+/// Tavern to host multiple unrelated tenants on one Postgres, add RLS first.
+/// DB-030.
 model BoardGame {
   id                  String   @id
   serverId            String
@@ -792,6 +835,8 @@ model ModerationAction {
   moderator User @relation("Moderator", fields: [moderatorId], references: [id], onDelete: Cascade)
 
   @@index([targetType, targetId])
+  @@index([reportId])
+  @@index([serverId])
 }
 
 model AuditLogEntry {
