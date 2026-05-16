@@ -6,6 +6,8 @@ interface Props {
   disabled: boolean;
   value: ScreenShareOptions;
   onChange: (next: ScreenShareOptions) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -15,9 +17,15 @@ interface Props {
  * Settings only apply to the *next* share — flipping options mid-stream would
  * republish the track and is intentionally not supported.
  */
-export function ScreenShareSettingsPopover({ disabled, value, onChange }: Props): JSX.Element {
+export function ScreenShareSettingsPopover({
+  disabled,
+  value,
+  onChange,
+  open,
+  onOpenChange,
+}: Props): JSX.Element {
   return (
-    <Popover.Root>
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger asChild>
         <button
           type="button"
@@ -40,7 +48,7 @@ export function ScreenShareSettingsPopover({ disabled, value, onChange }: Props)
           </div>
           <ToggleRow
             label="Share audio (when possible)"
-            description="Some browsers only capture audio when sharing a tab."
+            description="Tab captures only that tab's audio. Sharing a window or your whole screen on Windows or Linux can capture other apps' sound too — check before you share."
             checked={value.audio}
             onChange={(next) => onChange({ ...value, audio: next })}
           />

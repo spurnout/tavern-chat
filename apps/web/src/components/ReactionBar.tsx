@@ -3,8 +3,7 @@ import { Smile } from 'lucide-react';
 import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
-
-const QUICK_EMOJIS = ['👍', '❤️', '🎉', '😂', '🤔', '🎲', '🔥', '🏰'];
+import { EmojiPicker } from './EmojiPicker.js';
 
 export function ReactionBar({ message }: { message: Message }): JSX.Element {
   const [picking, setPicking] = useState(false);
@@ -50,20 +49,15 @@ export function ReactionBar({ message }: { message: Message }): JSX.Element {
           <Smile size={14} />
         </button>
         {picking ? (
-          <div className="absolute bottom-7 left-0 z-10 flex gap-1 rounded border border-subtle bg-surface p-1 shadow-lg">
-            {QUICK_EMOJIS.map((e) => (
-              <button
-                key={e}
-                type="button"
-                onClick={() => {
-                  setPicking(false);
-                  void toggle(e, false);
-                }}
-                className="rounded px-1.5 py-0.5 hover:bg-raised"
-              >
-                {e}
-              </button>
-            ))}
+          <div className="absolute bottom-7 left-0 z-20">
+            <EmojiPicker
+              open={picking}
+              onClose={() => setPicking(false)}
+              onPick={(emoji) => {
+                setPicking(false);
+                void toggle(emoji, false);
+              }}
+            />
           </div>
         ) : null}
       </div>

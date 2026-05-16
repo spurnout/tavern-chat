@@ -1,4 +1,9 @@
 import { create } from 'zustand';
+import { startAuthentication } from '@simplewebauthn/browser';
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from '@simplewebauthn/types';
 import type {
   BootstrapRequest,
   BootstrapStatus,
@@ -20,7 +25,14 @@ interface AuthState {
    */
   needsBootstrap: boolean | null;
   bootstrap: () => Promise<void>;
-  login: (req: LoginRequest) => Promise<void>;
+  login: (req: LoginRequest) => Promise<{ totpRequired: true; stagedToken: string } | { totpRequired: false }>;
+  loginTotp: (stagedToken: string, code: string) => Promise<void>;
+  /**
+   * Passwordless login via an enrolled WebAuthn passkey. Caller supplies
+   * just the identifier (username or email); the browser handles the
+   * authenticator dance.
+   */
+  loginWebauthn: (identifier: string) => Promise<void>;
   register: (req: RegisterRequest) => Promise<void>;
   bootstrapAdmin: (req: BootstrapRequest) => Promise<void>;
   logout: () => Promise<void>;
@@ -71,15 +83,83 @@ export const useAuth = create<AuthState>((set) => ({
   login: async (req) => {
     set({ status: 'loading', error: null });
     try {
-      const { tokens } = await api<{ tokens: TokenPair }>('/auth/login', {
+      const resp = await api<
+        { tokens: TokenPair } | { totpRequired: true; stagedToken: string }
+      >('/auth/login', { method: 'POST', body: req });
+      if ('totpRequired' in resp && resp.totpRequired) {
+        // Stay in `loading` so the UI shows the 2FA step. The component
+        // calls `loginTotp` next.
+        set({ status: 'idle', error: null });
+        return { totpRequired: true, stagedToken: resp.stagedToken };
+      }
+      if (!('tokens' in resp)) {
+        throw new Error('Unexpected login response shape');
+      }
+      tokenStore.set(resp.tokens);
+      const me = await fetchMe();
+      set({ me, status: 'authenticated', needsBootstrap: false, error: null });
+      return { totpRequired: false };
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Login failed';
+      set({ status: 'error', error: msg });
+      throw err;
+    }
+  },
+
+  loginTotp: async (stagedToken, code) => {
+    set({ status: 'loading', error: null });
+    try {
+      const { tokens } = await api<{ tokens: TokenPair }>('/auth/login/totp', {
         method: 'POST',
-        body: req,
+        body: { stagedToken, code },
       });
       tokenStore.set(tokens);
       const me = await fetchMe();
       set({ me, status: 'authenticated', needsBootstrap: false, error: null });
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Login failed';
+      const msg = err instanceof ApiError ? err.message : 'Code did not match';
+      set({ status: 'error', error: msg });
+      throw err;
+    }
+  },
+
+  loginWebauthn: async (identifier) => {
+    set({ status: 'loading', error: null });
+    try {
+      const start = await api<{
+        stagedToken: string;
+        options: PublicKeyCredentialRequestOptionsJSON;
+        hasCredentials: boolean;
+      }>('/auth/login/webauthn/options', {
+        method: 'POST',
+        body: { identifier },
+        retryOn401: false,
+      });
+      if (!start.hasCredentials) {
+        // The API intentionally returns a still-shaped challenge here to
+        // avoid leaking which usernames are registered; the helper would
+        // hang waiting for an authenticator that has no matching credential.
+        throw new ApiError('NOT_FOUND', 'No passkey is registered for this account.', 404);
+      }
+      const assertion: AuthenticationResponseJSON = await startAuthentication({
+        optionsJSON: start.options,
+      });
+      const { tokens } = await api<{ tokens: TokenPair }>('/auth/login/webauthn/verify', {
+        method: 'POST',
+        body: { stagedToken: start.stagedToken, response: assertion },
+        retryOn401: false,
+      });
+      tokenStore.set(tokens);
+      const me = await fetchMe();
+      set({ me, status: 'authenticated', needsBootstrap: false, error: null });
+    } catch (err) {
+      // The DOMException "NotAllowedError" fires when the user cancels the
+      // platform prompt — surface that quietly rather than as a hard error.
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        set({ status: 'idle', error: null });
+        return;
+      }
+      const msg = err instanceof ApiError ? err.message : 'Passkey sign-in failed';
       set({ status: 'error', error: msg });
       throw err;
     }

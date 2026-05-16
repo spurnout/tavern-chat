@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Dice5, Flag, Trash2 } from 'lucide-react';
+import { Bookmark, Dice5, Flag, Forward, History, MessageSquare, Pin, Trash2 } from 'lucide-react';
 import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
+import { useInbox } from '../lib/inbox-store.js';
 import { useAuth } from '../lib/auth.js';
+import { ThreadPanel } from './ThreadPanel.js';
+import { PollMessage } from './PollMessage.js';
+import { MessageContent } from './MessageContent.js';
+import { ReplyContext } from './ReplyContext.js';
+import { LinkPreviewCard } from './LinkPreviewCard.js';
+import { ForwardMessageModal } from './ForwardMessageModal.js';
+import { MessageEditHistoryModal } from './MessageEditHistoryModal.js';
 import { toast } from '../lib/toast.js';
 import { AttachmentView } from './AttachmentView.js';
+import { MemberProfileTrigger } from './MemberProfileTrigger.js';
 import { ReactionBar } from './ReactionBar.js';
 import { ReportDialog } from './ReportDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -35,7 +44,40 @@ export function MessageList({ channelId }: Props): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [reportTarget, setReportTarget] = useState<Message | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Message | null>(null);
+  const [activeThread, setActiveThread] = useState<{ id: string; root: Message } | null>(null);
+  const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<Message | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
+
+  async function openThread(message: Message): Promise<void> {
+    try {
+      const thread = await api<{ id: string }>(
+        `/channels/${channelId}/messages/${message.id}/threads`,
+        { method: 'POST', body: {} },
+      );
+      setActiveThread({ id: thread.id, root: message });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not open thread');
+    }
+  }
+
+  async function pin(message: Message): Promise<void> {
+    try {
+      await api(`/channels/${channelId}/pins/${message.id}`, { method: 'POST', body: {} });
+      toast.info('Pinned.');
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not pin');
+    }
+  }
+
+  async function save(message: Message): Promise<void> {
+    try {
+      await api(`/me/saved/${message.id}`, { method: 'POST', body: {} });
+      toast.info('Saved.');
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not save');
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +120,21 @@ export function MessageList({ channelId }: Props): JSX.Element {
     }
   }, [sorted.length]);
 
+  // Phase 1.3 — auto-ACK the channel when the user is looking at it and a
+  // new message arrives. We only fire when the active channel matches and
+  // the most recent message id changes; ackChannel is a no-op if the cursor
+  // is already up to date, so this is safe to call eagerly.
+  const activeChannelId = useRealtime((s) => s.activeChannelId);
+  const isAppFocused = useRealtime((s) => s.isAppFocused);
+  const ackChannel = useInbox((s) => s.ackChannel);
+  const lastMessageId = sorted.length > 0 ? sorted[sorted.length - 1]?.id ?? null : null;
+  useEffect(() => {
+    if (!lastMessageId) return;
+    if (activeChannelId !== channelId) return;
+    if (!isAppFocused) return;
+    void ackChannel(channelId, lastMessageId);
+  }, [channelId, lastMessageId, activeChannelId, isAppFocused, ackChannel]);
+
   return (
     <div
       ref={parentRef}
@@ -106,12 +163,18 @@ export function MessageList({ channelId }: Props): JSX.Element {
               style={{ transform: `translateY(${row.start}px)`, paddingBottom: '0.5rem' }}
               ref={virtualizer.measureElement}
               data-index={row.index}
+              data-message-id={message.id}
             >
               <MessageRow
                 message={message}
                 mine={me?.id === message.authorId}
                 onReport={() => setReportTarget(message)}
                 onDelete={() => setDeleteTarget(message)}
+                onOpenThread={() => void openThread(message)}
+                onPin={() => void pin(message)}
+                onSave={() => void save(message)}
+                onForward={() => setForwardTarget(message)}
+                onShowHistory={() => setHistoryTarget(message)}
               />
             </div>
           );
@@ -143,6 +206,25 @@ export function MessageList({ channelId }: Props): JSX.Element {
           }}
         />
       ) : null}
+      {activeThread ? (
+        <div className="absolute inset-y-0 right-0 z-30">
+          <ThreadPanel
+            threadId={activeThread.id}
+            rootMessage={activeThread.root}
+            onClose={() => setActiveThread(null)}
+          />
+        </div>
+      ) : null}
+      {forwardTarget ? (
+        <ForwardMessageModal source={forwardTarget} onClose={() => setForwardTarget(null)} />
+      ) : null}
+      {historyTarget ? (
+        <MessageEditHistoryModal
+          messageId={historyTarget.id}
+          currentContent={historyTarget.content}
+          onClose={() => setHistoryTarget(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -152,9 +234,24 @@ interface RowProps {
   mine: boolean;
   onReport: () => void;
   onDelete: () => void;
+  onOpenThread: () => void;
+  onPin: () => void;
+  onSave: () => void;
+  onForward: () => void;
+  onShowHistory: () => void;
 }
 
-function MessageRow({ message, mine, onReport, onDelete }: RowProps): JSX.Element {
+function MessageRow({
+  message,
+  mine,
+  onReport,
+  onDelete,
+  onOpenThread,
+  onPin,
+  onSave,
+  onForward,
+  onShowHistory,
+}: RowProps): JSX.Element {
   if (message.deletedAt) {
     return (
       <div className="rounded px-3 py-2 text-sm italic text-fg-muted">message deleted</div>
@@ -177,23 +274,66 @@ function MessageRow({ message, mine, onReport, onDelete }: RowProps): JSX.Elemen
   }
   return (
     <div className="group flex items-start gap-3 rounded px-2 py-1.5 hover:bg-tint-fg-04">
-      <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-raised font-serif text-sm font-semibold">
-        {message.authorId.slice(-2).toUpperCase()}
-      </div>
+      <MemberProfileTrigger
+        userId={message.authorId}
+        serverId={message.serverId}
+        side="right"
+        align="start"
+      >
+        <button
+          type="button"
+          aria-label={`View profile of ${message.author.displayName}`}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-raised font-serif text-sm font-semibold focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
+        >
+          {message.author.displayName.slice(0, 2).toUpperCase()}
+        </button>
+      </MemberProfileTrigger>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2 text-sm">
-          <span className={mine ? 'font-serif font-medium text-mead' : 'font-serif font-medium'}>
-            {message.authorId.slice(0, 8)}
-          </span>
+          <MemberProfileTrigger
+            userId={message.authorId}
+            serverId={message.serverId}
+            side="right"
+            align="start"
+          >
+            <button
+              type="button"
+              className={
+                mine
+                  ? 'font-serif font-medium text-mead hover:underline focus:outline-none focus-visible:underline'
+                  : 'font-serif font-medium hover:underline focus:outline-none focus-visible:underline'
+              }
+            >
+              {message.author.displayName}
+            </button>
+          </MemberProfileTrigger>
           <span className="font-mono text-xs text-fg-muted">
             {new Date(message.createdAt).toLocaleTimeString()}
           </span>
           {message.editedAt ? <span className="text-xs text-fg-muted">(edited)</span> : null}
         </div>
-        {message.content ? (
-          <div className="whitespace-pre-wrap break-words text-sm text-fg">
-            {message.content}
-          </div>
+        {message.forwardedFrom ? (
+          <p className="flex items-center gap-1 text-xs italic text-fg-muted">
+            <Forward size={11} aria-hidden /> Forwarded from {message.forwardedFrom.authorDisplayName}
+          </p>
+        ) : null}
+        {message.replyTo ? (
+          <ReplyContext
+            authorDisplayName={message.replyTo.authorDisplayName}
+            contentExcerpt={message.replyTo.contentExcerpt}
+            deleted={message.replyTo.deleted}
+            onClickParent={() => {
+              const el = document.querySelector(
+                `[data-message-id="${message.replyTo?.id}"]`,
+              );
+              el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }}
+          />
+        ) : null}
+        {message.pollId ? <PollMessage pollId={message.pollId} /> : null}
+        {!message.pollId && message.content ? <MessageContent content={message.content} /> : null}
+        {message.content && /\bhttps?:\/\//.test(message.content) ? (
+          <LinkPreviewCard messageId={message.id} />
         ) : null}
         {message.attachmentIds.map((id) => (
           <AttachmentView key={id} id={id} />
@@ -201,6 +341,53 @@ function MessageRow({ message, mine, onReport, onDelete }: RowProps): JSX.Elemen
         <ReactionBar message={message} />
       </div>
       <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+        <button
+          type="button"
+          onClick={onOpenThread}
+          aria-label="Open thread"
+          title="Open thread"
+          className="rounded p-1 text-fg-muted hover:bg-raised"
+        >
+          <MessageSquare size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          aria-label="Save message"
+          title="Save"
+          className="rounded p-1 text-fg-muted hover:bg-raised"
+        >
+          <Bookmark size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={onForward}
+          aria-label="Forward message"
+          title="Forward"
+          className="rounded p-1 text-fg-muted hover:bg-raised"
+        >
+          <Forward size={14} />
+        </button>
+        {message.editedAt ? (
+          <button
+            type="button"
+            onClick={onShowHistory}
+            aria-label="View edit history"
+            title="Edit history"
+            className="rounded p-1 text-fg-muted hover:bg-raised"
+          >
+            <History size={14} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onPin}
+          aria-label="Pin message"
+          title="Pin (requires MANAGE_MESSAGES)"
+          className="rounded p-1 text-fg-muted hover:bg-raised"
+        >
+          <Pin size={14} />
+        </button>
         <button
           type="button"
           onClick={onReport}

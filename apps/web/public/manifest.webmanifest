@@ -1,0 +1,20 @@
+{
+  "name": "Tavern",
+  "short_name": "Tavern",
+  "description": "A self-hosted community + tabletop platform — pull up a chair.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1d1814",
+  "theme_color": "#c97b3a",
+  "categories": ["social", "games", "communication"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

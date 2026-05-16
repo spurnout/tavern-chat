@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { File as FileIcon, ShieldAlert } from 'lucide-react';
 import type { Attachment } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
+import { useLightbox } from '../lib/lightbox-store.js';
 
 // LRU-bounded module cache. A long chat session can scroll past thousands of
 // distinct attachments; the cap keeps memory in check while still avoiding
@@ -101,14 +102,34 @@ export function AttachmentView({ id }: { id: string }): JSX.Element {
 
   if (att.kind === 'image' || att.kind === 'gif' || att.kind === 'map') {
     return (
-      <a href={att.url ?? '#'} target="_blank" rel="noreferrer" className="my-1 inline-block">
+      <button
+        type="button"
+        onClick={() => {
+          if (!att.url) return;
+          useLightbox.getState().show(
+            [
+              {
+                attachmentId: att.id,
+                url: att.url,
+                thumbnailUrl: att.thumbnailUrl ?? null,
+                filename: att.filename,
+                width: att.width ?? null,
+                height: att.height ?? null,
+              },
+            ],
+            0,
+          );
+        }}
+        className="my-1 inline-block cursor-zoom-in"
+        aria-label={`Open ${att.filename}`}
+      >
         <img
           src={att.thumbnailUrl ?? att.url ?? ''}
           alt={att.filename}
           loading="lazy"
           className="max-h-72 max-w-md rounded border border-subtle object-contain"
         />
-      </a>
+      </button>
     );
   }
 

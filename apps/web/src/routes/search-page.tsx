@@ -75,7 +75,12 @@ export function SearchPage(): JSX.Element {
           <p className="text-sm text-fg-muted">No matches.</p>
         ) : null}
         <ul className="space-y-2">
-          {results.map((m) => (
+          {results.map((m) => {
+            // The /search endpoint only returns server-channel messages, but
+            // the wire type is now nullable to accommodate DMs — guard for
+            // the impossible case so TS narrows.
+            if (!m.channelId) return null;
+            return (
             <li key={m.id} className="card">
               <div className="mb-1 flex items-baseline justify-between">
                 <Link
@@ -96,7 +101,8 @@ export function SearchPage(): JSX.Element {
                 </div>
               ) : null}
             </li>
-          ))}
+            );
+          })}
         </ul>
       </div>
     </div>

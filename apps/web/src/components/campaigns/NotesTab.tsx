@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Campaign, CampaignNote, NoteVisibility } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
+import { MessageContent, slugifyWikiTarget } from '../MessageContent.js';
 
 export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
   const [notes, setNotes] = useState<CampaignNote[]>([]);
@@ -104,9 +105,36 @@ export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
         </div>
       </div>
       {error ? <p className="text-sm text-danger">{error}</p> : null}
-      <ul className="space-y-2">
-        {notes.map((n) => (
-          <li key={n.id} className="card space-y-1">
+      <NoteList notes={notes} onDelete={(id) => void remove(id)} />
+    </div>
+  );
+}
+
+/**
+ * Renders the campaign's notes with wikilink-aware markdown. Each list item
+ * carries an `id` of the form `note-<slug>` so `[[Title]]` references from
+ * other notes (or from the same note) resolve via in-page anchor scrolling.
+ */
+function NoteList({
+  notes,
+  onDelete,
+}: {
+  notes: CampaignNote[];
+  onDelete: (id: string) => void;
+}): JSX.Element {
+  // Build a set of slugs that actually exist so we can hint at broken
+  // references. Currently used only for the hover title; the visual treatment
+  // is the same either way — clicking a missing wikilink just no-ops.
+  const knownSlugs = useMemo(
+    () => new Set(notes.map((n) => slugifyWikiTarget(n.title))),
+    [notes],
+  );
+  return (
+    <ul className="space-y-2">
+      {notes.map((n) => {
+        const slug = slugifyWikiTarget(n.title);
+        return (
+          <li id={`note-${slug}`} key={n.id} className="card space-y-1 scroll-mt-16">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div className="font-serif font-medium">
                 {n.pinned ? '📌 ' : ''}
@@ -114,19 +142,32 @@ export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
               </div>
               <div className="flex items-center gap-2 text-xs text-fg-muted">
                 <span>{n.visibility.replace(/_/g, ' ')}</span>
+                <span
+                  className="text-fg-faint"
+                  title={
+                    knownSlugs.has(slug)
+                      ? `Other notes can reference this with [[${n.title}]]`
+                      : ''
+                  }
+                  aria-hidden
+                >
+                  #{slug}
+                </span>
                 <button
                   type="button"
                   className="text-danger hover:underline"
-                  onClick={() => void remove(n.id)}
+                  onClick={() => onDelete(n.id)}
                 >
                   delete
                 </button>
               </div>
             </div>
-            <p className="whitespace-pre-wrap text-sm">{n.body}</p>
+            <div className="text-sm">
+              <MessageContent content={n.body} />
+            </div>
           </li>
-        ))}
-      </ul>
-    </div>
+        );
+      })}
+    </ul>
   );
 }

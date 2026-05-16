@@ -1,22 +1,28 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
-import { Dice5, Mic, Paperclip, Send, Square, X } from 'lucide-react';
+import { Dice5, Mic, Paperclip, Send, Smile, Square, X } from 'lucide-react';
 import {
   ALLOWED_AUDIO_MIMES,
   ALLOWED_IMAGE_MIMES,
   ALLOWED_VIDEO_MIMES,
+  parseSlashInput,
   UPLOAD_LIMITS,
   type Attachment,
   type Message,
+  type SlashExecuteResponse,
 } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
+import { useRealtime } from '../lib/store.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
+import { SlashAutocomplete } from './SlashAutocomplete.js';
+import { MentionAutocomplete } from './MentionAutocomplete.js';
+import { EmojiPicker } from './EmojiPicker.js';
+import { CreatePollModal } from './CreatePollModal.js';
+import { RemindModal } from './RemindModal.js';
 
 interface Props {
   channelId: string;
 }
-
-const DICE_PREFIX = '/roll ';
 
 interface PendingAttachment {
   attachment: Attachment;
@@ -24,14 +30,69 @@ interface PendingAttachment {
 }
 
 export function MessageComposer({ channelId }: Props): JSX.Element {
-  const [content, setContent] = useState('');
+  const setComposerDraft = useRealtime((s) => s.setComposerDraft);
+  const clearPendingMention = useRealtime((s) => s.clearPendingMention);
+  const pendingMention = useRealtime((s) => s.pendingMentionByChannelId[channelId] ?? null);
+
+  const [content, setContent] = useState(
+    () => useRealtime.getState().composerDraftByChannelId[channelId] ?? '',
+  );
+  const [cursorOffset, setCursorOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [recording, setRecording] = useState<MediaRecorder | null>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pollModal, setPollModal] = useState<{ question?: string; options?: string[] } | null>(null);
+  const [remindModal, setRemindModal] = useState<{ text?: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recordingChunks = useRef<Blob[]>([]);
+
+  function insertAtCursor(text: string): void {
+    setContent((prev) => {
+      const head = prev.slice(0, cursorOffset);
+      const tail = prev.slice(cursorOffset);
+      const next = `${head}${text}${tail}`;
+      setComposerDraft(channelId, next);
+      const newCursor = cursorOffset + text.length;
+      queueMicrotask(() => {
+        const el = textareaRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(newCursor, newCursor);
+          setCursorOffset(newCursor);
+        }
+      });
+      return next;
+    });
+  }
+
+  // When the user switches rooms, swap the composer to that room's draft.
+  // Drafts survive across navigations so half-written messages aren't lost.
+  useEffect(() => {
+    setContent(useRealtime.getState().composerDraftByChannelId[channelId] ?? '');
+  }, [channelId]);
+
+  // The member profile card writes here when "Mention in this room" is
+  // clicked. We append `@displayName ` to the current draft, focus the
+  // textarea, and clear the slot so the same mention isn't re-applied.
+  useEffect(() => {
+    if (!pendingMention) return;
+    setContent((prev) => {
+      const sep = prev.length === 0 || prev.endsWith(' ') ? '' : ' ';
+      const next = `${prev}${sep}@${pendingMention} `;
+      setComposerDraft(channelId, next);
+      return next;
+    });
+    clearPendingMention(channelId);
+    // Defer focus until after the textarea has the new value.
+    queueMicrotask(() => {
+      textareaRef.current?.focus();
+      const el = textareaRef.current;
+      if (el) el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [pendingMention, channelId, clearPendingMention, setComposerDraft]);
 
   // Tracks whether the component is still mounted so async callbacks (recorder
   // onstop, upload completions) can skip setState on a teardown.
@@ -78,11 +139,39 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
     setBusy(true);
     setError(null);
     try {
-      if (trimmed.startsWith(DICE_PREFIX) && pending.length === 0) {
-        const notation = trimmed.slice(DICE_PREFIX.length).trim();
-        await api('/dice/roll', {
+      const slash = parseSlashInput(trimmed);
+      if (slash && pending.length === 0) {
+        // Client-action commands open a modal instead of POSTing to the
+        // server. `/poll question | a | b | c` pre-fills the modal so the
+        // typed args aren't wasted.
+        if (slash.command === 'poll') {
+          const segments = slash.args
+            .split('|')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          const question = segments[0] ?? '';
+          const options = segments.slice(1);
+          setPollModal({
+            question,
+            options: options.length >= 2 ? options : ['', ''],
+          });
+          setContent('');
+          setComposerDraft(channelId, '');
+          return;
+        }
+        if (slash.command === 'remind') {
+          setRemindModal({ text: slash.args });
+          setContent('');
+          setComposerDraft(channelId, '');
+          return;
+        }
+        await api<SlashExecuteResponse>(`/channels/${channelId}/slash`, {
           method: 'POST',
-          body: { channelId, notation, visibility: 'public' },
+          body: {
+            command: slash.command,
+            args: slash.args,
+            nonce: cryptoRandomNonce(),
+          },
         });
       } else {
         await api<Message>(`/channels/${channelId}/messages`, {
@@ -95,6 +184,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         });
       }
       setContent('');
+      setComposerDraft(channelId, '');
       for (const p of pending) {
         if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       }
@@ -104,7 +194,6 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
       setError(msg);
     } finally {
       setBusy(false);
-      textareaRef.current?.focus();
     }
   }
 
@@ -119,6 +208,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   const lastTypingRef = useRef(0);
   function onContentChange(value: string): void {
     setContent(value);
+    setComposerDraft(channelId, value);
     const now = Date.now();
     if (now - lastTypingRef.current > 3000 && value.length > 0) {
       lastTypingRef.current = now;
@@ -237,6 +327,40 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
 
   return (
     <div className="border-t border-subtle bg-sunken p-3">
+      <SlashAutocomplete
+        channelId={channelId}
+        text={content}
+        onAccept={(next) => {
+          setContent(next);
+          setComposerDraft(channelId, next);
+          queueMicrotask(() => {
+            textareaRef.current?.focus();
+            const el = textareaRef.current;
+            if (el) el.setSelectionRange(el.value.length, el.value.length);
+          });
+        }}
+        onDismiss={() => {
+          // Clearing the leading `/` collapses the popover; tab key gives
+          // the user a hard close path without losing typed text.
+        }}
+      />
+      <MentionAutocomplete
+        channelId={channelId}
+        text={content}
+        cursorOffset={cursorOffset}
+        onAccept={(next, caret) => {
+          setContent(next);
+          setComposerDraft(channelId, next);
+          setCursorOffset(caret);
+          queueMicrotask(() => {
+            const el = textareaRef.current;
+            if (el) {
+              el.focus();
+              el.setSelectionRange(caret, caret);
+            }
+          });
+        }}
+      />
       {pending.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-2">
           {pending.map((p) => (
@@ -287,7 +411,13 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           type="button"
           className="btn-ghost shrink-0"
           title="Roll dice (try /roll 1d20+5)"
-          onClick={() => setContent((c) => (c ? c : `${DICE_PREFIX}1d20`))}
+          onClick={() =>
+            setContent((c) => {
+              const next = c ? c : '/roll 1d20';
+              setComposerDraft(channelId, next);
+              return next;
+            })
+          }
           disabled={busy}
         >
           <Dice5 size={18} />
@@ -301,14 +431,41 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         >
           {recording ? <Square size={18} /> : <Mic size={18} />}
         </button>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            className="btn-ghost"
+            title="Insert emoji"
+            onClick={() => setEmojiOpen((v) => !v)}
+            disabled={busy}
+          >
+            <Smile size={18} />
+          </button>
+          {emojiOpen ? (
+            <div className="absolute bottom-full right-0 mb-2">
+              <EmojiPicker
+                open={emojiOpen}
+                onClose={() => setEmojiOpen(false)}
+                onPick={(emoji) => {
+                  insertAtCursor(emoji);
+                  setEmojiOpen(false);
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
         <textarea
           ref={textareaRef}
           className="input min-h-[2.5rem] flex-1 resize-none"
           value={content}
-          onChange={(e) => onContentChange(e.target.value)}
+          onChange={(e) => {
+            onContentChange(e.target.value);
+            setCursorOffset(e.target.selectionStart);
+          }}
+          onKeyUp={(e) => setCursorOffset(e.currentTarget.selectionStart)}
+          onClick={(e) => setCursorOffset(e.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
-          placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice."
-          disabled={busy}
+          placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice. @everyone to call the table."
           rows={1}
         />
         <button
@@ -324,6 +481,17 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
       {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
       {recording ? (
         <p className="mt-1 text-xs text-mead">● Recording… click stop to send</p>
+      ) : null}
+      {pollModal ? (
+        <CreatePollModal
+          channelId={channelId}
+          initialQuestion={pollModal.question ?? ''}
+          initialOptions={pollModal.options ?? ['', '']}
+          onClose={() => setPollModal(null)}
+        />
+      ) : null}
+      {remindModal ? (
+        <RemindModal initialText={remindModal.text} onClose={() => setRemindModal(null)} />
       ) : null}
     </div>
   );

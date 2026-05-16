@@ -20,6 +20,13 @@ export class GatewayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1_000;
   private lastSeq = 0;
+  /**
+   * The sessionId carried in the previous connection's HELLO. When the
+   * socket drops and we reconnect, we send this back via RESUME so the
+   * server can splice the buffered events from the orphaned session onto
+   * the new socket. Cleared on explicit close() and on INVALID_SESSION.
+   */
+  private resumeSessionId: string | null = null;
   private status: 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed' = 'idle';
 
   constructor(private readonly opts: GatewayClientOptions) {}
@@ -53,6 +60,8 @@ export class GatewayClient {
 
   close(): void {
     this.setStatus('closed');
+    this.resumeSessionId = null;
+    this.lastSeq = 0;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.cleanupSocket();
   }
@@ -95,14 +104,25 @@ export class GatewayClient {
     switch (payload.op) {
       case GatewayOp.HELLO: {
         const d = payload.d as { sessionId: string; heartbeatIntervalMs: number };
-        this.identify();
         this.startHeartbeat(d.heartbeatIntervalMs);
+        // If we held onto a prior sessionId, ask the server to resume it.
+        // Otherwise this is a fresh connection — IDENTIFY normally.
+        if (this.resumeSessionId && this.lastSeq > 0) {
+          this.resume(this.resumeSessionId, this.lastSeq);
+        } else {
+          this.identify();
+        }
+        // Remember this connection's sessionId so the *next* reconnect can
+        // ask to resume from here.
+        this.resumeSessionId = d.sessionId;
         return;
       }
       case GatewayOp.HEARTBEAT_ACK:
         return;
       case GatewayOp.INVALID_SESSION:
-        // Force a fresh IDENTIFY.
+        // Server says the resume target is gone (e.g. BUFFER_GAP). Drop our
+        // resume hint and re-IDENTIFY from scratch.
+        this.resumeSessionId = null;
         this.lastSeq = 0;
         this.identify();
         return;
@@ -129,6 +149,16 @@ export class GatewayClient {
       return;
     }
     this.send({ op: GatewayOp.IDENTIFY, d: { token, capabilities: [] } });
+  }
+
+  private resume(sessionId: string, lastSeq: number): void {
+    if (!this.socket) return;
+    const token = tokenStore.accessToken;
+    if (!token) {
+      this.close();
+      return;
+    }
+    this.send({ op: GatewayOp.RESUME, d: { token, sessionId, lastSeq } });
   }
 
   private startHeartbeat(intervalMs: number): void {

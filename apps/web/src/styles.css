@@ -2,6 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Wave 3 #44 — skip-to-main-content link. Visually hidden until focus, then
+ * floats above the page chrome. Lets keyboard users jump past the sidebars
+ * to the message stream / page content.
+ */
+.skip-to-content {
+  position: absolute;
+  left: -10000px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.skip-to-content:focus {
+  position: fixed;
+  left: 1rem;
+  top: 1rem;
+  width: auto;
+  height: auto;
+  z-index: 100;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-elevated, #2a2218);
+  color: var(--fg-default, #f1e6cf);
+  border: 2px solid var(--ember, #ec9b4d);
+  border-radius: 0.25rem;
+  outline: none;
+}
+
 /* ─────────────────────────────────────────────────────────────────
    Design tokens — see docs/design-system.html for the full reference.
    Canonical values are oklch; hex is the comment-side fallback only.
@@ -138,3 +166,68 @@
     @apply rounded-md border border-subtle bg-surface;
   }
 }
+
+/* Voice activity indicator — three vertical bars that pulse out of phase
+   while a participant is speaking. Color via `currentColor` so callers can
+   tint it with text-ember / text-mead etc. without overriding the rule. */
+@keyframes speak-bar {
+  0%, 100% { transform: scaleY(0.3); }
+  50%      { transform: scaleY(1); }
+}
+
+.speak-bar {
+  display: inline-flex;
+  height: 0.75rem;
+  width: 0.875rem;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1px;
+}
+
+.speak-bar > span {
+  display: block;
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: bottom;
+  animation: speak-bar 700ms ease-in-out infinite;
+}
+
+.speak-bar > span:nth-child(2) { animation-delay: 150ms; }
+.speak-bar > span:nth-child(3) { animation-delay: 300ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .speak-bar > span {
+    animation: none;
+    transform: scaleY(0.7);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Syntax highlighting — produced by lowlight (highlight.js classes).
+   Stays in the tavern palette: ember/mead/moss/lavender accents on
+   the canvas background, no neon. Reduced contrast on punctuation so
+   the eye lands on identifiers and strings.
+   ───────────────────────────────────────────────────────────────── */
+.hljs { color: var(--fg-default); }
+.hljs-comment, .hljs-quote          { color: var(--fg-faint); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag,
+.hljs-built_in, .hljs-name,
+.hljs-meta-keyword                  { color: var(--ember-hi); }
+.hljs-string, .hljs-attr,
+.hljs-symbol, .hljs-bullet          { color: var(--moss); }
+.hljs-number, .hljs-literal,
+.hljs-regexp                        { color: var(--mead); }
+.hljs-title, .hljs-section,
+.hljs-function .hljs-title          { color: var(--lavender); }
+.hljs-type, .hljs-class .hljs-title { color: var(--ember); }
+.hljs-variable, .hljs-template-variable { color: var(--fg-default); }
+.hljs-attribute                     { color: var(--mead); }
+.hljs-tag                           { color: var(--fg-muted); }
+.hljs-meta                          { color: var(--fg-muted); }
+.hljs-link                          { color: var(--mead); text-decoration: underline dotted; }
+.hljs-emphasis                      { font-style: italic; }
+.hljs-strong                        { font-weight: 600; }
+.hljs-addition                      { color: var(--moss); background-color: oklch(0.30 0.04 148 / 0.25); }
+.hljs-deletion                      { color: var(--rust); background-color: oklch(0.30 0.05 32 / 0.25); }

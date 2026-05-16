@@ -13,6 +13,8 @@ interface Props {
 const TYPES: Array<{ value: ChannelType; label: string }> = [
   { value: 'text', label: 'Text' },
   { value: 'voice', label: 'Voice / video' },
+  { value: 'stage', label: 'Stage' },
+  { value: 'forum', label: 'Forum' },
   { value: 'category', label: 'Category' },
 ];
 
@@ -93,7 +95,7 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
           disabled={busy}
         />
       </label>
-      {type === 'text' ? (
+      {type === 'text' || type === 'forum' ? (
         <label className="mt-3 block text-sm">
           <span className="mb-1 inline-block text-fg-muted">Topic (optional)</span>
           <input
@@ -104,6 +106,17 @@ export function CreateChannelModal({ serverId, open, onOpenChange }: Props): JSX
             disabled={busy}
           />
         </label>
+      ) : null}
+      {type === 'forum' ? (
+        <p className="mt-2 text-xs text-fg-muted">
+          Every post in a forum room starts a new thread. Replies happen inside the thread.
+        </p>
+      ) : null}
+      {type === 'stage' ? (
+        <p className="mt-2 text-xs text-fg-muted">
+          A broadcast voice room: everyone joins muted as audience. Hosts approve raise-hand
+          requests to promote listeners to speakers.
+        </p>
       ) : null}
       {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
     </Modal>

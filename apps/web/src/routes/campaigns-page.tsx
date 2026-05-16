@@ -7,6 +7,12 @@ import { CreateCampaignModal } from '../components/CreateCampaignModal.js';
 import { SessionsTab } from '../components/campaigns/SessionsTab.js';
 import { NotesTab } from '../components/campaigns/NotesTab.js';
 import { HandoutsTab } from '../components/campaigns/HandoutsTab.js';
+import { SafetyTab } from '../components/campaigns/SafetyTab.js';
+import { GmScreenTab } from '../components/campaigns/GmScreenTab.js';
+import { DecksPanel } from '../components/DecksPanel.js';
+import { CharactersPanel } from '../components/CharactersPanel.js';
+import { NpcRosterPanel } from '../components/NpcRosterPanel.js';
+import { RandomTablesPanel } from '../components/RandomTablesPanel.js';
 
 export function CampaignsPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
@@ -97,9 +103,19 @@ export function CampaignsPage(): JSX.Element {
 }
 
 function CampaignDetail({ campaign }: { campaign: Campaign }): JSX.Element {
-  const [tab, setTab] = useState<'sessions' | 'notes' | 'handouts'>('sessions');
+  type CampaignTab =
+    | 'sessions'
+    | 'notes'
+    | 'handouts'
+    | 'characters'
+    | 'npcs'
+    | 'tables'
+    | 'safety'
+    | 'decks'
+    | 'gm';
+  const [tab, setTab] = useState<CampaignTab>('sessions');
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 flex-col gap-4">
       <header>
         <h2 className="font-serif text-2xl font-medium">{campaign.name}</h2>
         {campaign.description ? (
@@ -129,10 +145,43 @@ function CampaignDetail({ campaign }: { campaign: Campaign }): JSX.Element {
         <TabButton active={tab === 'handouts'} onClick={() => setTab('handouts')}>
           Handouts
         </TabButton>
+        <TabButton active={tab === 'characters'} onClick={() => setTab('characters')}>
+          Characters
+        </TabButton>
+        <TabButton active={tab === 'npcs'} onClick={() => setTab('npcs')}>
+          NPCs
+        </TabButton>
+        <TabButton active={tab === 'tables'} onClick={() => setTab('tables')}>
+          Tables
+        </TabButton>
+        <TabButton active={tab === 'safety'} onClick={() => setTab('safety')}>
+          Safety
+        </TabButton>
+        <TabButton active={tab === 'decks'} onClick={() => setTab('decks')}>
+          Decks
+        </TabButton>
+        <TabButton active={tab === 'gm'} onClick={() => setTab('gm')}>
+          GM screen
+        </TabButton>
       </div>
-      {tab === 'sessions' ? <SessionsTab campaign={campaign} /> : null}
-      {tab === 'notes' ? <NotesTab campaign={campaign} /> : null}
-      {tab === 'handouts' ? <HandoutsTab campaign={campaign} /> : null}
+      <div className="flex-1 min-h-0">
+        {tab === 'sessions' ? <SessionsTab campaign={campaign} /> : null}
+        {tab === 'notes' ? <NotesTab campaign={campaign} /> : null}
+        {tab === 'handouts' ? <HandoutsTab campaign={campaign} /> : null}
+        {tab === 'characters' ? <CharactersPanel campaignId={campaign.id} /> : null}
+        {tab === 'npcs' ? <NpcRosterPanel campaignId={campaign.id} /> : null}
+        {tab === 'tables' ? (
+          <RandomTablesPanel serverId={campaign.serverId} campaignId={campaign.id} />
+        ) : null}
+        {tab === 'safety' ? <SafetyTab campaign={campaign} /> : null}
+        {tab === 'decks' ? (
+          <DecksPanel
+            serverId={campaign.serverId}
+            {...(campaign.defaultChannelId ? { channelId: campaign.defaultChannelId } : {})}
+          />
+        ) : null}
+        {tab === 'gm' ? <GmScreenTab campaign={campaign} onJumpTab={setTab} /> : null}
+      </div>
     </div>
   );
 }

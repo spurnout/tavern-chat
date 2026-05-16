@@ -1,0 +1,89 @@
+/*
+ * Wave 3 #30 / #33 — Theme + font preferences. Activated by data-attrs on
+ * <html> set by preferences-store.ts.
+ *
+ * The base theme is the existing token palette. Dark + sepia override only
+ * the surface ramp. Font choices override --font-serif/--font-sans. The
+ * size attr scales the base font-size; reduce-motion zeroes the
+ * --t-base / --ease-* transitions.
+ */
+
+html[data-theme='dark'] {
+  --bg-canvas: #15110d;
+  --bg-sunken: #1d1814;
+  --bg-surface: #261f1a;
+  --bg-raised: #2f2722;
+  --text-fg: #f1ead7;
+  --text-fg-muted: #b8ab93;
+}
+
+html[data-theme='sepia'] {
+  --bg-canvas: #faf3df;
+  --bg-sunken: #f3e9c9;
+  --bg-surface: #ede0b7;
+  --bg-raised: #e3d39e;
+  --text-fg: #3b2f1e;
+  --text-fg-muted: #6b5a3c;
+  --border-subtle: #c9b785;
+}
+
+/*
+ * Wave 3 #44 — high-contrast theme. Pure black backgrounds, pure white
+ * foreground, bold accents. Designed for low-vision users; comfortably
+ * exceeds WCAG AA 4.5:1 on every text/background pair.
+ */
+html[data-theme='highContrast'] {
+  --bg-canvas: #000000;
+  --bg-sunken: #050505;
+  --bg-surface: #0c0c0c;
+  --bg-raised: #181818;
+  --bg-elevated: #1f1f1f;
+  --bg-overlay: #262626;
+  --fg-default: #ffffff;
+  --fg-muted: #e0e0e0;
+  --fg-faint: #bbbbbb;
+  --fg-on-accent: #000000;
+  --border-subtle: #555555;
+  --border-default: #888888;
+  --border-strong: #ffffff;
+  --ember: #ffaa33;
+  --ember-hi: #ffcc66;
+  --ember-lo: #cc7700;
+  --mead: #ffff66;
+  --moss: #66ff88;
+  --rust: #ff5533;
+  --lavender: #cc99ff;
+  --dusk: #88aaff;
+}
+
+html[data-theme='highContrast'] :focus-visible {
+  outline: 3px solid var(--ember);
+  outline-offset: 2px;
+}
+
+html[data-font='sans'] body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+html[data-font='dyslexia'] body {
+  font-family: 'OpenDyslexic', 'Comic Sans MS', sans-serif;
+  letter-spacing: 0.02em;
+}
+
+html[data-size='small'] body {
+  font-size: 14px;
+}
+html[data-size='medium'] body {
+  font-size: 16px;
+}
+html[data-size='large'] body {
+  font-size: 18px;
+}
+
+html[data-reduce-motion='true'] *,
+html[data-reduce-motion='true'] *::before,
+html[data-reduce-motion='true'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

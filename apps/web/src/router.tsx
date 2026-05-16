@@ -8,12 +8,15 @@ import {
 } from '@tanstack/react-router';
 import { LoginPage } from './routes/login.js';
 import { RegisterPage } from './routes/register.js';
+import { ForgotPasswordPage } from './routes/forgot-password.js';
+import { ResetPasswordPage } from './routes/reset-password.js';
 import { BootstrapPage } from './routes/bootstrap-page.js';
 import { AppShell } from './routes/app-shell.js';
 import { AppHomePage } from './routes/app-home.js';
 import { ChannelPage } from './routes/channel-page.js';
 import { VoicePage } from './routes/voice-page.js';
 import { ServerHomePage } from './routes/server-home.js';
+import { DmsPage } from './routes/dms-page.js';
 // FE-21: heavy single-page screens (campaigns 624 LoC, games 581, moderation
 // 322, server-settings 582) ship in separate chunks via React.lazy. The first
 // visit pays a small additional fetch; subsequent navigations are cached.
@@ -32,6 +35,7 @@ const ServerSettingsPage = lazy(() =>
   import('./routes/server-settings-page.js').then((m) => ({ default: m.ServerSettingsPage })),
 );
 import { SearchPage } from './routes/search-page.js';
+import { AccountSettingsPage } from './routes/account-settings-page.js';
 import { AuthGate } from './components/AuthGate.js';
 import { useAuth } from './lib/auth.js';
 
@@ -70,6 +74,18 @@ const registerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/register',
   component: RegisterPage,
+});
+
+const forgotPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/forgot-password',
+  component: ForgotPasswordPage,
+});
+
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reset-password',
+  component: ResetPasswordPage,
 });
 
 const appLayoutRoute = createRoute({
@@ -152,11 +168,31 @@ const searchRoute = createRoute({
   component: SearchPage,
 });
 
+const dmsHomeRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/dms',
+  component: DmsPage,
+});
+
+const accountSettingsRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/account',
+  component: AccountSettingsPage,
+});
+
+const dmThreadRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/dms/$dmChannelId',
+  component: DmsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   bootstrapRoute,
   loginRoute,
   registerRoute,
+  forgotPasswordRoute,
+  resetPasswordRoute,
   appLayoutRoute.addChildren([
     appHomeRoute,
     serverHomeRoute,
@@ -167,6 +203,9 @@ const routeTree = rootRoute.addChildren([
     moderationRoute,
     settingsRoute,
     searchRoute,
+    dmsHomeRoute,
+    dmThreadRoute,
+    accountSettingsRoute,
   ]),
 ]);
 

@@ -5,6 +5,7 @@ import type {
   CreateCampaignSessionRequest,
 } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
+import { SessionRecapButton } from './SessionRecapButton.js';
 
 export function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
   const [sessions, setSessions] = useState<CampaignSession[]>([]);
@@ -171,16 +172,19 @@ export function SessionsTab({ campaign }: { campaign: Campaign }): JSX.Element {
                 </div>
               </div>
             ) : (
-              <button
-                type="button"
-                className="btn-ghost self-start text-xs"
-                onClick={() => {
-                  setRecapId(s.id);
-                  setRecap(s.recap ?? '');
-                }}
-              >
-                {s.recap ? 'Edit recap' : 'Add recap'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="btn-ghost self-start text-xs"
+                  onClick={() => {
+                    setRecapId(s.id);
+                    setRecap(s.recap ?? '');
+                  }}
+                >
+                  {s.recap ? 'Edit recap' : 'Add recap'}
+                </button>
+                <SessionRecapButton campaignId={campaign.id} sessionId={s.id} />
+              </div>
             )}
           </li>
         ))}
