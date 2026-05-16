@@ -97,6 +97,92 @@ export const GatewayDispatchEvent = {
    * (emoji upload, voice-message playback, etc.).
    */
   ATTACHMENT_READY: 'ATTACHMENT_READY',
+
+  /**
+   * Phase 6 — direct messages. Server messages reuse the existing
+   * MESSAGE_* events because they're routed by channelId; DM messages
+   * carry a `dmChannelId` instead and need their own opcodes so the
+   * client knows which slice of state to update.
+   */
+  DM_CHANNEL_CREATE: 'DM_CHANNEL_CREATE',
+  DM_CHANNEL_UPDATE: 'DM_CHANNEL_UPDATE',
+  DM_MESSAGE_CREATE: 'DM_MESSAGE_CREATE',
+  DM_MESSAGE_UPDATE: 'DM_MESSAGE_UPDATE',
+  DM_MESSAGE_DELETE: 'DM_MESSAGE_DELETE',
+
+  /**
+   * Phase 1.3 — activity inbox / unread state. MESSAGE_ACK is sent only
+   * to the user's own sockets so multiple tabs stay in sync after a
+   * read-cursor advance. MENTION_CREATE delivers a new mention to the
+   * recipient (also user-scoped).
+   */
+  MESSAGE_ACK: 'MESSAGE_ACK',
+  MENTION_CREATE: 'MENTION_CREATE',
+
+  /**
+   * Phase 2.1 — message pinning.
+   */
+  MESSAGE_PIN: 'MESSAGE_PIN',
+  MESSAGE_UNPIN: 'MESSAGE_UNPIN',
+
+  /**
+   * Phase 3.1 — threads.
+   */
+  THREAD_CREATE: 'THREAD_CREATE',
+  THREAD_UPDATE: 'THREAD_UPDATE',
+  THREAD_ARCHIVE: 'THREAD_ARCHIVE',
+
+  /**
+   * Phase 3.2 — polls. Tally changes broadcast as POLL_UPDATE; closure
+   * is a separate POLL_CLOSE so the client can play a different cue.
+   */
+  POLL_UPDATE: 'POLL_UPDATE',
+  POLL_CLOSE: 'POLL_CLOSE',
+
+  /**
+   * Phase 4 — initiative encounters. One event for create/update/end;
+   * the round and turn index live on the payload.
+   */
+  ENCOUNTER_CREATE: 'ENCOUNTER_CREATE',
+  ENCOUNTER_UPDATE: 'ENCOUNTER_UPDATE',
+  ENCOUNTER_END: 'ENCOUNTER_END',
+
+  /**
+   * Wave 2 — chat / TTRPG / account-self-service events.
+   */
+  LINK_PREVIEW_READY: 'LINK_PREVIEW_READY',
+  MEMBER_TIMEOUT: 'MEMBER_TIMEOUT',
+  CHARACTER_UPDATE: 'CHARACTER_UPDATE',
+  SOUNDBOARD_CUE: 'SOUNDBOARD_CUE',
+  /** Wave 3 #19 — stop a previously-cued ambient loop, matched by clipId. */
+  SOUNDBOARD_STOP: 'SOUNDBOARD_STOP',
+  EXPORT_READY: 'EXPORT_READY',
+  /** Wave 3 #40 — bulk import dropped N messages into a channel. */
+  CHANNEL_IMPORT: 'CHANNEL_IMPORT',
+  /** Wave 3 #26 — a watch party started in a voice room. */
+  WATCH_PARTY_START: 'WATCH_PARTY_START',
+  /** Wave 3 #26 — host pushed a play/pause/seek for the running party. */
+  WATCH_PARTY_STATE: 'WATCH_PARTY_STATE',
+  /** Wave 3 #26 — host (or a mod) ended the party. */
+  WATCH_PARTY_END: 'WATCH_PARTY_END',
+  /** Wave 3 #33 — a speaker's live caption line. */
+  CAPTION_TEXT: 'CAPTION_TEXT',
+  /** Wave 3 #29 — breakout rooms opened off a parent voice channel. */
+  BREAKOUT_OPEN: 'BREAKOUT_OPEN',
+  /** Wave 3 #29 — breakouts closed; everyone returns to the parent. */
+  BREAKOUT_CLOSE: 'BREAKOUT_CLOSE',
+  /** Wave 3 #32 — host proposed a recording; participants must consent. */
+  RECORDING_CONSENT_REQUEST: 'RECORDING_CONSENT_REQUEST',
+  /** Wave 3 #32 — a participant updated their consent state. */
+  RECORDING_CONSENT_UPDATE: 'RECORDING_CONSENT_UPDATE',
+  /** Wave 3 #32 — all consented; recording is live. */
+  RECORDING_STARTED: 'RECORDING_STARTED',
+  /** Wave 3 #32 — recording stopped. */
+  RECORDING_STOPPED: 'RECORDING_STOPPED',
+  /** Wave 3 #34 — a stroke was added to a channel's whiteboard. */
+  WHITEBOARD_STROKE: 'WHITEBOARD_STROKE',
+  /** Wave 3 #34 — the whiteboard was cleared. */
+  WHITEBOARD_CLEAR: 'WHITEBOARD_CLEAR',
 } as const;
 
 export const attachmentReadyPayloadSchema = z.object({

@@ -20,11 +20,22 @@ export const safetyStateSchema = z.enum([
   'blocked',
 ]);
 
+export const messageAuthorSchema = z.object({
+  id: idSchema,
+  displayName: z.string(),
+  username: z.string(),
+});
+
 export const messageSchema = z.object({
   id: idSchema,
-  serverId: idSchema,
-  channelId: idSchema,
+  /** Non-null for server messages, null for DM messages. */
+  serverId: idSchema.nullable(),
+  /** Non-null for server messages, null for DM messages. */
+  channelId: idSchema.nullable(),
+  /** Non-null for DM messages, null for server messages. */
+  dmChannelId: idSchema.nullable(),
   authorId: idSchema,
+  author: messageAuthorSchema,
   type: messageTypeSchema,
   content: z.string(),
   replyToMessageId: idSchema.nullable(),
@@ -40,6 +51,31 @@ export const messageSchema = z.object({
     }),
   ),
   diceRollId: idSchema.nullable(),
+  /** Non-null when this message has an associated poll (Phase 3.2). */
+  pollId: idSchema.nullable().optional(),
+  /** Non-null when this message lives inside a thread (Phase 3.1). */
+  threadId: idSchema.nullable().optional(),
+  /** True when this message is itself the root of a thread (Phase 3.1). */
+  isThreadRoot: z.boolean().optional(),
+  /** Wave 2 #2 — inline preview of the parent message when this is a reply. */
+  replyTo: z
+    .object({
+      id: idSchema,
+      authorDisplayName: z.string(),
+      contentExcerpt: z.string(),
+      deleted: z.boolean(),
+    })
+    .nullable()
+    .optional(),
+  /** Wave 2 #5 — forwarded-message provenance. */
+  forwardedFrom: z
+    .object({
+      messageId: idSchema,
+      channelId: idSchema.nullable(),
+      authorDisplayName: z.string(),
+    })
+    .nullable()
+    .optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -49,6 +85,8 @@ export const createMessageRequestSchema = z.object({
   attachmentIds: z.array(idSchema).max(MESSAGE_LIMITS.MAX_ATTACHMENTS_PER_MESSAGE).optional(),
   /** Idempotency key — server returns the same message id on retry. */
   nonce: z.string().min(1).max(64).optional(),
+  /** Wave 2 #5 — when set, this message is a forward of an existing one. */
+  forwardedFromMessageId: idSchema.optional(),
 });
 
 export const updateMessageRequestSchema = z.object({

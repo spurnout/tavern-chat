@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
+import { presenceSchema } from './presence.js';
 import { NAME_LIMITS } from '../constants.js';
 
 export const serverSchema = z.object({
@@ -21,9 +22,17 @@ export const updateServerRequestSchema = createServerRequestSchema.partial().ext
   iconAttachmentId: idSchema.nullable().optional(),
 });
 
+export const memberUserSchema = z.object({
+  id: idSchema,
+  displayName: z.string(),
+  username: z.string(),
+  presence: presenceSchema.default('offline'),
+});
+
 export const memberSchema = z.object({
   serverId: idSchema,
   userId: idSchema,
+  user: memberUserSchema,
   nickname: z.string().min(1).max(NAME_LIMITS.MAX_DISPLAY_NAME).nullable(),
   joinedAt: z.string().datetime(),
   timeoutUntil: z.string().datetime().nullable(),

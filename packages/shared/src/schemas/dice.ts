@@ -42,8 +42,12 @@ export const diceRollResultSchema = z.object({
 
 export const diceRollSchema = z.object({
   id: idSchema,
-  serverId: idSchema,
-  channelId: idSchema,
+  /** Non-null for server rolls; null for DM rolls. */
+  serverId: idSchema.nullable(),
+  /** Non-null for server rolls; null for DM rolls. */
+  channelId: idSchema.nullable(),
+  /** Non-null for DM rolls; null for server rolls. */
+  dmChannelId: idSchema.nullable(),
   messageId: idSchema.nullable(),
   userId: idSchema,
   notation: z.string().max(DICE_LIMITS.MAX_NOTATION_LENGTH),
@@ -54,12 +58,19 @@ export const diceRollSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-export const rollDiceRequestSchema = z.object({
-  channelId: idSchema,
-  notation: z.string().min(1).max(DICE_LIMITS.MAX_NOTATION_LENGTH),
-  label: z.string().max(120).optional(),
-  visibility: diceVisibilitySchema.default('public'),
-});
+export const rollDiceRequestSchema = z
+  .object({
+    /** Server-channel target. Mutually exclusive with `dmChannelId`. */
+    channelId: idSchema.optional(),
+    /** DM-channel target. Mutually exclusive with `channelId`. */
+    dmChannelId: idSchema.optional(),
+    notation: z.string().min(1).max(DICE_LIMITS.MAX_NOTATION_LENGTH),
+    label: z.string().max(120).optional(),
+    visibility: diceVisibilitySchema.default('public'),
+  })
+  .refine((d) => Boolean(d.channelId) !== Boolean(d.dmChannelId), {
+    message: 'exactly one of channelId or dmChannelId is required',
+  });
 
 export type DiceVisibility = z.infer<typeof diceVisibilitySchema>;
 export type DieResult = z.infer<typeof dieResultSchema>;

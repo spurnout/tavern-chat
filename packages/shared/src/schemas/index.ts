@@ -19,3 +19,8 @@ export * from './game-nights.js';
 export * from './moderation.js';
 export * from './voice.js';
 export * from './bans.js';
+export * from './presence.js';
+export * from './notifications.js';
+export * from './dms.js';
+export * from './characters.js';
+export * from './webauthn.js';

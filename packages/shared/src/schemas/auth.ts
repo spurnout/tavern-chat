@@ -76,6 +76,23 @@ export const changePasswordRequestSchema = z.object({
   newPassword: passwordSchema,
 });
 
+/**
+ * Wave 3 — self-service password reset. Step 1: user submits their email.
+ * The endpoint always returns 200 so attackers cannot enumerate accounts.
+ */
+export const forgotPasswordRequestSchema = z.object({
+  email: emailSchema,
+});
+
+/**
+ * Step 2: user POSTs the token from the email plus a new password. The token
+ * is opaque (server-issued random bytes); only its SHA-256 hash is stored.
+ */
+export const resetPasswordRequestSchema = z.object({
+  token: z.string().min(16).max(256),
+  newPassword: passwordSchema,
+});
+
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 export type BootstrapRequest = z.infer<typeof bootstrapRequestSchema>;
 export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;
@@ -83,3 +100,5 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 export type TokenPair = z.infer<typeof tokenPairSchema>;
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
+export type ForgotPasswordRequest = z.infer<typeof forgotPasswordRequestSchema>;
+export type ResetPasswordRequest = z.infer<typeof resetPasswordRequestSchema>;

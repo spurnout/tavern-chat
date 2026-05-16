@@ -61,6 +61,13 @@ export const voiceStateGatewayPayloadSchema = z.object({
   cameraOn: z.boolean(),
   screenSharing: z.boolean(),
   joinedAt: z.string().datetime().nullable(),
+  /**
+   * Wave 3 #25 — stage rooms. `null` outside `stage` channels.
+   * `audience` users can't publish audio; `speaker` users can.
+   */
+  stagePosition: z.enum(['audience', 'speaker']).nullable().optional(),
+  /** Wave 3 #25 — set when an audience member is asking to be promoted. */
+  handRaisedAt: z.string().datetime().nullable().optional(),
 });
 
 export type VoiceJoinRequest = z.infer<typeof voiceJoinRequestSchema>;

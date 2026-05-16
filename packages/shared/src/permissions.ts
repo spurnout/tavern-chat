@@ -80,6 +80,9 @@ export const Permission = {
   LOCK_USER_POSTING: 1n << 48n,
   LOCK_USER_UPLOADS: 1n << 49n,
 
+  // -- Member identity ----------------------------------------------------
+  MANAGE_NICKNAMES: 1n << 50n,
+
   // -- Top-level ----------------------------------------------------------
   ADMINISTRATOR: 1n << 62n,
 } as const;

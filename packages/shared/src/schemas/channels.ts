@@ -9,6 +9,10 @@ export const channelTypeSchema = z.enum([
   'campaign',
   'session',
   'board_game',
+  /** Wave 3 #24 — broadcast voice channel with speaker/listener tiers. */
+  'stage',
+  /** Wave 3 #8 — forum: each root post auto-seeds a thread. */
+  'forum',
 ]);
 
 export const channelSchema = z.object({
@@ -40,6 +44,10 @@ export const updateChannelRequestSchema = createChannelRequestSchema
   .partial()
   .extend({
     position: z.number().int().min(0).optional(),
+    /** Wave 2 #8 — slow mode in seconds. */
+    slowmodeSeconds: z.number().int().min(0).max(6 * 60 * 60).optional(),
+    /** Wave 2 #9 — posting scope. */
+    postingScope: z.enum(['open', 'mods_only', 'admin_only']).optional(),
   });
 
 export const permissionOverwriteTargetTypeSchema = z.enum(['role', 'user']);
