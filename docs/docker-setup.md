@@ -18,12 +18,13 @@ infra-only mode pairs with `pnpm dev` for faster iteration.
 pnpm docker:up                  # postgres + redis + garage + clamav
 pnpm docker:up:all              # adds LiveKit
 pnpm docker:up:full             # adds api + worker + web (builds images on first run)
-pnpm garage:bootstrap           # one-time: apply Garage layout, import dev key, create buckets
 ```
 
-The first-time bootstrap is idempotent — safe to re-run. It can be skipped
-on subsequent boots since the Garage data volume persists across container
-restarts.
+All three commands chain `pnpm garage:bootstrap` automatically once the
+containers are up, so the dev Garage layout / access key / buckets are
+provisioned on first boot and re-verified (~3s no-op) on every subsequent
+boot. You only need to invoke `pnpm garage:bootstrap` manually if you brought
+the stack up via `docker compose` directly (bypassing the npm scripts).
 
 Confirm everything is healthy:
 
@@ -109,11 +110,13 @@ the proxy is what makes that a non-issue.
   signatures. Until then, scans return "scanner unavailable" and any
   attachment processed in that window goes to `failed` unless
   `ALLOW_UNSCANNED_UPLOADS=true`.
-- **Garage bootstrap**. `pnpm garage:bootstrap` must run once after the
-  first `pnpm docker:up`. It imports the dev access key and creates the
-  two buckets. Skipping it means uploads will 403 with "Access key not
-  found". Re-running it after a `docker compose down -v` (which wipes
-  Garage's volume) is necessary.
+- **Garage bootstrap**. The `pnpm docker:up*` scripts chain
+  `pnpm garage:bootstrap` automatically — it imports the dev access key and
+  creates the media + quarantine buckets. The script is idempotent, so it's
+  a ~3s no-op on a previously-bootstrapped volume and runs the real setup
+  after a `docker compose down -v` wipe. Only invoke it manually if you
+  brought the stack up via `docker compose` directly; otherwise uploads
+  would 403 with "Access key not found".
 - **Key ID length**. Garage rejects `S3_ACCESS_KEY` values under 8 chars;
   if you change the dev default, keep it ≥ 8 characters.
 - **`service_started` vs `service_healthy`** (DOC-006). The api / worker
@@ -137,8 +140,9 @@ This stops and removes the containers (including the `apps` profile, so
 docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit down -v
 ```
 
-After a `-v` wipe, re-run `pnpm garage:bootstrap` to recreate the dev key
-and buckets.
+After a `-v` wipe just re-run `pnpm docker:up*` — the chained
+`garage-bootstrap` step will recreate the dev key and buckets against the
+fresh Garage volume.
 
 ## Full-stack (`pnpm docker:up:full`) details
 

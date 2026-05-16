@@ -67,7 +67,10 @@ services bound to `127.0.0.1` for safety.
    behind the `apps` profile so that operators running the API and Worker
    natively (outside Docker) don't double-start them.
 
-6. Bootstrap Garage (one-time per host):
+6. Bootstrap Garage (one-time per host). **Skip this step if you brought
+   the stack up via `pnpm docker:up:full` above — it chains
+   `garage-bootstrap` automatically.** Run it explicitly only when you
+   started compose with the raw `docker compose ... up -d` form:
 
    ```bash
    pnpm garage:bootstrap

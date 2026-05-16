@@ -69,8 +69,10 @@ JWT claims: HS256-signed, `iss=tavern`, `aud=tavern-api` (access) or
 | PATCH  | `/servers/:id` | `MANAGE_SERVER` |
 | DELETE | `/servers/:id` | server owner |
 | GET    | `/servers/:id/members` | server member |
+| GET    | `/servers/:id/permissions/me` | server member; returns the caller's bitset |
 | GET    | `/servers/:id/roles` | server member |
 | GET    | `/servers/:id/channels` | server member; hidden channels filtered |
+| PATCH  | `/servers/:serverId/members/:userId` | self or `MANAGE_NICKNAMES`; body `{ nickname: string \| null }`; broadcasts `MEMBER_UPDATE` |
 
 ## Channels (`apps/api/src/routes/channels.ts`)
 
@@ -193,8 +195,8 @@ Same quarantine-bucket guard (STO-001).
 
 | Method | Path | Rate limit | Notes |
 |--------|------|------------|-------|
-| POST   | `/voice/join` | n/a | Mints a LiveKit token with publish sources gated by `SPEAK_VOICE`, `ENABLE_CAMERA`, `STREAM_SCREEN`. Returns `liveKitUrl`, `token`, `roomName`, `allowedFeatures`, `expiresAt`. |
-| POST   | `/voice/refresh-token` | 30/min | Re-mints a token for an in-progress session before the 1-hour TTL (VC-001). Re-checks live permissions, so a role demote narrows the new token. |
+| POST   | `/voice/join` | n/a | Mints a LiveKit token with publish sources gated by `SPEAK_VOICE`, `ENABLE_CAMERA`, `STREAM_SCREEN`. Returns `liveKitUrl`, `token`, `roomName`, `allowedFeatures`, `expiresAt`. TTL is 15 minutes; the client refreshes on a 5-minute lead so each session rotates tokens every ~10 minutes. |
+| POST   | `/voice/refresh-token` | 30/min | Re-mints a token for an in-progress session before the 15-minute TTL (VC-001). Re-checks live permissions, so a role demote narrows the new token. |
 | POST   | `/voice/leave` | 30/min | Batched `updateMany` across the caller's voice states (RT-008); broadcasts `VOICE_STATE_UPDATE` with the previous `channelId` so per-channel permission filter applies (RT-001). |
 | POST   | `/voice/state` | 60/min | Partial state: `{ channelId, screenSharing?, cameraOn?, selfMute?, selfDeaf? }`. 409 `VOICE_STATE_STALE` if caller isn't currently in `channelId`. Re-checks publish permissions live. |
 
@@ -296,6 +298,67 @@ are filtered before the search runs so they never appear in results.
 | GET    | `/servers/:serverId/audit-log` | `VIEW_AUDIT_LOG` |
 | GET    | `/servers/:serverId/safety-policy` | server member |
 | PATCH  | `/servers/:serverId/safety-policy` | `MANAGE_SERVER_SAFETY_POLICY` |
+
+## Direct messages (`apps/api/src/routes/dms.ts`)
+
+DM permissions reduce to "are you a member of this `DmChannel`?". Starting
+a DM additionally requires that the two users share at least one server —
+no DMing strangers from outside the instance.
+
+`(kind = 'direct', pairKey)` is enforced UNIQUE in PostgreSQL (`pairKey` is
+the sorted `userIdA:userIdB` of the two members), so concurrent calls to
+`POST /api/dms/direct` for the same pair return the same channel id.
+
+| Method | Path | Rate limit | Notes |
+|--------|------|------------|-------|
+| GET    | `/dms` | n/a | List my DM channels, sorted by `lastMessageAt` desc. |
+| GET    | `/dms/candidates` | n/a | Users I share at least one server with — the eligible pool for starting a new DM. Single query; replaces the older client-side fan-out across `/servers/:id/members`. |
+| POST   | `/dms/direct` | 30/min | `{ userId }` — open or reuse a 1:1 DM with another user (must share a server). |
+| POST   | `/dms/group` | 10/min | `{ userIds, name? }` — create a group DM. Capped at 10 members (creator + 9). |
+| GET    | `/dms/:id` | DM member | |
+| PATCH  | `/dms/:id` | DM member, group only | `{ name }`; direct DMs cannot be renamed. |
+| POST   | `/dms/:id/read` | DM member | `{ at? }` — update my `lastReadAt` watermark. |
+| GET    | `/dms/:id/messages?before=<id>&after=<id>&limit=50` | DM member | |
+| POST   | `/dms/:id/messages` | DM member | Same content/attachment/reply/`nonce` shape as server messages; voice messages aren't supported in DMs (yet). Broadcasts `DM_MESSAGE_CREATE`. |
+
+## Presence (`apps/api/src/routes/presence.ts`)
+
+Presence is derived from two inputs: client-reported activity (idle timer)
+and the sticky `manualDnd` flag on the user row. The gateway maintains the
+"socket count" in-memory; when it drops to zero the user flips to `offline`.
+
+| Method | Path | Rate limit | Notes |
+|--------|------|------------|-------|
+| GET    | `/me/presence` | n/a | `{ presence, manualDnd }`. Mainly useful at app boot; subsequent updates arrive via `PRESENCE_UPDATE` gateway dispatches. |
+| PATCH  | `/me/presence` | 60/min | `{ active?: boolean, dnd?: boolean }`. `active` toggles idle/active; `dnd` flips the sticky override. |
+
+`PRESENCE_UPDATE` dispatches are scoped to peers who share at least one
+server or DM channel with the target, plus the target themselves — not a
+global broadcast.
+
+## User profiles (`apps/api/src/routes/users.ts`)
+
+Powers the Discord-style member profile card. Sidebar rows in
+`GET /servers/:id/members` stay lean; the popover lazily fetches the rich
+profile on first open.
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET    | `/users/:userId/profile` | Self-fetch is always allowed; otherwise viewer and target must share a server. 404s rather than 403s on no-share so we don't disclose existence. |
+| PATCH  | `/users/me/profile` | PATCH semantics over `displayName`, `bio`, `avatarAttachmentId`, `pronouns`, `accentColor`, `timezone`, `customStatus`, `customStatusExpiresAt`, `socialLinks`. Social-link URLs are restricted to `http://`, `https://`, and `mailto:` (any other scheme is rejected by the schema). Broadcasts a partial `MEMBER_UPDATE` per shared server. |
+
+## Notification preferences (`apps/api/src/routes/notifications.ts`)
+
+User-global preferences (sounds, volume, focus / voice-room gating) and
+per-server overrides (mute messages / mentions / everything). Defaults are
+applied on first read.
+
+| Method | Path | Rate limit | Notes |
+|--------|------|------------|-------|
+| GET    | `/me/notification-preferences` | n/a | User-global prefs; created lazily on first read. |
+| PATCH  | `/me/notification-preferences` | 30/min | Partial update over `soundEnabled`, `volume`, `chatSoundsWhileInVoice`, `playOnlyWhenUnfocused`, `mentionsOverrideMute`. |
+| GET    | `/servers/:serverId/notification-preferences/me` | server member | Per-tavern override row for the caller. |
+| PATCH  | `/servers/:serverId/notification-preferences/me` | 30/min | Partial update over `muteAll`, `muteMessages`, `muteMentions`. |
 
 ## Misc
 

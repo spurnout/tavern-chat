@@ -93,9 +93,9 @@ campaigns, board games, moderation, search) works.
 Two container modes:
 
 - `pnpm docker:up` — infra only (postgres + redis + garage + clamav).
-  Pair with `pnpm dev` on the host for fast iteration. Run
-  `pnpm garage:bootstrap` once after the first `up` to create the dev
-  access key and buckets.
+  Pair with `pnpm dev` on the host for fast iteration. The script chains
+  `pnpm garage:bootstrap` automatically, so the dev S3 key + buckets are
+  ready on first boot (idempotent on subsequent boots).
 - `pnpm docker:up:all` — same as `docker:up` **plus** the LiveKit
   voice/video server. DOC-010.
 - `pnpm docker:up:full` — same infra **plus** api + worker + web in
