@@ -139,13 +139,19 @@ export class GatewayClient {
     // Bound the server-supplied interval. The HELLO payload is technically
     // attacker-controlled if the gateway is compromised; an out-of-range
     // value either spins the tab (too small) or silently breaks liveness
-    // detection (too large). Explicit range check + fallback so CodeQL's
-    // js/resource-exhaustion query recognizes the sanitizer.
-    let interval = intervalMs ?? GATEWAY.HEARTBEAT_INTERVAL_MS;
-    if (typeof interval !== 'number' || interval < 100 || interval > 30_000) {
-      interval = GATEWAY.HEARTBEAT_INTERVAL_MS;
+    // detection (too large). Validate first, fall back to the constant on
+    // bad input so the value reaching the second setInterval is provably
+    // within [100ms, 30s].
+    if (
+      typeof intervalMs !== 'number' ||
+      !Number.isFinite(intervalMs) ||
+      intervalMs < 100 ||
+      intervalMs > 30_000
+    ) {
+      this.heartbeat = setInterval(beat, GATEWAY.HEARTBEAT_INTERVAL_MS);
+      return;
     }
-    this.heartbeat = setInterval(beat, interval);
+    this.heartbeat = setInterval(beat, intervalMs);
   }
 
   private send(payload: { op: number; d: unknown }): void {
