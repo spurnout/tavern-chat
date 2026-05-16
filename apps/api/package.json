@@ -32,7 +32,7 @@
     "@simplewebauthn/types": "^11.0.0",
     "archiver": "^7.0.1",
     "jose": "^5.9.6",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^8.0.5",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "sanitize-html": "^2.13.1",
