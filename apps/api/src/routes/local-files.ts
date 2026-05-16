@@ -85,10 +85,14 @@ export async function registerLocalFileRoutes(
     },
   });
 
-  // GET: serve stored objects. Read-only; no listing.
+  // GET: serve stored objects. Read-only; no listing. Per-route rate-limit
+  // mirrors the PUT cap above; the global default (300/min) is too generous
+  // for a file-serving endpoint that's hit straight from the browser.
   app.get<{
     Params: { bucket: string; key: string };
-  }>('/api/_local-files/:bucket/:key', async (req, reply) => {
+  }>('/api/_local-files/:bucket/:key', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const { bucket, key: rawKey } = req.params;
 
     // Quarantined objects (ClamAV-flagged uploads) must never be streamed to
