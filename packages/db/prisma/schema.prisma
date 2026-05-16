@@ -26,6 +26,19 @@ datasource db {
 // AUTH / USERS  (Phase 0)
 // ============================================================================
 
+/// User presence — exposed in the member sidebar and used to gate
+/// notification sounds. `offline` is derived (no live gateway socket),
+/// `idle` is derived (no client heartbeat for the idle window), `active`
+/// is derived (live socket + recent activity). `dnd` is user-set via
+/// `User.manualDnd`; while set, the presence is pinned to `dnd` whenever
+/// the user is online.
+enum Presence {
+  active
+  idle
+  dnd
+  offline
+}
+
 model User {
   id                  String    @id
   username            String    @unique
@@ -37,8 +50,27 @@ model User {
   avatarAttachmentId  String?
   bio                 String?
   isInstanceAdmin     Boolean   @default(false)
+  // Wave 2 #19: bot accounts authenticate via API tokens only.
+  isBot               Boolean   @default(false)
   postingLockedUntil  DateTime?
   uploadsLockedUntil  DateTime?
+  // Wave 2 #16: TOTP 2FA.
+  totpSecret          String?
+  totpEnabled         Boolean   @default(false)
+  totpBackupCodes     Json      @default("[]")
+  // Wave 3 #36: SSO / OIDC. When the user logged in via an external IdP,
+  // (oidcIssuer, oidcSubject) is the global identity. The pair is unique
+  // (see @@unique below) so a re-login matches the same Tavern account.
+  oidcIssuer          String?
+  oidcSubject         String?
+  // Wave 2 #18: account deletion grace period.
+  scheduledDeleteAt   DateTime?
+  // Wave 3 #30/#33: appearance preferences (theme, font, motion).
+  themePreference     String?   @db.VarChar(40)
+  fontPreference      String?   @db.VarChar(40)
+  reduceMotion        Boolean   @default(false)
+  // Wave 3 #34: UI locale (BCP-47). Null falls back to browser default.
+  localePreference    String?   @db.VarChar(20)
   // Failed-login lockout — incremented on each invalid login, reset on
   // success. When the threshold is reached, loginLockedUntil is set; further
   // attempts inside the window are rejected before the password is even
@@ -46,10 +78,30 @@ model User {
   // requiring Redis.
   failedLoginAttempts Int       @default(0)
   loginLockedUntil    DateTime?
+  // Presence: current state is in `presence`; `manualDnd` is sticky so
+  // DND survives reconnects. The application sets `presenceUpdatedAt`
+  // explicitly when transitioning state (it is NOT @updatedAt to avoid
+  // touching it on unrelated profile edits).
+  presence            Presence  @default(offline)
+  presenceUpdatedAt   DateTime  @default(now())
+  manualDnd           Boolean   @default(false)
+  // Rich-profile fields surfaced by the member profile card. socialLinks is
+  // jsonb (array of { label, url }); validated by zod on write.
+  pronouns               String?   @db.VarChar(32)
+  accentColor            String?   @db.VarChar(7)
+  timezone               String?   @db.VarChar(64)
+  customStatus           String?   @db.VarChar(128)
+  customStatusExpiresAt  DateTime? @db.Timestamptz(3)
+  socialLinks            Json      @default("[]")
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   sessions             Session[]
+  passwordResets       PasswordReset[]       @relation("PasswordResetUser")
+  webAuthnCredentials  WebAuthnCredential[]  @relation("WebAuthnCredentialOwner")
+  dataExports          UserDataExport[]      @relation("UserDataExportOwner")
+  messageDrafts        MessageDraft[]        @relation("MessageDraftOwner")
+  safetyEntries        CampaignSafetyEntry[] @relation("SafetyEntryAuthor")
   ownedServers         Server[]              @relation("ServerOwner")
   memberships          ServerMember[]
   roleAssignments      ServerMemberRole[]
@@ -76,6 +128,51 @@ model User {
   handoutAccess        HandoutVisibleUser[]
   bans                 ServerBan[]           @relation("BannedUser")
   bansIssued           ServerBan[]           @relation("BannedByUser")
+  notificationPreference        UserNotificationPreference?
+  serverNotificationPreferences ServerMemberNotificationPreference[]
+  dmChannelsCreated     DmChannel[]       @relation("DmChannelCreator")
+  dmChannelMemberships  DmChannelMember[]
+  // Phase 1.3 — activity inbox / unread state
+  channelReadStates     UserChannelReadState[]
+  mentionsReceived      UserMention[]              @relation("MentionUser")
+  // Phase 2.1 / 2.2 — pinned and saved messages
+  pinnedMessagesAuthored PinnedMessage[]           @relation("PinnedBy")
+  savedMessages         SavedMessage[]             @relation("SavedByUser")
+  // Phase 3.1 / 3.2 / 3.3 — threads, polls, scheduled dispatch
+  threadsCreated        Thread[]                   @relation("ThreadCreator")
+  pollsCreated          Poll[]                     @relation("PollCreator")
+  pollVotes             PollVote[]                 @relation("PollVoter")
+  scheduledDispatches   ScheduledDispatch[]        @relation("DispatchOwner")
+  // Phase 4 — initiative tracker
+  encountersCreated     InitiativeEncounter[]      @relation("EncounterCreator")
+  // Wave 2 — characters / NPCs / tables / soundboard / webhooks / tokens / etc.
+  characters            Character[]                @relation("CharacterOwner")
+  npcsCreated           Npc[]                      @relation("NpcCreator")
+  randomTablesOwned     RandomTable[]              @relation("RandomTableOwner")
+  soundboardClipsAdded  SoundboardClip[]           @relation("SoundboardClipAdder")
+  webhooksCreated       Webhook[]                  @relation("WebhookCreator")
+  apiTokens             ApiToken[]                 @relation("ApiTokenOwner")
+  icalTokens            IcalToken[]                @relation("IcalTokenOwner")
+  messageEdits          MessageEdit[]              @relation("MessageEditor")
+  // Wave 3 back-relations.
+  pushSubscriptions     PushSubscription[]
+  stickersUploaded      Sticker[]                  @relation("StickerUploader")
+  warningsReceived      Warning[]                  @relation("WarningTarget")
+  warningsIssued        Warning[]                  @relation("WarningModerator")
+  encounterTemplates    EncounterTemplate[]        @relation("EncounterTemplateOwner")
+  serverTemplates       ServerTemplate[]           @relation("ServerTemplateAuthor")
+  joinGateAnswers       JoinGateAnswer[]
+  serverBackupsCreated  ServerBackup[]             @relation("ServerBackupCreator")
+  cardDecksCreated      CardDeck[]                 @relation("CardDeckCreator")
+  watchPartiesHosted    WatchParty[]               @relation("WatchPartyHost")
+  recapsGenerated       SessionRecap[]             @relation("RecapAuthor")
+  breakoutsCreated      BreakoutGroup[]            @relation("BreakoutCreator")
+  breakoutMemberships   BreakoutMember[]           @relation("BreakoutMembership")
+  recordingsCaptured    SessionRecording[]         @relation("Recorder")
+  whiteboardsUpdated    Whiteboard[]               @relation("WhiteboardUpdater")
+
+  @@unique([oidcIssuer, oidcSubject], map: "User_oidc_idx")
+  @@index([customStatusExpiresAt], map: "User_customStatusExpiresAt_idx")
 }
 
 model Session {
@@ -93,6 +190,112 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+// ============================================================================
+// PASSWORD RESET  (Wave 3)
+// ============================================================================
+//
+// One row per outstanding reset request. `tokenHash` is SHA-256 of the opaque
+// token mailed to the user; the plaintext token is never persisted. Rows are
+// single-use (`usedAt`) and time-limited (`expiresAt`); a periodic sweep can
+// purge expired rows but is not required for correctness — the service path
+// rejects them on read.
+
+model PasswordReset {
+  id         String    @id
+  userId     String
+  tokenHash  String    @unique
+  ipAddress  String?
+  userAgent  String?
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation("PasswordResetUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ============================================================================
+// WEBAUTHN PASSKEYS  (Wave 3)
+// ============================================================================
+//
+// One row per enrolled authenticator (hardware key, platform passkey, etc.).
+// `credentialId` is the raw bytes the authenticator returns and is what we
+// look up on assertion; `publicKey` is the COSE-encoded public key used to
+// verify signatures. `counter` is the authenticator's signature counter — we
+// store it monotonically so a cloned credential whose counter rolls back can
+// be detected. Ephemeral registration/authentication challenges are NOT
+// persisted; they live in an in-process Map keyed by user/IP for ~5 minutes.
+
+model WebAuthnCredential {
+  id            String    @id
+  userId        String
+  credentialId  Bytes     @unique
+  publicKey     Bytes
+  counter       BigInt    @default(0)
+  transports    String[]
+  deviceName    String?
+  createdAt     DateTime  @default(now())
+  lastUsedAt    DateTime?
+
+  user User @relation("WebAuthnCredentialOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ============================================================================
+// USER DATA EXPORTS  (Wave 3)
+// ============================================================================
+//
+// One row per requested per-user data export. Replaces the prior abuse of
+// `ScheduledDispatch` rows (which was always a placeholder). Status moves
+// pending → running → ready | failed; on success, `storageKey` points to a
+// zip in the main storage bucket and `expiresAt` is when the row + zip get
+// reaped by a maintenance sweep so we don't accumulate gigabytes per user.
+
+model UserDataExport {
+  id            String    @id
+  userId        String
+  status        String
+  storageBucket String?
+  storageKey    String?
+  sizeBytes     Int?
+  failureReason String?
+  requestedAt   DateTime  @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  expiresAt     DateTime
+
+  user User @relation("UserDataExportOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([status])
+}
+
+// ============================================================================
+// MESSAGE DRAFTS  (Wave 3 — #5 cross-device draft sync)
+// ============================================================================
+//
+// One row per (user, channel). The client debounces writes and clears the
+// row on send/cancel. Drafts are cheap (text only, no attachments) and bound
+// in size by MAX_MESSAGE_LENGTH; we don't expire them — the user's own
+// signal ("I sent the message" or "I cleared the composer") is the truth.
+
+model MessageDraft {
+  userId    String
+  channelId String
+  content   String
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation("MessageDraftOwner", fields: [userId], references: [id], onDelete: Cascade)
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([userId, channelId])
+  @@index([userId, updatedAt])
 }
 
 // ============================================================================
@@ -151,8 +354,23 @@ model Server {
   customEmojis   CustomEmoji[]
   reports        Report[]
   auditEntries   AuditLogEntry[]
+  // Wave 3 #18 — mod log channel mirror. When set, moderation actions
+  // publish a formatted message into this channel.
+  modLogChannelId String?
   safetyPolicy   SafetyPolicy?
   bans           ServerBan[]
+  memberNotificationPreferences ServerMemberNotificationPreference[]
+  // Wave 2 — soundboard and instance-level random tables.
+  soundboardClips SoundboardClip[]
+  randomTables    RandomTable[]
+  // Wave 3 — server-scoped new content.
+  stickers        Sticker[]
+  automodRules    AutomodRule[]
+  warnings        Warning[]
+  joinGate        JoinGate?
+  encounterTemplates EncounterTemplate[]
+  serverBackups   ServerBackup[]
+  cardDecks       CardDeck[]
 
   @@index([ownerUserId])
 }
@@ -163,6 +381,16 @@ model ServerMember {
   nickname      String?
   joinedAt      DateTime  @default(now())
   timeoutUntil  DateTime?
+  /// Wave 3 #40 — per-server custom status override. Null falls back to
+  /// the global `User.customStatus`. Lets a GM be "in session" in one
+  /// tavern without leaking that into every other community.
+  customStatus  String?   @db.VarChar(128)
+  /// Wave 3 #17 — true once the member has passed the server's join gate
+  /// (rules acceptance + free-text answers). Pending members can't post.
+  gatePassedAt  DateTime?
+  /// Wave 3 #16 — accumulated strike tier (0 = clean, escalates with each
+  /// warning). Drives automatic punishment escalation.
+  strikeTier    Int       @default(0)
 
   server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -241,6 +469,13 @@ enum ChannelType {
   campaign
   session
   board_game
+  /// Wave 3 #24 — stage / broadcast voice channel. Members default to muted
+  /// listeners; hosts approve raise-hand requests to grant speaker.
+  stage
+  /// Wave 3 #8 — forum-style channel. Each message posted at root becomes
+  /// the seed of a thread; the channel itself shows a list of threads
+  /// rather than a flat timeline. Replies happen inside the thread.
+  forum
 }
 
 model Channel {
@@ -273,6 +508,27 @@ model Channel {
   gameNightTextSessions   GameNight[]       @relation("GameNightTextChannel")
   gameNightVoiceSessions  GameNight[]       @relation("GameNightVoiceChannel")
   campaignDefaultLink     Campaign?         @relation("CampaignDefaultChannel")
+  // Phase 1.3 / 2.1 / 3.1 / 4 — new per-channel surfaces
+  readStates              UserChannelReadState[]
+  mentions                UserMention[]
+  pinnedMessages          PinnedMessage[]
+  threads                 Thread[]
+  encounters              InitiativeEncounter[]
+  messageDrafts           MessageDraft[]
+  watchParty              WatchParty?
+  /// Wave 3 #29 — breakout groups parented to this channel.
+  breakoutGroups          BreakoutGroup[]
+  /// Wave 3 #32 — session recordings captured in this channel.
+  sessionRecordings       SessionRecording[]
+  /// Wave 3 #34 — shared canvas state (one per channel).
+  whiteboard              Whiteboard?
+  // Wave 2 #8 — per-channel slow mode (seconds between sends per member).
+  slowmodeSeconds         Int                   @default(0)
+  // Wave 2 #9 — posting scope. `open` = anyone with SEND_MESSAGES; `mods_only`
+  // requires MANAGE_MESSAGES; `admin_only` requires ADMINISTRATOR.
+  postingScope            ChannelPostingScope   @default(open)
+  // Wave 2 #19 — incoming webhooks bound to this channel.
+  webhooks                Webhook[]
 
   @@index([serverId, position])
   @@index([parentId])
@@ -323,8 +579,14 @@ enum SafetyState {
 
 model Message {
   id                 String      @id
-  serverId           String
-  channelId          String
+  // serverId / channelId are non-null for server messages, null for DM
+  // messages; dmChannelId is the inverse. The application enforces the
+  // invariant "exactly one of channelId / dmChannelId is set" — Prisma
+  // doesn't model CHECK constraints, so server-side validation in the
+  // route handlers is the gate.
+  serverId           String?
+  channelId          String?
+  dmChannelId        String?
   authorId           String
   type               MessageType @default(default)
   content            String      @default("")
@@ -334,20 +596,48 @@ model Message {
   safetyState        SafetyState @default(allowed)
   diceRollId         String?     @unique
   nonce              String?
+  /// Phase 3.1: when non-null, this message is inside a Thread.
+  threadId           String?
+  /// Phase 3.1: true when the message is itself the root of a Thread
+  /// branch. Set by the threads route after creating the Thread row.
+  isThreadRoot       Boolean     @default(false)
   createdAt          DateTime    @default(now())
 
-  channel       Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  channel       Channel?          @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  dmChannel     DmChannel?        @relation("DmChannelMessages", fields: [dmChannelId], references: [id], onDelete: Cascade)
   author        User              @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
   replyTo       Message?          @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
   replies       Message[]         @relation("MessageReplies")
   attachments   Attachment[]
   reactions     MessageReaction[]
   diceRoll      DiceRoll?         @relation("DiceRollMessage", fields: [diceRollId], references: [id])
+  // Phase 1.3 / 2.1 / 2.2 / 3.1 / 3.2 — new per-message surfaces
+  mentions      UserMention[]
+  pinnedAs      PinnedMessage?
+  savedAs       SavedMessage[]
+  thread        Thread?           @relation("ThreadMessages", fields: [threadId], references: [id], onDelete: SetNull)
+  threadRoot    Thread?           @relation("ThreadRoot")
+  poll          Poll?
+  // Wave 2 #5 — forward provenance. Both fields set together when this
+  // message is a forward; null otherwise. Source FK uses SetNull so
+  // deletion of the original doesn't cascade-destroy forwards.
+  forwardedFromMessageId String?
+  forwardedFromChannelId String?
+  forwardedFrom Message? @relation("MessageForward", fields: [forwardedFromMessageId], references: [id], onDelete: SetNull)
+  forwardedAs   Message[] @relation("MessageForward")
+  // Wave 2 #10 — append-only edit history.
+  edits         MessageEdit[]
+  // Wave 2 #4 — OG-unfurled link previews (populated async by the worker).
+  linkPreviews  LinkPreview[]
 
   @@index([channelId, createdAt])
   @@index([channelId, id])
+  @@index([dmChannelId, createdAt])
   @@index([authorId])
+  @@index([threadId])
+  @@index([forwardedFromMessageId])
   @@unique([channelId, nonce])
+  @@unique([dmChannelId, nonce])
 }
 
 enum AttachmentKind {
@@ -398,6 +688,8 @@ model Attachment {
 
   uploader User     @relation("AttachmentUploader", fields: [uploaderId], references: [id], onDelete: Cascade)
   message  Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  /// Wave 3 #32 — when this attachment is a session recording, the back-ref.
+  sessionRecording SessionRecording? @relation("SessionRecordingAttachment")
 
   @@index([uploaderId])
   @@index([status])
@@ -446,6 +738,12 @@ model VoiceState {
   serverDeaf     Boolean   @default(false)
   cameraOn       Boolean   @default(false)
   screenSharing  Boolean   @default(false)
+  /// Wave 3 #25 — only meaningful when the joined channel is `type='stage'`.
+  /// Default behaviour: everyone joins as `audience`; hosts (MANAGE_CHANNELS)
+  /// can promote to `speaker` so they're granted publish-audio on next token
+  /// issue. `handRaisedAt` flags an audience member asking to be promoted.
+  stagePosition  StagePosition?
+  handRaisedAt   DateTime?
   joinedAt       DateTime?
   updatedAt      DateTime  @updatedAt
 
@@ -490,9 +788,224 @@ model Campaign {
   sessions        CampaignSession[]
   notes           CampaignNote[]
   handouts        Handout[]
+  // Phase 4 — initiative encounters belonging to this campaign
+  encounters      InitiativeEncounter[] @relation("CampaignEncounters")
+  // Wave 2 — characters, NPCs, and per-campaign random tables.
+  characters      Character[]
+  npcs            Npc[]
+  randomTables    RandomTable[]
+  // Wave 3 — battle maps + in-world calendar.
+  battleMaps      BattleMap[]
+  calendar        InWorldCalendar?
+  /// Wave 3 #23 — collaborative safety entries (lines, veils, stars, wishes).
+  safetyEntries   CampaignSafetyEntry[]
+  /// Wave 3 #48 — LLM-generated recaps tied to this campaign / its sessions.
+  recaps          SessionRecap[]
 
   @@index([serverId])
   @@index([gmUserId])
+}
+
+// ============================================================================
+// CAMPAIGN SAFETY  (Wave 3 — #23 safety tools panel)
+// ============================================================================
+//
+// One row per piece of safety feedback inside a campaign. Lines and veils
+// (off-limits content) sit alongside stars (what the table loved) and
+// wishes (what the table wants more of) — the four-poled "safety toolkit"
+// most modern TTRPG groups recognise. The GM-set high-level boundaries
+// already live on `Campaign.safetyBoundariesJson`; this model is for the
+// collaborative, mid-campaign feedback loop.
+
+model CampaignSafetyEntry {
+  id         String   @id
+  campaignId String
+  authorId   String
+  /// 'line' | 'veil' | 'star' | 'wish' | 'note'
+  kind       String
+  content    String
+  /// When true, only the GM + the author can read it. Defaults to false
+  /// — the whole point of stars and wishes is that the whole table sees
+  /// them. Lines and veils are usually shared with the GM only; use
+  /// isPrivate=true for those.
+  isPrivate  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  author   User     @relation("SafetyEntryAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+  @@index([authorId])
+}
+
+// ============================================================================
+// CARD DECKS  (Wave 3 — #20)
+// ============================================================================
+//
+// Per-server custom decks (Deck of Many Things, fate decks, character
+// motivations, etc.). Cards are stored as a JSON array so adding a new
+// `body` or `imageUrl` field later doesn't need a migration. Draws are
+// stateless — there's no per-instance "stack with cards removed" yet, just
+// a uniform-random pull from the deck.
+
+model CardDeck {
+  id          String   @id
+  serverId    String
+  name        String
+  description String?
+  /// Array of cards: [{ id, label, body? }, ...]. Application-side schema:
+  /// see packages/shared schemas/cards.ts.
+  cardsJson   Json
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  server  Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  creator User   @relation("CardDeckCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([serverId])
+}
+
+// ============================================================================
+// WATCH PARTIES  (Wave 3 — #26)
+// ============================================================================
+//
+// One active watch party per voice channel. The host controls playback;
+// state updates propagate to viewers via gateway events. Late joiners read
+// the current row to render the right URL and seek to (currentSec +
+// elapsed-since-lastUpdatedAt) on play.
+//
+// Sources supported initially:
+//   - 'mp4'      direct video URL the operator's CDN can serve
+//   - 'youtube'  embed via the YouTube iframe API
+// Other sources (HLS, Twitch) are documented as follow-ups; the column type
+// is a free-form string so adding them is just a UI change.
+
+model WatchParty {
+  id             String   @id
+  channelId      String   @unique
+  hostUserId     String
+  videoUrl       String
+  source         String
+  startedAt      DateTime @default(now())
+  currentSec     Float    @default(0)
+  isPlaying      Boolean  @default(false)
+  lastUpdatedAt  DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  host    User    @relation("WatchPartyHost", fields: [hostUserId], references: [id], onDelete: Cascade)
+
+  @@index([hostUserId])
+}
+
+// ============================================================================
+// AI SESSION RECAPS  (Wave 3 — #48)
+// ============================================================================
+//
+// A recap is the LLM-generated summary of a campaign session. The actual
+// inference happens off-instance — Tavern POSTs the transcript to an
+// operator-configured OpenAI-compatible endpoint (OpenAI, Ollama,
+// llama.cpp's server, OpenRouter, etc.) and stores the response. Operators
+// who don't configure an LLM endpoint get a clear 503; the rest of Tavern
+// keeps working.
+
+model SessionRecap {
+  id          String   @id
+  campaignId  String
+  sessionId   String?
+  body        String
+  modelUsed   String
+  generatedBy String
+  createdAt   DateTime @default(now())
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  session  CampaignSession? @relation("SessionRecaps", fields: [sessionId], references: [id], onDelete: SetNull)
+  author   User             @relation("RecapAuthor", fields: [generatedBy], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+}
+
+// ============================================================================
+// BREAKOUT ROOMS  (Wave 3 — #29)
+// ============================================================================
+//
+// Breakouts split a parent voice channel into N sub-rooms backed by distinct
+// LiveKit room names. The host POSTs to create groups + assign members;
+// each client receives a BREAKOUT_OPEN gateway event and swaps its LiveKit
+// connection over to the group's room. `endsAt` is advisory (auto-merge
+// timer); the host can also end the breakout early.
+
+model BreakoutGroup {
+  id              String   @id
+  parentChannelId String
+  name            String
+  livekitRoom     String   @unique
+  endsAt          DateTime?
+  createdBy       String
+  endedAt         DateTime?
+  createdAt       DateTime @default(now())
+
+  parent  Channel          @relation(fields: [parentChannelId], references: [id], onDelete: Cascade)
+  creator User             @relation("BreakoutCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  members BreakoutMember[]
+
+  @@index([parentChannelId])
+}
+
+model BreakoutMember {
+  groupId  String
+  userId   String
+  joinedAt DateTime?
+
+  group BreakoutGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User          @relation("BreakoutMembership", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+}
+
+// ============================================================================
+// SESSION RECORDINGS  (Wave 3 — #32)
+// ============================================================================
+//
+// One row per saved recording. The actual .webm is an Attachment row;
+// SessionRecording links it to the channel + recorder + window. Consent is
+// negotiated live via gateway events (RECORDING_CONSENT_*) and isn't
+// persisted — it's a per-session in-memory state.
+
+model SessionRecording {
+  id           String   @id
+  channelId    String
+  attachmentId String   @unique
+  recordedBy   String
+  startedAt    DateTime
+  endedAt      DateTime
+  createdAt    DateTime @default(now())
+
+  channel    Channel    @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  attachment Attachment @relation("SessionRecordingAttachment", fields: [attachmentId], references: [id], onDelete: Cascade)
+  recorder   User       @relation("Recorder", fields: [recordedBy], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt])
+}
+
+// ============================================================================
+// WHITEBOARD  (Wave 3 — #34)
+// ============================================================================
+//
+// One persistent canvas per channel. `strokesJson` is the full snapshot
+// (last-write-wins per stroke); live deltas propagate via
+// WHITEBOARD_STROKE gateway events. Clearing is its own event for clarity.
+
+model Whiteboard {
+  id          String   @id
+  channelId   String   @unique
+  strokesJson Json
+  updatedBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  updater User    @relation("WhiteboardUpdater", fields: [updatedBy], references: [id], onDelete: Cascade)
 }
 
 enum CampaignRole {
@@ -541,6 +1054,8 @@ model CampaignSession {
   voiceChannel Channel?  @relation("SessionVoiceChannel", fields: [voiceChannelId], references: [id], onDelete: SetNull)
   textChannel  Channel?  @relation("SessionTextChannel", fields: [textChannelId], references: [id], onDelete: SetNull)
   rsvps        CampaignSessionRsvp[]
+  /// Wave 3 #48 — AI-generated recaps for this session.
+  recaps       SessionRecap[]            @relation("SessionRecaps")
 
   @@index([campaignId, scheduledStart])
 }
@@ -634,8 +1149,11 @@ enum DiceVisibility {
 
 model DiceRoll {
   id          String         @id
-  serverId    String
-  channelId   String
+  // Same nullability shape as Message: server rolls populate serverId +
+  // channelId; DM rolls populate dmChannelId.
+  serverId    String?
+  channelId   String?
+  dmChannelId String?
   userId      String
   notation    String
   label       String?
@@ -644,11 +1162,13 @@ model DiceRoll {
   visibility  DiceVisibility @default(public)
   createdAt   DateTime       @default(now())
 
-  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  message Message? @relation("DiceRollMessage")
+  channel   Channel?   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  dmChannel DmChannel? @relation("DmChannelDiceRolls", fields: [dmChannelId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   Message?   @relation("DiceRollMessage")
 
   @@index([channelId, createdAt])
+  @@index([dmChannelId, createdAt])
 }
 
 // ============================================================================
@@ -870,4 +1390,914 @@ model SafetyPolicy {
   updatedAt              DateTime @updatedAt
 
   server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================================
+// DIRECT MESSAGES  (Phase 6)
+// ============================================================================
+
+/// Discriminator on `DmChannel`. `direct` is enforced to have exactly 2
+/// members (one of whom is the calling user) at the application layer;
+/// `group` has 3+ members.
+enum DmChannelKind {
+  direct
+  group
+}
+
+/// A DM channel: 1:1 or small group. No server. Reuses `Message`,
+/// `Attachment`, `MessageReaction`, and `DiceRoll` via nullable
+/// `serverId`/`channelId` + `dmChannelId` columns on those tables.
+model DmChannel {
+  id            String        @id
+  kind          DmChannelKind
+  name          String?
+  createdById   String?
+  createdAt     DateTime      @default(now())
+  /// Used for sort order in the DM list. Updated on every new message.
+  lastMessageAt DateTime?
+  /// Deterministic key for 1:1 DMs — sorted `userIdA:userIdB` of the two
+  /// members. Set only for `kind = 'direct'` rows; null for group DMs.
+  /// PostgreSQL treats NULLs as distinct in UNIQUE constraints, so multiple
+  /// group DMs are fine; direct DMs are deduplicated by this key so
+  /// concurrent calls to `findOrCreateDirectDm` can't produce duplicates.
+  pairKey       String?       @unique
+
+  createdBy User?             @relation("DmChannelCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  members   DmChannelMember[]
+  messages  Message[]         @relation("DmChannelMessages")
+  diceRolls DiceRoll[]        @relation("DmChannelDiceRolls")
+  // Phase 1.3 — direct mentions in DM messages
+  mentions  UserMention[]
+
+  @@index([lastMessageAt])
+}
+
+model DmChannelMember {
+  dmChannelId String
+  userId      String
+  joinedAt    DateTime  @default(now())
+  /// Watermark for unread-count UI. Optional; null means "never seen".
+  lastReadAt  DateTime?
+
+  channel DmChannel @relation(fields: [dmChannelId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([dmChannelId, userId])
+  @@index([userId])
+}
+
+// ============================================================================
+// NOTIFICATION PREFERENCES  (Phase 6)
+// ============================================================================
+
+/// User-global notification preferences. 1:1 with `User`; created lazily
+/// on first read.
+model UserNotificationPreference {
+  userId                  String   @id
+  soundEnabled            Boolean  @default(true)
+  /// 0..100, applied as the master gain on the synthesized notification sounds.
+  volume                  Int      @default(70)
+  /// When true (default), suppress chat sounds while the user is in a voice room.
+  chatSoundsWhileInVoice  Boolean  @default(false)
+  /// When true (default), chat sounds only fire while the relevant tavern's
+  /// channel is NOT currently focused. When false, sounds fire even while
+  /// looking right at the channel — useful for users who keep the tab
+  /// muted at the OS level and rely on Tavern for cues.
+  playOnlyWhenUnfocused   Boolean  @default(true)
+  /// When true, @mentions ignore the per-tavern mute and always sound.
+  mentionsOverrideMute    Boolean  @default(true)
+  /// Wave 3 #31 — snooze all notifications until this time. Null = not snoozed.
+  snoozeUntil             DateTime?
+  /// Wave 3 #31 — daily quiet hours. ISO time strings "HH:mm" in the user's
+  /// timezone (User.timezone); null = disabled. When both are set and the
+  /// current time is between them, notifications are suppressed.
+  quietHoursStart         String?   @db.VarChar(5)
+  quietHoursEnd           String?   @db.VarChar(5)
+  /// Wave 3 #31 — when set, quiet hours only apply on these weekdays
+  /// (0=Sun..6=Sat). Empty array = every day.
+  quietHoursDays          Json      @default("[]")
+  updatedAt               DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Per-tavern overrides for the calling member. Composite key is
+/// (serverId, userId); created lazily on first PATCH.
+model ServerMemberNotificationPreference {
+  serverId      String
+  userId        String
+  /// Mute every notification sound from this tavern (messages and mentions).
+  muteAll       Boolean  @default(false)
+  /// Mute regular message sounds (mentions still play unless `muteMentions`).
+  muteMessages  Boolean  @default(false)
+  /// Mute @mention sounds for this tavern.
+  muteMentions  Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, userId])
+  @@index([userId])
+}
+
+// ============================================================================
+// Phase-1.3 — Activity inbox & unread state
+// ============================================================================
+
+/// Per-(user, channel) read cursor + cached mention count. Advanced via
+/// POST /api/channels/:id/ack as the user views messages. The frontend
+/// derives the unread badge by comparing `lastReadMessageId` against the
+/// channel's most recent message id (lexically sortable ULIDs).
+model UserChannelReadState {
+  userId             String
+  channelId          String
+  lastReadMessageId  String?
+  lastReadAt         DateTime  @default(now())
+  /// Cached count of unread mentions. Kept in sync by UserMention writes
+  /// and ack calls so the inbox bell doesn't need an aggregate query.
+  mentionCount       Int       @default(0)
+  updatedAt          DateTime  @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([userId, channelId])
+  @@index([userId])
+}
+
+enum MentionKind {
+  user
+  role
+  everyone
+  here
+}
+
+/// One row per user mentioned in a message. Written by the message-create
+/// route after parseMentions(). The Inbox page selects unread rows
+/// (isRead=false) ordered by createdAt desc.
+model UserMention {
+  id        String      @id
+  userId    String
+  messageId String
+  channelId String?
+  dmChannelId String?
+  kind      MentionKind
+  isRead    Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  user    User       @relation("MentionUser", fields: [userId], references: [id], onDelete: Cascade)
+  message Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  channel Channel?   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  dmChannel DmChannel? @relation(fields: [dmChannelId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([messageId])
+}
+
+// ============================================================================
+// Phase-2.1 — Pinned messages
+// ============================================================================
+
+model PinnedMessage {
+  /// A message is in exactly one channel and can be pinned at most once,
+  /// so messageId is the natural primary key. The 1-to-1 with Message
+  /// requires this @id (Prisma needs the FK to be unique).
+  messageId String   @id
+  channelId String
+  pinnedBy  String
+  pinnedAt  DateTime @default(now())
+  note      String?
+
+  channel      Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  message      Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  pinnedByUser User    @relation("PinnedBy", fields: [pinnedBy], references: [id], onDelete: Cascade)
+
+  @@index([channelId, pinnedAt])
+}
+
+// ============================================================================
+// Phase-2.2 — Saved messages (personal bookmarks)
+// ============================================================================
+
+model SavedMessage {
+  userId    String
+  messageId String
+  savedAt   DateTime @default(now())
+  note      String?
+
+  user    User    @relation("SavedByUser", fields: [userId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([userId, messageId])
+  @@index([userId, savedAt])
+}
+
+// ============================================================================
+// Phase-3.1 — Threads
+// ============================================================================
+
+model Thread {
+  id              String   @id
+  channelId       String
+  rootMessageId   String   @unique
+  title           String?
+  archivedAt      DateTime?
+  lastActivityAt  DateTime @default(now())
+  createdAt       DateTime @default(now())
+  createdBy       String
+
+  channel     Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  rootMessage Message   @relation("ThreadRoot", fields: [rootMessageId], references: [id], onDelete: Cascade)
+  creator     User      @relation("ThreadCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  messages    Message[] @relation("ThreadMessages")
+
+  @@index([channelId, lastActivityAt])
+}
+
+// ============================================================================
+// Phase-3.2 — Polls
+// ============================================================================
+
+model Poll {
+  id           String    @id
+  messageId    String    @unique
+  question     String
+  multiChoice  Boolean   @default(false)
+  anonymous    Boolean   @default(false)
+  closesAt     DateTime?
+  closedAt     DateTime?
+  createdBy    String
+  createdAt    DateTime  @default(now())
+
+  message Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  creator User         @relation("PollCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+}
+
+model PollOption {
+  id       String @id
+  pollId   String
+  label    String
+  position Int
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+
+  @@index([pollId])
+}
+
+model PollVote {
+  pollId    String
+  optionId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user   User       @relation("PollVoter", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([pollId, optionId, userId])
+  @@index([pollId])
+  @@index([userId])
+}
+
+// ============================================================================
+// Phase-3.3 — Scheduled dispatch (messages + reminders)
+// ============================================================================
+
+enum DispatchKind {
+  message
+  reminder
+}
+
+enum DispatchStatus {
+  pending
+  sent
+  cancelled
+  failed
+}
+
+model ScheduledDispatch {
+  id            String         @id
+  userId        String
+  kind          DispatchKind
+  channelId     String?
+  dmChannelId   String?
+  payload       Json
+  dispatchAt    DateTime
+  status        DispatchStatus @default(pending)
+  sentMessageId String?
+  failureReason String?
+  jobId         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  user User @relation("DispatchOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, dispatchAt])
+  @@index([status, dispatchAt])
+}
+
+// ============================================================================
+// Phase-4 — Initiative tracker
+// ============================================================================
+
+enum EncounterStatus {
+  setup
+  running
+  ended
+}
+
+model InitiativeEncounter {
+  id               String          @id
+  channelId        String
+  campaignId       String?
+  createdBy        String
+  status           EncounterStatus @default(setup)
+  currentTurnIndex Int             @default(0)
+  round            Int             @default(1)
+  name             String?
+  startedAt        DateTime?
+  endedAt          DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  channel      Channel                 @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  campaign     Campaign?               @relation("CampaignEncounters", fields: [campaignId], references: [id], onDelete: SetNull)
+  creator      User                    @relation("EncounterCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  participants InitiativeParticipant[]
+
+  @@index([channelId, status])
+}
+
+model InitiativeParticipant {
+  id           String   @id
+  encounterId  String
+  name         String
+  initiative   Int      @default(0)
+  hp           Int      @default(0)
+  maxHp        Int      @default(0)
+  conditions   Json     @default("[]")
+  isPc         Boolean  @default(false)
+  characterRef String?
+  position     Int      @default(0)
+  hidden       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  encounter InitiativeEncounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  @@index([encounterId, position])
+}
+
+// ============================================================================
+// Wave 2 — Chat UX, moderation, TTRPG, security, integrations.
+// ============================================================================
+
+enum ChannelPostingScope {
+  open
+  mods_only
+  admin_only
+}
+
+enum CharacterSystem {
+  dnd5e
+  pbta
+  generic
+}
+
+enum IcalTokenKind {
+  all
+  campaign
+}
+
+// ---------- W2 #4 — Link previews (OG/oEmbed unfurl) ------------------------
+
+model LinkPreview {
+  id          String   @id
+  messageId   String
+  url         String
+  title       String?
+  description String?
+  imageUrl    String?
+  siteName    String?
+  fetchedAt   DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@unique([messageId, url])
+}
+
+// ---------- W2 #10 — Append-only edit history -------------------------------
+
+model MessageEdit {
+  id        String   @id
+  messageId String
+  content   String
+  editedBy  String
+  editedAt  DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  editor  User    @relation("MessageEditor", fields: [editedBy], references: [id], onDelete: Cascade)
+
+  @@index([messageId, editedAt])
+}
+
+// ---------- W2 #11 — Character sheets ---------------------------------------
+
+model Character {
+  id                  String          @id
+  campaignId          String
+  ownerUserId         String
+  name                String
+  conceptOneLiner     String?
+  system              CharacterSystem @default(dnd5e)
+  /// System-specific shape validated by Zod per `system`. Keep arbitrary
+  /// schemas server-agnostic so we can add systems without migrations.
+  sheetJson           Json            @default("{}")
+  portraitAttachmentId String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  owner    User             @relation("CharacterOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  macros   CharacterMacro[]
+
+  @@index([campaignId])
+  @@index([ownerUserId])
+}
+
+// ---------- W2 #12 — Macros / quick-roll bar --------------------------------
+
+model CharacterMacro {
+  id          String  @id
+  characterId String
+  label       String
+  /// Dice notation interpreted by the existing dice parser.
+  notation    String
+  /// Optional structured modifier data (advantage flags, damage type, etc).
+  modifierJson Json   @default("{}")
+  position    Int     @default(0)
+  color       String?
+
+  character Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@index([characterId, position])
+}
+
+// ---------- W2 #13 — Soundboard ---------------------------------------------
+
+model SoundboardClip {
+  id           String   @id
+  serverId     String
+  name         String
+  /// References Attachment.id (audio kind). String FK keeps Attachment
+  /// simple; cascade is application-managed if the attachment is removed.
+  attachmentId String
+  color        String?
+  position     Int      @default(0)
+  /// Wave 3 #19 — when true, the play button on the soundboard panel cues
+  /// the clip with `loop: true` and shows a stop affordance, so this is
+  /// the ambient-music pad rather than a one-shot SFX.
+  isAmbient    Boolean  @default(false)
+  addedBy      String
+  createdAt    DateTime @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  adder  User   @relation("SoundboardClipAdder", fields: [addedBy], references: [id], onDelete: Cascade)
+
+  @@index([serverId, position])
+}
+
+// ---------- W2 #14 — Random tables / loot generators ------------------------
+
+model RandomTable {
+  id            String   @id
+  serverId      String
+  /// Campaign scope is optional — server-wide tables exist (shared loot).
+  campaignId    String?
+  name          String
+  /// Dice notation rolled when the table is invoked (defaults to `1d100`).
+  diceNotation  String   @default("1d100")
+  ownerId       String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  server   Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  campaign Campaign?   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  owner    User        @relation("RandomTableOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  rows     RandomTableRow[]
+
+  @@index([serverId])
+  @@index([campaignId])
+  @@unique([serverId, name])
+}
+
+model RandomTableRow {
+  id         String  @id
+  tableId    String
+  rangeMin   Int
+  rangeMax   Int
+  label      String
+  weight     Int     @default(1)
+  resultText String
+
+  table RandomTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@index([tableId, rangeMin])
+}
+
+// ---------- W2 #15 — NPC roster ---------------------------------------------
+
+model Npc {
+  id                   String   @id
+  campaignId           String
+  name                 String
+  descriptionMd        String?
+  portraitAttachmentId String?
+  factionTag           String?
+  locationTag          String?
+  /// Optional stat block — system-agnostic JSON like Character.sheetJson.
+  statBlockJson        Json     @default("{}")
+  isAlive              Boolean  @default(true)
+  createdBy            String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creator  User     @relation("NpcCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+}
+
+// ---------- W2 #19 — API tokens & incoming webhooks -------------------------
+
+model ApiToken {
+  id          String   @id
+  userId      String
+  label       String
+  /// SHA-256 of the token plaintext. Token itself is only shown once at mint.
+  tokenHash   String   @unique
+  /// Reserved for scoped tokens (e.g. "messages:write"). Empty = full user scope.
+  scopes      Json     @default("[]")
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+
+  user User @relation("ApiTokenOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+model Webhook {
+  id              String   @id
+  channelId       String
+  name            String
+  /// Used for URL-bearer and HMAC validation of inbound webhook posts.
+  secret          String
+  createdBy       String
+  createdAt       DateTime @default(now())
+  lastDeliveryAt  DateTime?
+  revokedAt       DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  creator User    @relation("WebhookCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([channelId])
+}
+
+// ---------- W2 #20 — iCal subscription tokens -------------------------------
+
+model IcalToken {
+  id          String        @id
+  userId      String
+  kind        IcalTokenKind @default(all)
+  /// Set when kind = campaign. Null for the user's all-campaigns feed.
+  campaignId  String?
+  /// Opaque secret embedded in the feed URL. 32+ bytes random.
+  secretToken String        @unique
+  createdAt   DateTime      @default(now())
+  revokedAt   DateTime?
+
+  user User @relation("IcalTokenOwner", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([secretToken])
+}
+
+// ============================================================================
+// Wave 3 — chat polish, TTRPG depth, moderation, voice, mobile/ops.
+// ============================================================================
+
+enum AutomodAction {
+  log_only
+  delete
+  hold
+  warn
+  timeout
+}
+
+enum WarningTier {
+  notice
+  warn
+  mute
+  kick
+  ban
+}
+
+enum StagePosition {
+  audience
+  speaker
+}
+
+// ---------- W3 #3 — Server stickers -----------------------------------------
+
+model Sticker {
+  id           String   @id
+  serverId     String
+  name         String
+  attachmentId String
+  uploadedBy   String
+  position     Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  server     Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  uploader   User   @relation("StickerUploader", fields: [uploadedBy], references: [id], onDelete: Cascade)
+
+  @@unique([serverId, name])
+  @@index([serverId, position])
+}
+
+// ---------- W3 #7 — Battle map / token grid ---------------------------------
+
+model BattleMap {
+  id          String   @id
+  campaignId  String
+  name        String
+  width       Int      @default(20)
+  height      Int      @default(20)
+  /// Background attachment (image) used as the map backdrop.
+  backgroundAttachmentId String?
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaign Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  scenes   BattleScene[]
+
+  @@index([campaignId])
+}
+
+model BattleScene {
+  id        String   @id
+  mapId     String
+  name      String
+  /// Fog-of-war mask: RLE-encoded boolean grid the size of the map.
+  fogJson   Json     @default("[]")
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  map    BattleMap     @relation(fields: [mapId], references: [id], onDelete: Cascade)
+  tokens BattleToken[]
+
+  @@index([mapId])
+}
+
+model BattleToken {
+  id           String   @id
+  sceneId      String
+  /// Optional link to a Character or InitiativeParticipant — the client uses
+  /// this to sync HP / status. Free-form so NPCs without a model still work.
+  characterRef String?
+  label        String
+  /// Hex color for non-PC tokens.
+  color        String?
+  /// Grid coordinates (cells, not pixels).
+  x            Int      @default(0)
+  y            Int      @default(0)
+  /// Width / height in grid cells.
+  w            Int      @default(1)
+  h            Int      @default(1)
+  hp           Int?
+  maxHp        Int?
+  isPc         Boolean  @default(false)
+  hidden       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  scene BattleScene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([sceneId])
+}
+
+// ---------- W3 #9 — In-world calendar / timeline ----------------------------
+
+model InWorldCalendar {
+  id          String   @id
+  campaignId  String   @unique
+  /// Calendar system: 'gregorian' | 'forgotten_realms' | 'custom' (JSON).
+  system      String   @default("gregorian")
+  /// For custom systems, a free-form month/day definition.
+  systemJson  Json     @default("{}")
+  /// Current in-world date, as an ISO-ish string ('1492-DR-3' or 'YYYY-MM-DD').
+  currentDate String   @default("0001-01-01")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  entries  TimelineEntry[]
+}
+
+model TimelineEntry {
+  id          String   @id
+  calendarId  String
+  /// Date the event happened in-world.
+  inWorldDate String
+  title       String
+  body        String?
+  /// Optional link to a CampaignSession when the entry was logged in-session.
+  sessionId   String?
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  calendar InWorldCalendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@index([calendarId, inWorldDate])
+}
+
+// ---------- W3 #13 — Encounter templates ------------------------------------
+
+model EncounterTemplate {
+  id        String   @id
+  serverId  String
+  ownerId   String
+  name      String
+  /// Array of { name, initiative, hp, maxHp, isPc, conditions, characterRef } —
+  /// same shape as InitiativeParticipant inputs.
+  participantsJson Json @default("[]")
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  owner  User   @relation("EncounterTemplateOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([serverId])
+}
+
+// ---------- W3 #15 — Auto-moderation rules ---------------------------------
+
+model AutomodRule {
+  id        String        @id
+  serverId  String
+  name      String
+  /// Rule kind decides how `pattern` is interpreted: 'regex', 'wordlist',
+  /// 'link_rate', 'message_rate'.
+  kind      String
+  pattern   String
+  action    AutomodAction @default(log_only)
+  enabled   Boolean       @default(true)
+  position  Int           @default(0)
+  /// Optional reason posted to the audit log when triggered.
+  reason    String?
+  createdBy String
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, position])
+}
+
+// ---------- W3 #16 — Warnings / strike escalation ---------------------------
+
+model Warning {
+  id          String      @id
+  serverId    String
+  userId      String
+  moderatorId String
+  tier        WarningTier @default(warn)
+  reason      String?
+  createdAt   DateTime    @default(now())
+
+  server    Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user      User   @relation("WarningTarget", fields: [userId], references: [id], onDelete: Cascade)
+  moderator User   @relation("WarningModerator", fields: [moderatorId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, userId])
+  @@index([userId, createdAt])
+}
+
+// ---------- W3 #17 — Verification gating ------------------------------------
+
+model JoinGate {
+  serverId        String   @id
+  rulesMd         String   @default("")
+  /// Array of { id, label, required } — answers stored on JoinGateAnswer.
+  questionsJson   Json     @default("[]")
+  enabled         Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+}
+
+model JoinGateAnswer {
+  serverId   String
+  userId     String
+  /// { questionId: "free-form answer" } shaped JSON.
+  answersJson Json    @default("{}")
+  submittedAt DateTime @default(now())
+  reviewedAt  DateTime?
+  reviewedBy  String?
+  approved    Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, userId])
+  @@index([serverId, reviewedAt])
+}
+
+// ---------- W3 #19 — Server templates ---------------------------------------
+
+model ServerTemplate {
+  id         String   @id
+  authorId   String
+  name       String
+  description String?
+  /// Full snapshot — categories, channels, roles, permission overwrites,
+  /// safety policy. Versioned via a schema marker inside the JSON.
+  payloadJson Json
+  /// Optional canonical icon. If absent the SPA falls back to a placeholder.
+  iconAttachmentId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  author User @relation("ServerTemplateAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+}
+
+// ---------- W3 #20 — Server backups -----------------------------------------
+
+model ServerBackup {
+  id          String   @id
+  serverId    String
+  createdBy   String
+  /// 'pending' | 'running' | 'ready' | 'failed'
+  status      String   @default("pending")
+  /// Legacy pointer kept for backwards compat — newer code uses storageKey.
+  attachmentId String?
+  /// Where the archive zip lives in storage when status='ready'.
+  storageBucket String?
+  storageKey    String?
+  sizeBytes     Int?
+  failureReason String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  server  Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  creator User   @relation("ServerBackupCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([serverId, createdAt])
+}
+
+// ---------- W3 #26 — Web Push subscriptions ---------------------------------
+
+model PushSubscription {
+  id        String   @id
+  userId    String
+  endpoint  String   @unique
+  /// PEM-encoded p256dh + auth keys.
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------- W3 #37 — RSS feed input -----------------------------------------
+
+model RssSubscription {
+  id            String   @id
+  channelId     String
+  url           String
+  /// Optional display name for the integration messages.
+  feedTitle     String?
+  /// Latest item GUID we've already posted, used as a high-water-mark.
+  lastSeenGuid  String?
+  enabled       Boolean  @default(true)
+  pollIntervalMinutes Int @default(15)
+  lastPolledAt  DateTime?
+  createdBy     String
+  createdAt     DateTime @default(now())
+
+  @@index([channelId])
+  @@index([enabled, lastPolledAt])
+  @@unique([channelId, url])
 }
