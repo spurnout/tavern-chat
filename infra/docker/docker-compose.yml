@@ -77,7 +77,10 @@ services:
   # No bootstrap sidecar: the dxflrs/garage image is distroless (no shell), so
   # one-time setup happens from the host via `pnpm garage:bootstrap`, which
   # runs `docker exec tavern-garage /garage ...` to apply layout, import the
-  # dev key, create buckets, and grant access.
+  # dev key, create buckets, and grant access. The `pnpm docker:up*` scripts
+  # chain that step automatically (it's idempotent), so operators using the
+  # npm scripts get bootstrap for free; only the raw `docker compose up -d`
+  # path needs to invoke it manually.
 
   clamav:
     image: clamav/clamav:stable

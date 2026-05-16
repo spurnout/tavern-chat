@@ -18,9 +18,28 @@ rtc:
   # to scale beyond that — and remember to expose the full range in compose.
   udp_port: 7882
   use_external_ip: false
+  # INF-008: advertise 127.0.0.1 in ICE candidates for local Docker dev.
+  # The browser and the LiveKit container both live on the same host, but
+  # the container's own bind IP (172.18.0.4 on the Docker bridge) is not
+  # reachable from the browser, and the STUN-discovered srflx address fails
+  # hairpin NAT on most home routers — every candidate pair lands in state
+  # "failed" and the session aborts after the connect handshake.
+  # The compose file already forwards `7882:7882/udp` (and `7881` for TCP
+  # fallback), so 127.0.0.1 is the routable advertised address for a
+  # browser on the same host. For LAN or production deployments, override
+  # to the host's LAN IP or set `use_external_ip: true` with TURN enabled.
+  node_ip: 127.0.0.1
 
 keys:
-  # devkey -> devsecret-change-me. ROTATE FOR ANY DEPLOYMENT.
+  # devkey -> devsecret-change-me.
+  #
+  # ROTATE BEFORE EXPOSING THIS INSTANCE TO THE PUBLIC INTERNET — these
+  # values are public in the repo, so anyone could self-sign LiveKit JWTs
+  # against an un-rotated deployment.
+  # Generate fresh ones with: docker run --rm livekit/livekit-cli generate-keys
+  # Then update *both* this file and the matching env vars (LIVEKIT_API_KEY,
+  # LIVEKIT_API_SECRET) — the API logs a loud error in production if either
+  # side still has the placeholder value.
   devkey: devsecret-change-me
 
 logging:
