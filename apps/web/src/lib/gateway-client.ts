@@ -136,13 +136,16 @@ export class GatewayClient {
     const beat = () => {
       this.send({ op: GatewayOp.HEARTBEAT, d: { seq: this.lastSeq } });
     };
-    // Clamp the server-supplied interval. The HELLO payload is technically
-    // attacker-controlled if the gateway is compromised; without bounds a
-    // very-small value would spin the tab and a very-large one would silently
-    // break liveness detection.
-    const requested = intervalMs ?? GATEWAY.HEARTBEAT_INTERVAL_MS;
-    const clamped = Math.max(100, Math.min(requested, 30_000));
-    this.heartbeat = setInterval(beat, clamped);
+    // Bound the server-supplied interval. The HELLO payload is technically
+    // attacker-controlled if the gateway is compromised; an out-of-range
+    // value either spins the tab (too small) or silently breaks liveness
+    // detection (too large). Explicit range check + fallback so CodeQL's
+    // js/resource-exhaustion query recognizes the sanitizer.
+    let interval = intervalMs ?? GATEWAY.HEARTBEAT_INTERVAL_MS;
+    if (typeof interval !== 'number' || interval < 100 || interval > 30_000) {
+      interval = GATEWAY.HEARTBEAT_INTERVAL_MS;
+    }
+    this.heartbeat = setInterval(beat, interval);
   }
 
   private send(payload: { op: number; d: unknown }): void {
