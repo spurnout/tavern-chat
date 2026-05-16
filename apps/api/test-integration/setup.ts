@@ -51,9 +51,14 @@ export async function startPostgres(): Promise<IntegrationContext> {
   const databaseUrl = container.getConnectionUri();
   // Critical ordering: set DATABASE_URL BEFORE Prisma's singleton is touched.
   process.env['DATABASE_URL'] = databaseUrl;
-  execSync(`pnpm --silent prisma db push --schema "${SCHEMA_PATH}" --skip-generate`, {
+  // stdio: 'inherit' so any prisma error surfaces directly in the test
+  // runner's output — earlier `--silent` + `'pipe'` produced empty
+  // Buffer(0) output on the error object and CI logs had nothing to act
+  // on. The trade-off is verbose output on success; acceptable for a
+  // suite that runs in CI only.
+  execSync(`pnpm exec prisma db push --schema "${SCHEMA_PATH}" --skip-generate`, {
     env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: 'pipe',
+    stdio: 'inherit',
   });
   const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
   await prisma.$connect();
