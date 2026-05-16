@@ -6,9 +6,11 @@ import {
   idSchema,
   Permission,
   PERMISSION_DEFAULT_EVERYONE,
+  PERMISSION_NONE,
   serializePermissions,
   TavernError,
   ulid,
+  updateMemberNicknameRequestSchema,
   updateServerRequestSchema,
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
@@ -168,7 +170,10 @@ export async function registerServerRoutes(app: FastifyInstance): Promise<void> 
     if (perms === 0n) throw TavernError.notFound('Server not found');
     const members = await prisma.serverMember.findMany({
       where: { serverId: id },
-      include: { roles: true },
+      include: {
+        roles: true,
+        user: { select: { id: true, displayName: true, username: true, presence: true } },
+      },
       orderBy: { joinedAt: 'asc' },
     });
     reply.send(
@@ -181,10 +186,23 @@ export async function registerServerRoutes(app: FastifyInstance): Promise<void> 
             joinedAt: m.joinedAt,
             timeoutUntil: m.timeoutUntil,
             roles: m.roles,
+            user: m.user,
           }),
         ),
       ),
     );
+  });
+
+  // Server-level permissions for the calling user. Returned as a decimal
+  // BigInt string so the client can `& flag` against the existing Permission
+  // bitset. Used by UI gates that need to know "can I do X on this server"
+  // without round-tripping for every action.
+  app.get('/api/servers/:id/permissions/me', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    const perms = await getServerPermissions(id, ctx.userId);
+    if (perms === PERMISSION_NONE) throw TavernError.notFound('Server not found');
+    reply.send(ok({ serverId: id, permissions: serializePermissions(perms) }));
   });
 
   // Roles ------------------------------------------------------------------
@@ -198,6 +216,53 @@ export async function registerServerRoutes(app: FastifyInstance): Promise<void> 
       orderBy: { position: 'asc' },
     });
     reply.send(ok(roles.map((r) => serializeRole(r))));
+  });
+
+  // Edit a member's nickname (your own, or someone else's with MANAGE_NICKNAMES).
+  app.patch('/api/servers/:serverId/members/:userId', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { serverId, userId } = z
+      .object({ serverId: idSchema, userId: idSchema })
+      .parse(req.params);
+    const body = updateMemberNicknameRequestSchema.parse(req.body);
+
+    // Editing someone else's nickname needs MANAGE_NICKNAMES; editing your
+    // own is a basic civic right (any current member can rename themselves
+    // on a server they belong to).
+    if (ctx.userId !== userId) {
+      await requireServerPermission(serverId, ctx.userId, Permission.MANAGE_NICKNAMES);
+    } else {
+      const perms = await getServerPermissions(serverId, ctx.userId);
+      if (perms === 0n) throw TavernError.notFound('Server not found');
+    }
+
+    const existing = await prisma.serverMember.findUnique({
+      where: { serverId_userId: { serverId, userId } },
+      select: { userId: true },
+    });
+    if (!existing) throw TavernError.notFound('Member not found');
+
+    await prisma.serverMember.update({
+      where: { serverId_userId: { serverId, userId } },
+      data: { nickname: body.nickname },
+    });
+
+    await writeAuditEntry({
+      serverId,
+      actorId: ctx.userId,
+      action: ctx.userId === userId ? 'member.nickname.self' : 'member.nickname.set',
+      targetType: 'user',
+      targetId: userId,
+      metadata: { nickname: body.nickname },
+    });
+
+    gatewayBroker.publish({
+      type: 'MEMBER_UPDATE',
+      serverId,
+      data: { serverId, userId, nickname: body.nickname },
+    });
+
+    reply.send(ok({ serverId, userId, nickname: body.nickname }));
   });
 
   // Channels ---------------------------------------------------------------

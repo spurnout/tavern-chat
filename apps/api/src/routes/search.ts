@@ -17,6 +17,15 @@ const querySchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .transform((v) => (v === undefined ? undefined : v === 'true')),
+  // Wave 3 #5 — advanced filters.
+  /** ISO date — only messages strictly before this timestamp. */
+  before: z.string().datetime().optional(),
+  /** ISO date — only messages after or equal to this timestamp. */
+  after: z.string().datetime().optional(),
+  /** "image" / "file" / "link" — quick has: filters. */
+  has: z.enum(['image', 'file', 'link']).optional(),
+  /** "me" — only messages mentioning the caller. */
+  mentions: z.enum(['me']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 
@@ -57,6 +66,7 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
       return;
     }
 
+    // Wave 3 #5 — apply additional filter clauses.
     const messages = await prisma.message.findMany({
       where: {
         channelId: { in: visibleIds },
@@ -67,12 +77,35 @@ export async function registerSearchRoutes(app: FastifyInstance): Promise<void> 
         ...(q.authorId ? { authorId: q.authorId } : {}),
         ...(q.hasAttachment === true ? { attachments: { some: {} } } : {}),
         ...(q.hasAttachment === false ? { attachments: { none: {} } } : {}),
+        ...(q.before ? { createdAt: { lt: new Date(q.before) } } : {}),
+        ...(q.after
+          ? {
+              createdAt: q.before
+                ? { gte: new Date(q.after), lt: new Date(q.before) }
+                : { gte: new Date(q.after) },
+            }
+          : {}),
+        ...(q.has === 'image'
+          ? {
+              attachments: { some: { kind: { in: ['image', 'gif'] } } },
+            }
+          : {}),
+        ...(q.has === 'file'
+          ? {
+              attachments: { some: { kind: 'file' } },
+            }
+          : {}),
+        ...(q.has === 'link' ? { content: { contains: 'http', mode: 'insensitive' } } : {}),
+        ...(q.mentions === 'me'
+          ? { mentions: { some: { userId: ctx.userId } } }
+          : {}),
       },
       orderBy: { id: 'desc' },
       take: q.limit,
       include: {
         attachments: { select: { id: true } },
         reactions: { select: { emoji: true, userId: true } },
+        author: { select: { id: true, displayName: true, username: true } },
       },
     });
 

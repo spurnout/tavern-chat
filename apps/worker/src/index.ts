@@ -19,7 +19,8 @@ const SCAN_QUEUE = 'tavern.upload.scan';
 const MAINTENANCE_QUEUE = 'tavern.maintenance';
 type MaintenanceJob =
   | { kind: 'audit-retention'; retentionDays: number }
-  | { kind: 'nonce-cleanup'; retentionHours: number };
+  | { kind: 'nonce-cleanup'; retentionHours: number }
+  | { kind: 'expired-custom-status' };
 
 async function main(): Promise<void> {
   const cfg = loadWorkerConfig();
@@ -124,6 +125,52 @@ async function main(): Promise<void> {
         data: { nonce: null },
       });
       log.info({ cleared: result.count, retentionHours: job.data.retentionHours }, 'nonce cleanup sweep');
+    } else if (job.data.kind === 'expired-custom-status') {
+      // Find every user whose custom-status expiry has passed, then clear
+      // both the status and the timestamp. We need the affected userIds
+      // (and their shared servers) to fan out MEMBER_UPDATE so open
+      // profile cards refresh — Prisma's updateMany doesn't return the
+      // rows, so we query first.
+      const now = new Date();
+      const expired = await prisma.user.findMany({
+        where: { customStatusExpiresAt: { lte: now, not: null } },
+        select: { id: true },
+      });
+      if (expired.length === 0) return;
+      await prisma.user.updateMany({
+        where: { id: { in: expired.map((u) => u.id) } },
+        data: { customStatus: null, customStatusExpiresAt: null },
+      });
+      // Fan out one MEMBER_UPDATE per (user × shared server) so live
+      // clients drop the status without a /me refresh.
+      for (const { id: userId } of expired) {
+        const memberships = await prisma.serverMember.findMany({
+          where: { userId },
+          select: { serverId: true },
+        });
+        for (const { serverId } of memberships) {
+          void gatewayPublisher
+            .publish(
+              GATEWAY_CHANNEL,
+              JSON.stringify({
+                type: 'MEMBER_UPDATE',
+                serverId,
+                data: {
+                  serverId,
+                  userId,
+                  user: { id: userId, customStatus: null, customStatusExpiresAt: null },
+                },
+              }),
+            )
+            .catch((err: unknown) => {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                'gateway publish failed (expired-custom-status)',
+              );
+            });
+        }
+      }
+      log.info({ cleared: expired.length }, 'expired custom-status sweep');
     }
   };
   const maintenanceWorker = new Worker<MaintenanceJob>(MAINTENANCE_QUEUE, maintenanceProcessor, {
@@ -146,6 +193,19 @@ async function main(): Promise<void> {
     'nonce-cleanup',
     { kind: 'nonce-cleanup', retentionHours: cfg.NONCE_RETENTION_HOURS },
     { repeat: { pattern: '15 * * * *' }, removeOnComplete: true, removeOnFail: false, jobId: 'nonce-cleanup' },
+  );
+  // Track 3 — clear expired custom statuses every 5 minutes. Cheaper than
+  // a per-row deadline since most users never set an expiry, and the
+  // worst-case latency (status shows for ~5 minutes past expiry) is fine.
+  await maintenanceQueue.add(
+    'expired-custom-status',
+    { kind: 'expired-custom-status' },
+    {
+      repeat: { pattern: '*/5 * * * *' },
+      removeOnComplete: true,
+      removeOnFail: false,
+      jobId: 'expired-custom-status',
+    },
   );
 
   scanner

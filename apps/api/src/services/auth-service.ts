@@ -12,15 +12,61 @@ import {
   type RegisterRequest,
   type TokenPair,
 } from '@tavern/shared';
+import crypto from 'node:crypto';
 import { hashPassword, verifyPassword } from '../lib/passwords.js';
-import { sha256 } from '../lib/hash.js';
+import { sha256, randomTokenHex } from '../lib/hash.js';
 import { generateInviteCode } from '../lib/invite-codes.js';
+import { hashBackupCode, verifyTotp } from '../lib/totp.js';
 import type { JwtService } from '../lib/jwt.js';
 import type { Config } from '../config.js';
+import type { MailService } from './mail-service.js';
+
+/**
+ * Error thrown by `login()` when the user has TOTP enabled. The route
+ * handler catches this specifically and returns `{ totpRequired, stagedToken }`
+ * to the client. Modeled as an exception (rather than a discriminated return)
+ * so the existing login signature on the wire stays clean for the common case.
+ */
+export class TotpRequiredError extends Error {
+  constructor(public readonly stagedToken: string) {
+    super('TOTP_REQUIRED');
+    this.name = 'TotpRequiredError';
+  }
+}
+
+const STAGED_TOTP_TTL_MS = 5 * 60 * 1000;
+const STAGED_TOTP_VERSION = 1;
+
+export function signStagedTotpToken(userId: string, secret: string): string {
+  const expires = Date.now() + STAGED_TOTP_TTL_MS;
+  const payload = `${STAGED_TOTP_VERSION}.${userId}.${expires}`;
+  const sig = crypto
+    .createHmac('sha256', `tvn-totp-stage:${secret}`)
+    .update(payload)
+    .digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+export function verifyStagedTotpToken(token: string, secret: string): string | null {
+  const parts = token.split('.');
+  if (parts.length !== 4) return null;
+  const [version, userId, expiresStr, sig] = parts;
+  if (version !== String(STAGED_TOTP_VERSION) || !userId || !expiresStr || !sig) return null;
+  const expires = Number(expiresStr);
+  if (!Number.isFinite(expires) || expires < Date.now()) return null;
+  const expected = crypto
+    .createHmac('sha256', `tvn-totp-stage:${secret}`)
+    .update(`${version}.${userId}.${expiresStr}`)
+    .digest('base64url');
+  if (expected.length !== sig.length) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) return null;
+  return userId;
+}
 
 export interface AuthServiceDeps {
   jwt: JwtService;
   config: Config;
+  mail: MailService;
 }
 
 export interface SessionContext {
@@ -320,6 +366,55 @@ export class AuthService {
       });
     }
 
+    // Wave 2 #16 — TOTP gate. If the account has 2FA on, return a staged
+    // challenge instead of a session. The client then calls
+    // /api/auth/login/totp with the staged token + the user's code.
+    if (user.totpEnabled) {
+      const stagedToken = signStagedTotpToken(user.id, this.deps.config.JWT_ACCESS_SECRET);
+      throw new TotpRequiredError(stagedToken);
+    }
+
+    return this.issueSession(user.id, ctx);
+  }
+
+  /**
+   * Second step of the TOTP login flow. Accepts the staged token from
+   * /api/auth/login and either a TOTP code or a one-time backup code.
+   */
+  async loginTotp(stagedToken: string, code: string, ctx: SessionContext): Promise<TokenPair> {
+    const userId = verifyStagedTotpToken(stagedToken, this.deps.config.JWT_ACCESS_SECRET);
+    if (!userId) {
+      throw new TavernError(ErrorCodes.INVALID_TOKEN, 'Staged token invalid or expired', 401);
+    }
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, totpSecret: true, totpEnabled: true, totpBackupCodes: true },
+    });
+    if (!user.totpEnabled || !user.totpSecret) {
+      // Race: TOTP turned off between login step 1 and step 2. Restart.
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'TOTP no longer required', 400);
+    }
+    const trimmed = code.trim();
+    let success = verifyTotp(user.totpSecret, trimmed);
+    if (!success) {
+      // Try backup code — consume one if matched.
+      const backup = Array.isArray(user.totpBackupCodes)
+        ? (user.totpBackupCodes as string[])
+        : [];
+      const provided = hashBackupCode(trimmed);
+      const idx = backup.indexOf(provided);
+      if (idx >= 0) {
+        const remaining = backup.filter((_, i) => i !== idx);
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { totpBackupCodes: remaining },
+        });
+        success = true;
+      }
+    }
+    if (!success) {
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
+    }
     return this.issueSession(user.id, ctx);
   }
 
@@ -362,6 +457,139 @@ export class AuthService {
   }
 
   /**
+   * Step 1 of self-service password reset (Wave 3).
+   *
+   * Always resolves successfully regardless of whether the supplied email
+   * matches an account — the caller surfaces a generic "if we found your
+   * email, a link is on its way" response so attackers can't enumerate
+   * which addresses are registered. Mail dispatch is fire-and-forget for
+   * the same reason (a slow-or-failed SMTP path must not become a timing
+   * oracle).
+   *
+   * A short per-user cooldown prevents an attacker from carpet-bombing a
+   * single mailbox: if there's an unused, unexpired reset row newer than
+   * the cooldown, we reuse silence rather than mint a second token.
+   */
+  async forgotPassword(email: string, ctx: SessionContext): Promise<void> {
+    const emailLower = email.trim().toLowerCase();
+    if (!emailLower) return;
+    const user = await prisma.user.findUnique({
+      where: { emailLower },
+      select: { id: true, email: true, displayName: true },
+    });
+    if (!user) return;
+
+    // Per-user cooldown: don't mint another token if a recent one is still
+    // outstanding. Sixty seconds is short enough that real users hitting
+    // "resend" feel responsive and long enough to defang a flood.
+    const cooldownMs = 60_000;
+    const recent = await prisma.passwordReset.findFirst({
+      where: {
+        userId: user.id,
+        usedAt: null,
+        createdAt: { gt: new Date(Date.now() - cooldownMs) },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (recent) return;
+
+    const ttl = this.deps.config.PASSWORD_RESET_TTL_SECONDS;
+    // 32 random bytes → 64 hex characters. Plenty of entropy; readable in
+    // URLs; matches the existing `randomTokenHex` helper.
+    const token = randomTokenHex(32);
+    const tokenHash = sha256(token);
+
+    await prisma.passwordReset.create({
+      data: {
+        id: ulid(),
+        userId: user.id,
+        tokenHash,
+        ipAddress: ctx.ipAddress ?? null,
+        userAgent: ctx.userAgent ?? null,
+        expiresAt: new Date(Date.now() + ttl * 1000),
+      },
+    });
+
+    const link = this.buildResetLink(token);
+    const { subject, text, html } = renderResetEmail({
+      displayName: user.displayName,
+      link,
+      ttlMinutes: Math.round(ttl / 60),
+    });
+
+    // Fire-and-forget: mail dispatch must not block the HTTP response (it
+    // would otherwise become a side-channel for "this address exists"
+    // based on timing).
+    void this.deps.mail
+      .send({ to: user.email, subject, text, html })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Step 2 of self-service password reset (Wave 3).
+   *
+   * Consumes a reset token, rewrites the password hash, and revokes every
+   * active session for the user — same posture as `changePassword`. Also
+   * invalidates every other outstanding reset token for that user so a
+   * single compromised mailbox doesn't yield a pile of replays.
+   */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const tokenHash = sha256(token);
+    const reset = await prisma.passwordReset.findUnique({
+      where: { tokenHash },
+      select: { id: true, userId: true, expiresAt: true, usedAt: true },
+    });
+    if (!reset || reset.usedAt || reset.expiresAt < new Date()) {
+      throw new TavernError(
+        ErrorCodes.INVALID_RESET_TOKEN,
+        'Reset link is invalid or has expired',
+        400,
+      );
+    }
+    const user = await prisma.user.findUnique({
+      where: { id: reset.userId },
+      select: { id: true, passwordHash: true },
+    });
+    if (!user) {
+      throw new TavernError(
+        ErrorCodes.INVALID_RESET_TOKEN,
+        'Reset link is invalid or has expired',
+        400,
+      );
+    }
+    // Refuse no-op resets so the user gets an explicit signal rather than
+    // a misleading success when they reuse their old password.
+    const sameAsCurrent = await verifyPassword(user.passwordHash, newPassword);
+    if (sameAsCurrent) {
+      throw TavernError.validation('New password must differ from current password');
+    }
+    const nextHash = await hashPassword(newPassword);
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash: nextHash, failedLoginAttempts: 0, loginLockedUntil: null },
+      });
+      await tx.session.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      // Burn every outstanding reset token for this user — both the one we
+      // just consumed and any siblings — so the credential change can't be
+      // replayed by anyone holding a parallel link.
+      await tx.passwordReset.updateMany({
+        where: { userId: user.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+    });
+  }
+
+  private buildResetLink(token: string): string {
+    const base = this.deps.config.WEB_BASE_URL.replace(/\/+$/, '');
+    return `${base}/reset-password?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
    * Change a user's password while logged in (SEC-003).
    *
    * Verifies the current password (so an XSS/CSRF or a stolen access token
@@ -399,6 +627,16 @@ export class AuthService {
         data: { revokedAt: new Date() },
       });
     });
+  }
+
+  /**
+   * Public entry point for non-password authentication paths (currently the
+   * WebAuthn assertion verifier). The caller has already proven the user's
+   * identity via a second-factor flow; we just need to mint the session
+   * pair with the same posture as a password login.
+   */
+  async issueWebauthnSession(userId: string, ctx: SessionContext): Promise<TokenPair> {
+    return this.issueSession(userId, ctx);
   }
 
   private async issueSession(userId: string, ctx: SessionContext): Promise<TokenPair> {
@@ -460,4 +698,57 @@ export class AuthService {
       data: { revokedAt: new Date() },
     });
   }
+}
+
+interface ResetEmailOpts {
+  displayName: string;
+  link: string;
+  ttlMinutes: number;
+}
+
+interface RenderedMail {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/**
+ * Render the password-reset email. Plain-text body is the source of truth
+ * for mail clients that don't render HTML; the HTML body mirrors it with
+ * a clickable link. Subject + body are deliberately neutral — they avoid
+ * confirming the recipient owns the account (the email itself does that).
+ */
+function renderResetEmail(opts: ResetEmailOpts): RenderedMail {
+  const subject = 'Reset your Tavern password';
+  const text = [
+    `Hi ${opts.displayName},`,
+    '',
+    'Someone (hopefully you) asked to reset the password on your Tavern',
+    'account. To choose a new one, open this link within the next',
+    `${opts.ttlMinutes} minutes:`,
+    '',
+    opts.link,
+    '',
+    'If you did not request a reset, you can ignore this message — your',
+    'password will stay the same.',
+  ].join('\n');
+  const safeLink = escapeHtml(opts.link);
+  const safeName = escapeHtml(opts.displayName);
+  const html = [
+    `<p>Hi ${safeName},</p>`,
+    '<p>Someone (hopefully you) asked to reset the password on your Tavern account. ',
+    `To choose a new one, open the link below within the next ${opts.ttlMinutes} minutes:</p>`,
+    `<p><a href="${safeLink}">${safeLink}</a></p>`,
+    '<p>If you did not request a reset, you can ignore this message — your password will stay the same.</p>',
+  ].join('');
+  return { subject, text, html };
+}
+
+function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }

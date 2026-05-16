@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import path from 'node:path';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
@@ -13,6 +14,8 @@ import { setPasswordLogger } from './lib/passwords.js';
 import { registerErrorHandler } from './plugins/error-handler.js';
 import { registerAuthPlugin } from './plugins/auth.js';
 import { AuthService } from './services/auth-service.js';
+import { MailService } from './services/mail-service.js';
+import { WebAuthnService } from './services/webauthn-service.js';
 import { createStorage } from './services/storage.js';
 import { createQueueClient } from './services/queues.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -34,11 +37,66 @@ import { registerSessionRoutes } from './routes/sessions.js';
 import { registerNoteRoutes } from './routes/notes.js';
 import { registerHandoutRoutes } from './routes/handouts.js';
 import { registerDiceRoutes } from './routes/dice.js';
+import { registerSlashRoutes } from './routes/slash.js';
+import { registerInboxRoutes } from './routes/inbox.js';
+import { registerPinRoutes } from './routes/pins.js';
+import { registerSavedMessageRoutes } from './routes/saved.js';
+import { registerThreadRoutes } from './routes/threads.js';
+import { registerPollRoutes } from './routes/polls.js';
+import { registerScheduledRoutes } from './routes/scheduled.js';
+import { registerEncounterRoutes } from './routes/encounters.js';
+import { registerLinkPreviewRoutes } from './routes/link-previews.js';
+import { registerModerationActionRoutes } from './routes/moderation-actions.js';
+import { registerCharacterRoutes } from './routes/characters.js';
+import { registerSoundboardRoutes } from './routes/soundboard.js';
+import { registerRandomTableRoutes } from './routes/random-tables.js';
+import { registerNpcRoutes } from './routes/npcs.js';
+import { registerTotpRoutes } from './routes/totp.js';
+import { registerWebauthnRoutes } from './routes/webauthn.js';
+import { registerAccountRoutes } from './routes/account.js';
+import { registerDraftRoutes } from './routes/drafts.js';
+import { registerTokenAndWebhookRoutes } from './routes/tokens-webhooks.js';
+import { registerIcalRoutes } from './routes/ical.js';
+import { registerStickerRoutes } from './routes/stickers.js';
+import { registerBattleMapRoutes } from './routes/battle-maps.js';
+import { registerCampaignCalendarRoutes } from './routes/campaign-calendar.js';
+import { registerCampaignSafetyRoutes } from './routes/campaign-safety.js';
+import { registerDeckRoutes } from './routes/decks.js';
+import { registerImportRoutes } from './routes/imports.js';
+import { registerWatchPartyRoutes } from './routes/watch-party.js';
+import { registerCaptionRoutes } from './routes/captions.js';
+import { registerRecapRoutes } from './routes/recaps.js';
+import { RecapService } from './services/recap-service.js';
+import { registerBreakoutRoutes } from './routes/breakouts.js';
+import { registerRecordingRoutes } from './routes/recordings.js';
+import { registerPluginRoutes } from './routes/plugins.js';
+import { registerSsoRoutes } from './routes/sso.js';
+import { OidcService } from './services/oidc-service.js';
+import { registerWhiteboardRoutes } from './routes/whiteboard.js';
+import { registerEncounterTemplateRoutes } from './routes/encounter-templates.js';
+import { registerAutomodRoutes } from './routes/automod.js';
+import { registerWarningRoutes } from './routes/warnings.js';
+import { registerJoinGateRoutes } from './routes/join-gates.js';
+import { registerServerTemplateRoutes } from './routes/server-templates.js';
+import { registerServerBackupRoutes } from './routes/server-backup.js';
+import { registerPushRoutes } from './routes/push.js';
+import { registerRssRoutes } from './routes/rss.js';
+import { registerAdminStorageRoutes } from './routes/admin-storage.js';
+import { registerMemberDirectoryRoutes } from './routes/member-directory.js';
+import { registerMemberStatusRoutes } from './routes/member-status.js';
+import { registerCompendiumRoutes } from './routes/compendium.js';
+import { registerMetricsPlugin } from './plugins/metrics.js';
+import { loadPluginsFrom } from './services/plugin-loader.js';
+import { recoverScheduledDispatches } from './services/scheduler.js';
 import { registerBoardGameRoutes } from './routes/board-games.js';
 import { registerGameNightRoutes } from './routes/game-nights.js';
 import { registerModerationRoutes } from './routes/moderation.js';
 import { registerTypingRoutes } from './routes/typing.js';
 import { registerSearchRoutes } from './routes/search.js';
+import { registerPresenceRoutes } from './routes/presence.js';
+import { registerNotificationRoutes } from './routes/notifications.js';
+import { registerDmRoutes } from './routes/dms.js';
+import { registerUserRoutes } from './routes/users.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
@@ -122,19 +180,43 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   // SEC-011: pipe argon2 engine errors into the structured app logger.
   setPasswordLogger((msg) => app.log.warn(msg));
 
-  // SEC-022: shout at startup if the operator left the LiveKit dev secret
-  // in place. The placeholder string is the value shipped in .env.example.
-  if (
-    opts.config.NODE_ENV === 'production' &&
-    opts.config.LIVEKIT_API_SECRET === 'devsecret-change-me'
-  ) {
-    app.log.error(
-      'LIVEKIT_API_SECRET is still the .env.example placeholder. ' +
-        'Rotate the LiveKit keys before exposing this instance.',
-    );
+  // SEC-022: shout at startup if the operator left the LiveKit dev keys in
+  // place — both `devkey` and `devsecret-change-me` are public in the repo,
+  // so anyone could self-sign LiveKit JWTs against the deployment.
+  //
+  // We warn loudly rather than crash. The docker-compose stack ships with
+  // NODE_ENV=production for the api container even when used locally, and
+  // the dev keys are the *intended* values in that scenario; crashing
+  // would break the out-of-the-box `pnpm docker:up:full` workflow.
+  // Operators exposing this to the public internet must rotate — the
+  // warning in the logs is the signal.
+  if (opts.config.NODE_ENV === 'production') {
+    if (opts.config.LIVEKIT_API_SECRET === 'devsecret-change-me') {
+      app.log.error(
+        'LIVEKIT_API_SECRET is still the .env.example placeholder. ' +
+          'Rotate it before exposing this instance to the public internet.',
+      );
+    }
+    if (opts.config.LIVEKIT_API_KEY === 'devkey') {
+      app.log.error(
+        'LIVEKIT_API_KEY is still the .env.example placeholder. ' +
+          'Rotate it (with the matching secret) before exposing this instance to the public internet.',
+      );
+    }
+    // SEC-023: warn if voice signaling is unencrypted. The LiveKit token
+    // grants `canPublishSources` for the session; a passive listener on a
+    // `ws://` connection has a replayable credential.
+    if (opts.config.LIVEKIT_URL && opts.config.LIVEKIT_URL.startsWith('ws://')) {
+      app.log.error(
+        `LIVEKIT_URL is ${opts.config.LIVEKIT_URL} — use wss:// in production ` +
+          'so signaling and the JWT delivery channel are TLS-encrypted.',
+      );
+    }
   }
 
-  const authService = new AuthService({ jwt, config: opts.config });
+  const mailService = new MailService(opts.config, app.log);
+  const authService = new AuthService({ jwt, config: opts.config, mail: mailService });
+  const webauthnService = new WebAuthnService(opts.config);
 
   app.get('/healthz', async () => ok({ ok: true, app: APP_NAME, env: opts.config.NODE_ENV }));
   app.get('/api/instance', async () =>
@@ -149,6 +231,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         liveKitConfigured: Boolean(opts.config.LIVEKIT_URL),
         scannerConfigured: Boolean(opts.config.CLAMAV_HOST),
         redisConfigured: Boolean(opts.config.REDIS_URL),
+        ssoEnabled: Boolean(
+          opts.config.OIDC_ISSUER_URL &&
+            opts.config.OIDC_CLIENT_ID &&
+            opts.config.OIDC_CLIENT_SECRET,
+        ),
+        ssoButtonLabel: opts.config.OIDC_BUTTON_LABEL,
+        aiRecapEnabled: Boolean(opts.config.LLM_ENDPOINT),
       },
     }),
   );
@@ -190,17 +279,89 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerNoteRoutes(app);
     await registerHandoutRoutes(app);
     await registerDiceRoutes(app);
+    await registerSlashRoutes(app);
+    await registerInboxRoutes(app);
+    await registerPinRoutes(app);
+    await registerSavedMessageRoutes(app);
+    await registerThreadRoutes(app);
+    await registerPollRoutes(app);
+    await registerScheduledRoutes(app);
+    await registerEncounterRoutes(app);
+    await registerLinkPreviewRoutes(app);
+    await registerModerationActionRoutes(app);
+    await registerCharacterRoutes(app);
+    await registerSoundboardRoutes(app);
+    await registerRandomTableRoutes(app);
+    await registerNpcRoutes(app);
+    await registerTotpRoutes(app);
+    await registerWebauthnRoutes(app, {
+      webauthn: webauthnService,
+      auth: authService,
+      config: opts.config,
+    });
+    await registerAccountRoutes(app, { storage });
+    await registerDraftRoutes(app);
+    await registerTokenAndWebhookRoutes(app);
+    await registerIcalRoutes(app);
+    // Wave 3 routes.
+    await registerStickerRoutes(app);
+    await registerBattleMapRoutes(app);
+    await registerCampaignCalendarRoutes(app);
+    await registerCampaignSafetyRoutes(app);
+    await registerDeckRoutes(app);
+    await registerImportRoutes(app);
+    await registerWatchPartyRoutes(app);
+    await registerCaptionRoutes(app);
+    const recapService = new RecapService(opts.config);
+    await registerRecapRoutes(app, { recap: recapService });
+    await registerBreakoutRoutes(app, opts.config);
+    await registerRecordingRoutes(app);
+    await registerPluginRoutes(app);
+    const oidcService = new OidcService(opts.config);
+    await registerSsoRoutes(app, { oidc: oidcService, auth: authService, config: opts.config });
+    await registerWhiteboardRoutes(app);
+    await registerEncounterTemplateRoutes(app);
+    await registerAutomodRoutes(app);
+    await registerWarningRoutes(app);
+    await registerJoinGateRoutes(app);
+    await registerServerTemplateRoutes(app);
+    await registerServerBackupRoutes(app, { storage });
+    await registerPushRoutes(app);
+    await registerRssRoutes(app);
+    await registerAdminStorageRoutes(app);
+    await registerMemberDirectoryRoutes(app);
+    await registerMemberStatusRoutes(app);
+    await registerCompendiumRoutes(app);
+    registerMetricsPlugin(app);
+    void loadPluginsFrom(
+      // PLUGINS_DIR overrides the default; otherwise look next to the api
+      // package root so a self-host can drop files alongside the source.
+      process.env['PLUGINS_DIR'] ?? path.resolve(process.cwd(), 'plugins'),
+      app.log,
+    ).catch((err) => app.log.warn({ err }, 'plugin loader bootstrap failed'));
     await registerBoardGameRoutes(app);
     await registerGameNightRoutes(app);
     await registerModerationRoutes(app);
     await registerTypingRoutes(app);
     await registerSearchRoutes(app);
+    await registerPresenceRoutes(app);
+    await registerNotificationRoutes(app);
+    await registerDmRoutes(app);
+    await registerUserRoutes(app);
     registerGateway(app, jwt);
 
     if (opts.config.NODE_ENV !== 'test' && opts.config.REDIS_URL) {
       void initRedisBroker(opts.config.REDIS_URL, (msg) => app.log.warn(msg)).catch((err) => {
         app.log.warn({ err }, 'redis broker init failed; staying in-process');
       });
+    }
+
+    // Phase 3.3 — rearm any pending scheduled dispatches whose time is in
+    // the next 24h. Anything further out is picked up at the next restart.
+    if (opts.config.NODE_ENV !== 'test') {
+      void recoverScheduledDispatches().catch((err) =>
+        app.log.warn({ err }, 'scheduled-dispatch recovery failed'),
+      );
     }
 
     // Bookkeeping: shut the queue down on close so dev restarts are clean.

@@ -14,6 +14,7 @@ import type { StorageBackend } from '@tavern/media';
 import { ok } from '../lib/responses.js';
 import { serializeAttachment, type AttachmentRow } from '../lib/serializers.js';
 import { requireChannelPermission } from '../services/permissions-service.js';
+import { requireDmChannelMembership } from '../services/dm-service.js';
 import { UploadValidator } from '../services/upload-validator.js';
 import type { QueueClient } from '../services/queues.js';
 import type { Config } from '../config.js';
@@ -183,6 +184,21 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
     if (att.uploaderId !== ctx.userId) {
       if (att.channelId) {
         await requireChannelPermission(att.channelId, ctx.userId, Permission.VIEW_CHANNEL);
+      } else if (att.messageId) {
+        // DM attachments are uploaded without a channel/server scope and only
+        // get their `messageId` set when the DM message is sent. Fall through
+        // to the linked message to figure out who is allowed to see it.
+        const msg = await prisma.message.findUnique({
+          where: { id: att.messageId },
+          select: { channelId: true, dmChannelId: true },
+        });
+        if (msg?.channelId) {
+          await requireChannelPermission(msg.channelId, ctx.userId, Permission.VIEW_CHANNEL);
+        } else if (msg?.dmChannelId) {
+          await requireDmChannelMembership(msg.dmChannelId, ctx.userId);
+        } else if (!ctx.isInstanceAdmin) {
+          throw TavernError.forbidden();
+        }
       } else if (!ctx.isInstanceAdmin) {
         throw TavernError.forbidden();
       }

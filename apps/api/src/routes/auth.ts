@@ -1,19 +1,23 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '@tavern/db';
 import {
   bootstrapRequestSchema,
   changePasswordRequestSchema,
   ErrorCodes,
+  forgotPasswordRequestSchema,
   loginRequestSchema,
   refreshRequestSchema,
   registerRequestSchema,
+  resetPasswordRequestSchema,
   TavernError,
   type BootstrapStatus,
   type Me,
   type TokenPair,
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
-import type { AuthService } from '../services/auth-service.js';
+import { parseSocialLinks } from '../lib/serializers.js';
+import { type AuthService, TotpRequiredError } from '../services/auth-service.js';
 import type { Config } from '../config.js';
 
 interface AuthRouteOpts {
@@ -121,7 +125,39 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
       const body = loginRequestSchema.parse(req.body);
-      const tokens = await opts.auth.login(body, clientContext(req));
+      try {
+        const tokens = await opts.auth.login(body, clientContext(req));
+        setRefreshCookie(reply, tokens, opts.config);
+        reply.send(ok({ tokens }));
+      } catch (err) {
+        // Wave 2 #16 — TOTP-gated accounts return a staged token instead
+        // of an access pair. Client then calls /auth/login/totp to finish.
+        if (err instanceof TotpRequiredError) {
+          reply.send(
+            ok({ totpRequired: true as const, stagedToken: err.stagedToken }),
+          );
+          return;
+        }
+        throw err;
+      }
+    },
+  });
+
+  // Wave 2 #16 — second factor exchange. Body: { stagedToken, code }.
+  app.post('/api/auth/login/totp', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const body = z
+        .object({
+          stagedToken: z.string().min(8),
+          code: z.string().min(6).max(20),
+        })
+        .parse(req.body);
+      const tokens = await opts.auth.loginTotp(
+        body.stagedToken,
+        body.code,
+        clientContext(req),
+      );
       setRefreshCookie(reply, tokens, opts.config);
       reply.send(ok({ tokens }));
     },
@@ -169,6 +205,40 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
     },
   });
 
+  // Wave 3 — self-service password reset.
+  //
+  // Step 1: anonymous user submits their email. The endpoint ALWAYS returns
+  // a generic 200 so attackers can't enumerate which addresses are
+  // registered. The rate limit is tight (3 / 15 min / IP) — real users hit
+  // this rarely; floods are abuse.
+  app.post('/api/auth/forgot-password', {
+    config: { rateLimit: { max: 3, timeWindow: '15 minutes' } },
+    handler: async (req, reply) => {
+      const body = forgotPasswordRequestSchema.parse(req.body);
+      await opts.auth.forgotPassword(body.email, clientContext(req));
+      reply.send(
+        ok({
+          // The wire format intentionally exposes no signal beyond "we
+          // accepted your request" — the client renders a generic
+          // confirmation regardless of whether an email actually went out.
+          ok: true,
+        }),
+      );
+    },
+  });
+
+  // Step 2: anonymous user POSTs the token from their email plus a new
+  // password. The token is single-use; on success, every active session for
+  // the user is revoked (matches change-password posture).
+  app.post('/api/auth/reset-password', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const body = resetPasswordRequestSchema.parse(req.body);
+      await opts.auth.resetPassword(body.token, body.newPassword);
+      reply.send(ok({ ok: true }));
+    },
+  });
+
   app.get('/api/auth/me', {
     handler: async (req, reply) => {
       const ctx = await app.requireUser(req, reply);
@@ -184,6 +254,14 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
           isInstanceAdmin: true,
           postingLockedUntil: true,
           uploadsLockedUntil: true,
+          presence: true,
+          manualDnd: true,
+          pronouns: true,
+          accentColor: true,
+          timezone: true,
+          customStatus: true,
+          customStatusExpiresAt: true,
+          socialLinks: true,
           createdAt: true,
         },
       });
@@ -198,6 +276,18 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
         isInstanceAdmin: user.isInstanceAdmin,
         postingLockedUntil: user.postingLockedUntil?.toISOString() ?? null,
         uploadsLockedUntil: user.uploadsLockedUntil?.toISOString() ?? null,
+        presence: user.presence,
+        manualDnd: user.manualDnd,
+        pronouns: user.pronouns,
+        accentColor: user.accentColor,
+        timezone: user.timezone,
+        customStatus: user.customStatus,
+        customStatusExpiresAt: user.customStatusExpiresAt?.toISOString() ?? null,
+        socialLinks: parseSocialLinks(user.socialLinks),
+        // Mutual-servers is meaningless on the caller's own profile (it'd
+        // be all of their memberships). The card hides this section for
+        // isSelf anyway.
+        mutualServers: [],
         createdAt: user.createdAt.toISOString(),
       };
       reply.send(ok(me));

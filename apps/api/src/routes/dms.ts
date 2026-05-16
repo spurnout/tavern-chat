@@ -1,0 +1,317 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import sanitizeHtml from 'sanitize-html';
+import { prisma } from '@tavern/db';
+import {
+  createDirectDmRequestSchema,
+  createGroupDmRequestSchema,
+  idSchema,
+  listMessagesQuerySchema,
+  markDmReadRequestSchema,
+  sendDmMessageRequestSchema,
+  TavernError,
+  ulid,
+  updateDmChannelRequestSchema,
+} from '@tavern/shared';
+import { ok } from '../lib/responses.js';
+import { serializeMessage, type MessageRow } from '../lib/serializers.js';
+import {
+  createGroupDm,
+  dmChannelWithMembersInclude,
+  findOrCreateDirectDm,
+  requireDmChannelMembership,
+  serializeDmChannel,
+  serializeDmChannelRow,
+  usersShareServer,
+} from '../services/dm-service.js';
+import { gatewayBroker } from '../services/gateway-broker.js';
+
+function sanitizeContent(content: string): string {
+  return sanitizeHtml(content, { allowedTags: [], allowedAttributes: {} });
+}
+
+export async function registerDmRoutes(app: FastifyInstance): Promise<void> {
+  // ---- DM channels ---------------------------------------------------------
+
+  // Users I share at least one tavern with — the eligible pool for starting
+  // a new DM. Replaces the previous client-side fan-out across every server's
+  // `GET /servers/:id/members`, which scaled with how many servers you were in.
+  app.get('/api/dms/candidates', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const candidates = await prisma.user.findMany({
+      where: {
+        id: { not: ctx.userId },
+        memberships: {
+          some: {
+            server: { members: { some: { userId: ctx.userId } } },
+          },
+        },
+      },
+      select: { id: true, displayName: true, username: true },
+      orderBy: [{ displayName: 'asc' }, { username: 'asc' }],
+    });
+    reply.send(
+      ok(
+        candidates.map((c) => ({
+          userId: c.id,
+          displayName: c.displayName,
+          username: c.username,
+        })),
+      ),
+    );
+  });
+
+  // List my DM channels, sorted by most-recent activity. Loads every
+  // channel + its members in a single query (one for the membership lookup,
+  // one for the channels) — previously we issued one extra `findUnique` per
+  // channel inside `serializeDmChannel`.
+  app.get('/api/dms', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const memberships = await prisma.dmChannelMember.findMany({
+      where: { userId: ctx.userId },
+      select: { dmChannelId: true },
+    });
+    const ids = memberships.map((m) => m.dmChannelId);
+    if (ids.length === 0) {
+      reply.send(ok([]));
+      return;
+    }
+    const channels = await prisma.dmChannel.findMany({
+      where: { id: { in: ids } },
+      orderBy: [{ lastMessageAt: 'desc' }, { createdAt: 'desc' }],
+      include: dmChannelWithMembersInclude,
+    });
+    const serialized = channels.map((c) =>
+      serializeDmChannelRow(c as unknown as Parameters<typeof serializeDmChannelRow>[0], ctx.userId),
+    );
+    reply.send(ok(serialized));
+  });
+
+  // Open or reuse a 1:1 DM with another user.
+  app.post('/api/dms/direct', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const body = createDirectDmRequestSchema.parse(req.body);
+      // Shared-tavern gate: can't DM someone you've never met.
+      const ok2 = await usersShareServer(ctx.userId, body.userId);
+      if (!ok2) {
+        throw TavernError.forbidden(
+          'You can only DM members of a tavern you share',
+        );
+      }
+      const id = await findOrCreateDirectDm(ctx.userId, body.userId);
+      const dto = await serializeDmChannel(id, ctx.userId);
+      // Notify both members so the channel pops into their list.
+      gatewayBroker.publish({
+        type: 'DM_CHANNEL_CREATE',
+        dmChannelId: id,
+        data: dto,
+      });
+      reply.send(ok(dto));
+    },
+  });
+
+  // Create a new group DM.
+  app.post('/api/dms/group', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const body = createGroupDmRequestSchema.parse(req.body);
+      // Each invitee must share at least one tavern with the creator.
+      for (const otherId of body.userIds) {
+        const shared = await usersShareServer(ctx.userId, otherId);
+        if (!shared) {
+          throw TavernError.forbidden(
+            `You can only add members of a tavern you share`,
+          );
+        }
+      }
+      const id = await createGroupDm(ctx.userId, body.userIds, body.name ?? null);
+      const dto = await serializeDmChannel(id, ctx.userId);
+      gatewayBroker.publish({
+        type: 'DM_CHANNEL_CREATE',
+        dmChannelId: id,
+        data: dto,
+      });
+      reply.send(ok(dto));
+    },
+  });
+
+  // Get one DM channel.
+  app.get('/api/dms/:id', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    await requireDmChannelMembership(id, ctx.userId);
+    const dto = await serializeDmChannel(id, ctx.userId);
+    reply.send(ok(dto));
+  });
+
+  // Rename a group DM. No-op for direct DMs (they don't carry a name).
+  app.patch('/api/dms/:id', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    const body = updateDmChannelRequestSchema.parse(req.body);
+    const channel = await requireDmChannelMembership(id, ctx.userId);
+    if (channel.kind !== 'group') {
+      throw TavernError.validation('Only group DMs can be renamed');
+    }
+    await prisma.dmChannel.update({
+      where: { id },
+      data: { name: body.name },
+    });
+    const dto = await serializeDmChannel(id, ctx.userId);
+    gatewayBroker.publish({
+      type: 'DM_CHANNEL_UPDATE',
+      dmChannelId: id,
+      data: dto,
+    });
+    reply.send(ok(dto));
+  });
+
+  // Mark a DM channel as read.
+  app.post('/api/dms/:id/read', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    const body = markDmReadRequestSchema.parse(req.body ?? {});
+    await requireDmChannelMembership(id, ctx.userId);
+    await prisma.dmChannelMember.update({
+      where: { dmChannelId_userId: { dmChannelId: id, userId: ctx.userId } },
+      data: { lastReadAt: body.at ? new Date(body.at) : new Date() },
+    });
+    reply.send(ok({ ok: true }));
+  });
+
+  // ---- DM messages ---------------------------------------------------------
+
+  app.get('/api/dms/:id/messages', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    await requireDmChannelMembership(id, ctx.userId);
+    const query = listMessagesQuerySchema.parse(req.query);
+
+    const messages = await prisma.message.findMany({
+      where: {
+        dmChannelId: id,
+        deletedAt: null,
+        ...(query.before ? { id: { lt: query.before } } : {}),
+        ...(query.after ? { id: { gt: query.after } } : {}),
+      },
+      orderBy: { id: 'desc' },
+      take: query.limit,
+      include: {
+        attachments: { select: { id: true } },
+        reactions: { select: { emoji: true, userId: true } },
+        author: { select: { id: true, displayName: true, username: true } },
+      },
+    });
+
+    reply.send(ok(messages.map((m) => serializeMessage(m as MessageRow, ctx.userId))));
+  });
+
+  app.post('/api/dms/:id/messages', {
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const { id: dmChannelId } = z.object({ id: idSchema }).parse(req.params);
+      const body = sendDmMessageRequestSchema.parse(req.body);
+      await requireDmChannelMembership(dmChannelId, ctx.userId);
+
+      // Posting lock check matches the server-message route — global lock
+      // applies to DMs too.
+      const user = await prisma.user.findUnique({
+        where: { id: ctx.userId },
+        select: { postingLockedUntil: true },
+      });
+      if (user?.postingLockedUntil && user.postingLockedUntil > new Date()) {
+        throw new TavernError('CONTENT_HELD', 'Your posting privileges are temporarily locked', 403);
+      }
+
+      // Idempotency via nonce — same pattern as server messages.
+      if (body.nonce) {
+        const existing = await prisma.message.findUnique({
+          where: { dmChannelId_nonce: { dmChannelId, nonce: body.nonce } },
+          include: {
+            attachments: { select: { id: true } },
+            reactions: { select: { emoji: true, userId: true } },
+            author: { select: { id: true, displayName: true, username: true } },
+          },
+        });
+        if (existing) {
+          reply.status(200).send(ok(serializeMessage(existing as MessageRow, ctx.userId)));
+          return;
+        }
+      }
+
+      if (body.replyToMessageId) {
+        const target = await prisma.message.findUnique({
+          where: { id: body.replyToMessageId },
+          select: { dmChannelId: true, deletedAt: true },
+        });
+        if (!target || target.dmChannelId !== dmChannelId || target.deletedAt) {
+          throw TavernError.validation('Reply target invalid');
+        }
+      }
+
+      if (body.attachmentIds?.length) {
+        const atts = await prisma.attachment.findMany({
+          where: { id: { in: body.attachmentIds } },
+          select: { id: true, uploaderId: true, status: true, messageId: true },
+        });
+        if (atts.length !== body.attachmentIds.length) {
+          throw TavernError.validation('Unknown attachment');
+        }
+        for (const a of atts) {
+          if (a.uploaderId !== ctx.userId) throw TavernError.forbidden('Attachment owned by another user');
+          if (a.messageId !== null) throw TavernError.validation('Attachment already used');
+          if (a.status !== 'ready' && a.status !== 'uploaded') {
+            throw new TavernError('UPLOAD_NOT_READY', 'Attachment not ready', 400);
+          }
+        }
+      }
+
+      const messageId = ulid();
+      const cleanContent = sanitizeContent(body.content);
+      const now = new Date();
+      const fullRow = await prisma.$transaction(async (tx) => {
+        await tx.message.create({
+          data: {
+            id: messageId,
+            dmChannelId,
+            authorId: ctx.userId,
+            type: 'default',
+            content: cleanContent,
+            replyToMessageId: body.replyToMessageId ?? null,
+            nonce: body.nonce ?? null,
+          },
+        });
+        if (body.attachmentIds?.length) {
+          await tx.attachment.updateMany({
+            where: { id: { in: body.attachmentIds } },
+            data: { messageId },
+          });
+        }
+        // Bump the DM channel's lastMessageAt so the list re-sorts.
+        await tx.dmChannel.update({
+          where: { id: dmChannelId },
+          data: { lastMessageAt: now },
+        });
+        return tx.message.findUniqueOrThrow({
+          where: { id: messageId },
+          include: {
+            attachments: { select: { id: true } },
+            reactions: { select: { emoji: true, userId: true } },
+            author: { select: { id: true, displayName: true, username: true } },
+          },
+        });
+      });
+
+      const dto = serializeMessage(fullRow as MessageRow, ctx.userId);
+      gatewayBroker.publish({
+        type: 'DM_MESSAGE_CREATE',
+        dmChannelId,
+        data: dto,
+      });
+      reply.status(201).send(ok(dto));
+    },
+  });
+}

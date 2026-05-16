@@ -3,16 +3,21 @@
  * Keeps Date->ISO and Decimal->string conversions in one place.
  */
 
+import { z } from 'zod';
 import type { Prisma } from '@tavern/db';
 import type { StorageBackend } from '@tavern/media';
-import type {
-  Attachment,
-  Channel as ChannelDto,
-  Member,
-  Message,
-  Reaction,
-  Role as RoleDto,
-  Server as ServerDto,
+import {
+  socialLinkSchema,
+  type Attachment,
+  type Channel as ChannelDto,
+  type Member,
+  type Message,
+  type MutualServer,
+  type Reaction,
+  type Role as RoleDto,
+  type Server as ServerDto,
+  type SocialLink,
+  type UserProfile,
 } from '@tavern/shared';
 
 export function toIso(d: Date | null | undefined): string | null {
@@ -110,16 +115,75 @@ interface MemberRow {
   joinedAt: Date;
   timeoutUntil: Date | null;
   roles: { roleId: string }[];
+  user: { id: string; displayName: string; username: string; presence?: string };
 }
 
 export function serializeMember(row: MemberRow): Member {
   return {
     serverId: row.serverId,
     userId: row.userId,
+    user: {
+      id: row.user.id,
+      displayName: row.user.displayName,
+      username: row.user.username,
+      presence: (row.user.presence as Member['user']['presence']) ?? 'offline',
+    },
     nickname: row.nickname,
     joinedAt: row.joinedAt.toISOString(),
     timeoutUntil: row.timeoutUntil ? row.timeoutUntil.toISOString() : null,
     roles: row.roles.map((r) => r.roleId),
+  };
+}
+
+const socialLinksArraySchema = z.array(socialLinkSchema);
+
+/**
+ * Coerce a Prisma jsonb column into a typed SocialLink[]. Invalid shapes
+ * fall back to an empty array so a broken row never crashes the API.
+ * Writes are validated by the zod schema on the way in.
+ */
+export function parseSocialLinks(value: unknown): SocialLink[] {
+  const result = socialLinksArraySchema.safeParse(value);
+  return result.success ? result.data : [];
+}
+
+interface UserProfileRow {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarAttachmentId: string | null;
+  bio: string | null;
+  presence: string;
+  createdAt: Date;
+  pronouns: string | null;
+  accentColor: string | null;
+  timezone: string | null;
+  customStatus: string | null;
+  customStatusExpiresAt: Date | null;
+  socialLinks: Prisma.JsonValue;
+}
+
+export function serializeUserProfile(
+  row: UserProfileRow,
+  mutualServers: MutualServer[] = [],
+): UserProfile {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.displayName,
+    avatarAttachmentId: row.avatarAttachmentId,
+    bio: row.bio,
+    presence: row.presence as UserProfile['presence'],
+    createdAt: row.createdAt.toISOString(),
+    pronouns: row.pronouns,
+    accentColor: row.accentColor,
+    timezone: row.timezone,
+    customStatus: row.customStatus,
+    customStatusExpiresAt: row.customStatusExpiresAt
+      ? row.customStatusExpiresAt.toISOString()
+      : null,
+    socialLinks: parseSocialLinks(row.socialLinks),
+    mutualServers,
   };
 }
 
@@ -173,8 +237,9 @@ export function serializeAttachment(row: AttachmentRow, storage: StorageBackend)
 
 export interface MessageRow {
   id: string;
-  serverId: string;
-  channelId: string;
+  serverId: string | null;
+  channelId: string | null;
+  dmChannelId: string | null;
   authorId: string;
   type: string;
   content: string;
@@ -183,9 +248,32 @@ export interface MessageRow {
   deletedAt: Date | null;
   safetyState: string;
   diceRollId: string | null;
+  /** Phase 3.1 — thread membership. */
+  threadId?: string | null;
+  isThreadRoot?: boolean;
+  /** Wave 2 #5 — forwarded-from provenance. */
+  forwardedFromMessageId?: string | null;
+  forwardedFromChannelId?: string | null;
   createdAt: Date;
   attachments: { id: string }[];
   reactions: { emoji: string; userId: string }[];
+  author: { id: string; displayName: string; username: string };
+  /** Phase 3.2 — when the message has a poll attached, the include returns
+   * `poll: { id }` (or null). */
+  poll?: { id: string } | null;
+  /** Wave 2 #2 — parent message preview when replyToMessageId is set. */
+  replyTo?: {
+    id: string;
+    content: string;
+    deletedAt: Date | null;
+    author: { displayName: string };
+  } | null;
+  /** Wave 2 #5 — forwarded-from message preview. */
+  forwardedFrom?: {
+    id: string;
+    channelId: string | null;
+    author: { displayName: string };
+  } | null;
 }
 
 export function serializeMessage(row: MessageRow, viewerId: string): Message {
@@ -204,7 +292,13 @@ export function serializeMessage(row: MessageRow, viewerId: string): Message {
     id: row.id,
     serverId: row.serverId,
     channelId: row.channelId,
+    dmChannelId: row.dmChannelId,
     authorId: row.authorId,
+    author: {
+      id: row.author.id,
+      displayName: row.author.displayName,
+      username: row.author.username,
+    },
     type: row.type as Message['type'],
     content: row.deletedAt ? '' : row.content,
     replyToMessageId: row.replyToMessageId,
@@ -214,6 +308,30 @@ export function serializeMessage(row: MessageRow, viewerId: string): Message {
     attachmentIds: row.attachments.map((a) => a.id),
     reactions,
     diceRollId: row.diceRollId,
+    pollId: row.poll?.id ?? null,
+    threadId: row.threadId ?? null,
+    isThreadRoot: row.isThreadRoot ?? false,
+    replyTo: row.replyTo
+      ? {
+          id: row.replyTo.id,
+          authorDisplayName: row.replyTo.author.displayName,
+          contentExcerpt: excerpt(row.replyTo.deletedAt ? '' : row.replyTo.content),
+          deleted: !!row.replyTo.deletedAt,
+        }
+      : null,
+    forwardedFrom: row.forwardedFrom
+      ? {
+          messageId: row.forwardedFrom.id,
+          channelId: row.forwardedFrom.channelId,
+          authorDisplayName: row.forwardedFrom.author.displayName,
+        }
+      : null,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function excerpt(s: string): string {
+  const trimmed = s.trim();
+  if (trimmed.length <= 80) return trimmed;
+  return `${trimmed.slice(0, 80)}…`;
 }

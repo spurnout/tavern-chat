@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { prisma } from '@tavern/db';
 import {
   ErrorCodes,
@@ -28,6 +29,8 @@ function voiceStatePayload(row: {
   cameraOn: boolean;
   screenSharing: boolean;
   joinedAt: Date | null;
+  stagePosition?: 'audience' | 'speaker' | null;
+  handRaisedAt?: Date | null;
 }): VoiceStateGatewayPayload {
   return voiceStateGatewayPayloadSchema.parse({
     serverId: row.serverId,
@@ -38,11 +41,15 @@ function voiceStatePayload(row: {
     cameraOn: row.cameraOn,
     screenSharing: row.screenSharing,
     joinedAt: row.joinedAt?.toISOString() ?? null,
+    stagePosition: row.stagePosition ?? null,
+    handRaisedAt: row.handRaisedAt?.toISOString() ?? null,
   });
 }
 
 export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
-  app.post('/api/voice/join', async (req, reply) => {
+  app.post('/api/voice/join', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const body = voiceJoinRequestSchema.parse(req.body);
 
@@ -51,15 +58,43 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       select: { id: true, type: true, serverId: true, videoEnabled: true },
     });
     if (!channel) throw TavernError.notFound('Channel not found');
-    if (channel.type !== 'voice' && channel.type !== 'session' && channel.type !== 'campaign') {
+    if (
+      channel.type !== 'voice' &&
+      channel.type !== 'session' &&
+      channel.type !== 'campaign' &&
+      channel.type !== 'stage'
+    ) {
       throw new TavernError(ErrorCodes.WRONG_CHANNEL_TYPE, 'Channel is not a voice channel', 400);
     }
 
     const result = await requireChannelPermission(channel.id, ctx.userId, Permission.CONNECT_VOICE);
+    const isAdminOrManager =
+      (result.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR ||
+      (result.perms & Permission.MANAGE_CHANNELS) === Permission.MANAGE_CHANNELS;
+
+    // Wave 3 #25 — stage rooms. For 'stage' channels, audience members can
+    // join the room but can NOT publish audio. Promotion to speaker is a
+    // separate route; the user's existing token has no publish grant until
+    // they /voice/refresh-token after being promoted.
+    let stagePosition: 'audience' | 'speaker' | null = null;
+    if (channel.type === 'stage') {
+      const existingState = await prisma.voiceState.findUnique({
+        where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+        select: { stagePosition: true },
+      });
+      // Channel managers default to speaker on first join so the host can
+      // actually run the show; everyone else lands as audience.
+      stagePosition =
+        existingState?.stagePosition ?? (isAdminOrManager ? 'speaker' : 'audience');
+    }
+
+    const stageMutesAudio = channel.type === 'stage' && stagePosition !== 'speaker';
     const canPublishAudio =
-      (result.perms & Permission.SPEAK_VOICE) === Permission.SPEAK_VOICE ||
-      (result.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR;
+      !stageMutesAudio &&
+      ((result.perms & Permission.SPEAK_VOICE) === Permission.SPEAK_VOICE ||
+        (result.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR);
     const canPublishVideo =
+      !stageMutesAudio &&
       channel.videoEnabled &&
       ((result.perms & Permission.ENABLE_CAMERA) === Permission.ENABLE_CAMERA ||
         (result.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR);
@@ -87,14 +122,25 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
     const sources: string[] = [];
     if (canPublishAudio) sources.push('microphone');
     if (canPublishVideo) sources.push('camera');
-    if (canPublishScreenShare) sources.push('screen_share');
+    if (canPublishScreenShare) {
+      // VC-012: must grant both video AND audio sub-sources. With `audio: true`
+      // in the share options the LiveKit JS SDK publishes two tracks
+      // (`screen_share` + `screen_share_audio`); granting only `screen_share`
+      // makes the SDK abort the whole publish with "insufficient permissions
+      // to publish" on the audio track, leaving the user with a black tile.
+      sources.push('screen_share', 'screen_share_audio');
+    }
 
     const { token, expiresAt } = await signLiveKitToken({
       apiKey: liveKitKey,
       apiSecret: liveKitSecret,
       identity: ctx.userId,
       name: me?.displayName ?? me?.username ?? 'Tavern user',
-      ttlSeconds: 60 * 60,
+      // 15-minute TTL. The frontend refreshes on a 5-minute lead, so each
+      // session ends up rotating tokens every ~10 minutes. A short TTL is
+      // the only enforcement we have for "a moderator revoked STREAM_SCREEN
+      // mid-session" — LiveKit honors the old grant until the token expires.
+      ttlSeconds: 15 * 60,
       grant: {
         roomJoin: true,
         room: roomName,
@@ -108,8 +154,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
     // Sweep stale `screenSharing` / `cameraOn` flags on this user's rows. If
     // the browser crashed during a previous session, the row can sit at
     // `true` indefinitely — the truth source is LiveKit, which we don't poll.
-    // An hour-old `joinedAt` is plenty of slack for a real reconnect.
-    const stale = new Date(Date.now() - 60 * 60 * 1000);
+    // 10 minutes is well beyond a normal reconnect window but short enough
+    // that a phantom "is sharing" indicator clears within a coffee break.
+    const stale = new Date(Date.now() - 10 * 60 * 1000);
     await prisma.voiceState.updateMany({
       where: {
         userId: ctx.userId,
@@ -134,6 +181,8 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         selfDeaf: false,
         cameraOn: false,
         screenSharing: false,
+        stagePosition,
+        handRaisedAt: null,
       },
       update: {
         channelId: channel.id,
@@ -142,6 +191,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         selfDeaf: false,
         cameraOn: false,
         screenSharing: false,
+        stagePosition,
+        // Joining a stage clears any prior raised-hand flag.
+        handRaisedAt: null,
       },
     });
     gatewayBroker.publish({
@@ -173,10 +225,11 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
     );
   });
 
-  // VC-001: LiveKit token TTL is 1h. The client requests a fresh token a few
-  // minutes before expiry so a long voice session doesn't get disconnected.
-  // Re-checks permissions against live state, so a role demote since `/join`
-  // narrows what the new token can publish.
+  // VC-001: LiveKit token TTL is 15 minutes (see `/voice/join`). The client
+  // requests a fresh token a few minutes before expiry so a long voice
+  // session doesn't get disconnected. Re-checks permissions against live
+  // state, so a role demote since `/join` narrows what the new token can
+  // publish at the next rotation.
   app.post('/api/voice/refresh-token', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
@@ -187,7 +240,12 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         select: { id: true, type: true, serverId: true, videoEnabled: true },
       });
       if (!channel) throw TavernError.notFound('Channel not found');
-      if (channel.type !== 'voice' && channel.type !== 'session' && channel.type !== 'campaign') {
+      if (
+        channel.type !== 'voice' &&
+        channel.type !== 'session' &&
+        channel.type !== 'campaign' &&
+        channel.type !== 'stage'
+      ) {
         throw new TavernError(ErrorCodes.WRONG_CHANNEL_TYPE, 'Channel is not a voice channel', 400);
       }
       // Must currently be in the channel — refresh is for in-progress
@@ -205,10 +263,16 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       if (!cfg.LIVEKIT_URL || !cfg.LIVEKIT_API_KEY || !cfg.LIVEKIT_API_SECRET) {
         throw new TavernError(ErrorCodes.VOICE_UNAVAILABLE, 'Voice not configured', 503);
       }
+      // Wave 3 #25 — stage rooms reapply the audience mute on every refresh
+      // so a promotion (or demotion) is honoured immediately at the next
+      // 5-minute rotation, without the user needing to fully rejoin.
+      const stageMuted = channel.type === 'stage' && existing.stagePosition !== 'speaker';
       const canAudio =
-        (perms.perms & Permission.SPEAK_VOICE) === Permission.SPEAK_VOICE ||
-        (perms.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR;
+        !stageMuted &&
+        ((perms.perms & Permission.SPEAK_VOICE) === Permission.SPEAK_VOICE ||
+          (perms.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR);
       const canVideo =
+        !stageMuted &&
         channel.videoEnabled &&
         ((perms.perms & Permission.ENABLE_CAMERA) === Permission.ENABLE_CAMERA ||
           (perms.perms & Permission.ADMINISTRATOR) === Permission.ADMINISTRATOR);
@@ -218,7 +282,8 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       const refreshSources: string[] = [];
       if (canAudio) refreshSources.push('microphone');
       if (canVideo) refreshSources.push('camera');
-      if (canScreen) refreshSources.push('screen_share');
+      // VC-012: grant both screen video and audio sub-sources (see /voice/join).
+      if (canScreen) refreshSources.push('screen_share', 'screen_share_audio');
       const me = await prisma.user.findUnique({
         where: { id: ctx.userId },
         select: { displayName: true, username: true },
@@ -228,7 +293,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         apiSecret: cfg.LIVEKIT_API_SECRET,
         identity: ctx.userId,
         name: me?.displayName ?? me?.username ?? 'Tavern user',
-        ttlSeconds: 60 * 60,
+        ttlSeconds: 15 * 60,
         grant: {
           roomJoin: true,
           room: `server:${channel.serverId}:voice:${channel.id}`,
@@ -284,28 +349,27 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         },
       });
 
-      // Re-read just enough to build the gateway payloads. Without this we'd
-      // have to construct the payload from `states` plus the cleared fields,
-      // which duplicates the source of truth.
-      const updated = await prisma.voiceState.findMany({
-        where: {
-          OR: states.map((s) => ({
-            serverId: s.serverId,
-            userId: ctx.userId,
-          })),
-        },
-      });
-      const updatedByServer = new Map(updated.map((u) => [u.serverId, u]));
-
+      // Build the gateway payloads directly from the pre-update snapshot
+      // plus the known cleared fields — every value the post-update payload
+      // needs is either on `states` (serverId, userId) or fixed by the
+      // updateMany above (channelId=null, joinedAt=null, all flags=false).
+      // Skipping the re-read keeps this hot path single-query.
       for (const s of states) {
         const previousChannelId = s.channelId;
-        const u = updatedByServer.get(s.serverId);
-        if (!u) continue;
         gatewayBroker.publish({
           type: 'VOICE_STATE_UPDATE',
           serverId: s.serverId,
           ...(previousChannelId ? { channelId: previousChannelId } : {}),
-          data: voiceStatePayload(u),
+          data: voiceStatePayload({
+            serverId: s.serverId,
+            userId: ctx.userId,
+            channelId: null,
+            selfMute: false,
+            selfDeaf: false,
+            cameraOn: false,
+            screenSharing: false,
+            joinedAt: null,
+          }),
         });
       }
       reply.send(ok({ ok: true }));
@@ -323,7 +387,12 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       select: { id: true, type: true, serverId: true, videoEnabled: true },
     });
     if (!channel) throw TavernError.notFound('Channel not found');
-    if (channel.type !== 'voice' && channel.type !== 'session' && channel.type !== 'campaign') {
+    if (
+      channel.type !== 'voice' &&
+      channel.type !== 'session' &&
+      channel.type !== 'campaign' &&
+      channel.type !== 'stage'
+    ) {
       throw new TavernError(ErrorCodes.WRONG_CHANNEL_TYPE, 'Channel is not a voice channel', 400);
     }
 
@@ -374,6 +443,153 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
     });
 
     reply.send(ok({ ok: true }));
+    },
+  });
+
+  // -------------------------------------------------------------------------
+  // Wave 3 #25 — stage-room hand-raising + speaker promotion.
+  //
+  // Raise-hand is a soft signal: the audience member's tile gets a flag the
+  // host can act on. Promotion flips their `stagePosition` to `speaker`; the
+  // user's next /voice/refresh-token (auto-fired every 5 minutes by the
+  // client) will then come back with `canPublishAudio: true` and they can
+  // unmute themselves. Demotion is the inverse.
+  // -------------------------------------------------------------------------
+
+  async function loadStageChannel(channelId: string): Promise<{
+    id: string;
+    serverId: string;
+  }> {
+    const channel = await prisma.channel.findUnique({
+      where: { id: channelId },
+      select: { id: true, type: true, serverId: true },
+    });
+    if (!channel) throw TavernError.notFound('Channel not found');
+    if (channel.type !== 'stage') {
+      throw new TavernError(
+        ErrorCodes.WRONG_CHANNEL_TYPE,
+        'This action only applies to stage rooms',
+        400,
+      );
+    }
+    return { id: channel.id, serverId: channel.serverId };
+  }
+
+  app.post('/api/voice/:channelId/raise-hand', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const { channelId } = z
+        .object({ channelId: z.string().min(1).max(40) })
+        .parse(req.params);
+      const channel = await loadStageChannel(channelId);
+      // Caller must already be in the channel as audience.
+      const state = await prisma.voiceState.findUnique({
+        where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+      });
+      if (!state || state.channelId !== channel.id || state.stagePosition === 'speaker') {
+        throw TavernError.validation('You are not an audience member in this stage');
+      }
+      const updated = await prisma.voiceState.update({
+        where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+        data: { handRaisedAt: new Date() },
+      });
+      gatewayBroker.publish({
+        type: 'VOICE_STATE_UPDATE',
+        serverId: channel.serverId,
+        channelId: channel.id,
+        data: voiceStatePayload(updated),
+      });
+      reply.send(ok({ ok: true }));
+    },
+  });
+
+  app.post('/api/voice/:channelId/lower-hand', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { channelId } = z
+      .object({ channelId: z.string().min(1).max(40) })
+      .parse(req.params);
+    const channel = await loadStageChannel(channelId);
+    const state = await prisma.voiceState.findUnique({
+      where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+    });
+    if (!state || state.channelId !== channel.id) {
+      reply.send(ok({ ok: true }));
+      return;
+    }
+    const updated = await prisma.voiceState.update({
+      where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+      data: { handRaisedAt: null },
+    });
+    gatewayBroker.publish({
+      type: 'VOICE_STATE_UPDATE',
+      serverId: channel.serverId,
+      channelId: channel.id,
+      data: voiceStatePayload(updated),
+    });
+    reply.send(ok({ ok: true }));
+  });
+
+  app.post('/api/voice/:channelId/promote/:userId', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const { channelId, userId } = z
+        .object({ channelId: z.string().min(1).max(40), userId: z.string().min(1).max(40) })
+        .parse(req.params);
+      const channel = await loadStageChannel(channelId);
+      // Host gate — MANAGE_CHANNELS is the closest "stage moderator" perm.
+      await requireChannelPermission(channel.id, ctx.userId, Permission.MANAGE_CHANNELS);
+      const target = await prisma.voiceState.findUnique({
+        where: { serverId_userId: { serverId: channel.serverId, userId } },
+      });
+      if (!target || target.channelId !== channel.id) {
+        throw TavernError.notFound('Target is not in this stage');
+      }
+      const updated = await prisma.voiceState.update({
+        where: { serverId_userId: { serverId: channel.serverId, userId } },
+        data: { stagePosition: 'speaker', handRaisedAt: null },
+      });
+      gatewayBroker.publish({
+        type: 'VOICE_STATE_UPDATE',
+        serverId: channel.serverId,
+        channelId: channel.id,
+        data: voiceStatePayload(updated),
+      });
+      reply.send(ok({ ok: true }));
+    },
+  });
+
+  app.post('/api/voice/:channelId/demote/:userId', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const { channelId, userId } = z
+        .object({ channelId: z.string().min(1).max(40), userId: z.string().min(1).max(40) })
+        .parse(req.params);
+      const channel = await loadStageChannel(channelId);
+      // Self-demotion is allowed even without MANAGE_CHANNELS; otherwise
+      // hosts only.
+      if (userId !== ctx.userId) {
+        await requireChannelPermission(channel.id, ctx.userId, Permission.MANAGE_CHANNELS);
+      }
+      const target = await prisma.voiceState.findUnique({
+        where: { serverId_userId: { serverId: channel.serverId, userId } },
+      });
+      if (!target || target.channelId !== channel.id) {
+        throw TavernError.notFound('Target is not in this stage');
+      }
+      const updated = await prisma.voiceState.update({
+        where: { serverId_userId: { serverId: channel.serverId, userId } },
+        data: { stagePosition: 'audience', handRaisedAt: null },
+      });
+      gatewayBroker.publish({
+        type: 'VOICE_STATE_UPDATE',
+        serverId: channel.serverId,
+        channelId: channel.id,
+        data: voiceStatePayload(updated),
+      });
+      reply.send(ok({ ok: true }));
     },
   });
 }

@@ -24,6 +24,13 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
 
   ALLOWED_ORIGINS: z.string().default('http://localhost:3030,http://localhost:3000'),
+
+  // Wave 2 #4 — OpenGraph link previews. When false, the API never makes
+  // outbound HTTP for unfurl — important for air-gapped self-hosters.
+  OG_FETCH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   ALLOW_PUBLIC_REGISTRATION: z
     .enum(['true', 'false'])
     .default('false')
@@ -113,6 +120,85 @@ const envSchema = z.object({
    * in tandem; nginx doesn't read env vars at request time.
    */
   UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+
+  // Mail / password-reset --------------------------------------------------
+  /**
+   * Public URL of the web frontend. Used to build links inside outbound
+   * email (password-reset, future invites, etc.). Falls back to a sensible
+   * dev default; production deployments must set it to the canonical
+   * https origin so reset links resolve to a real, TLS-protected page.
+   */
+  WEB_BASE_URL: z.string().default('http://localhost:3030'),
+  /**
+   * Optional SMTP. When SMTP_HOST is blank, MailService logs the message
+   * body to the structured logger instead of dispatching — useful in dev
+   * and air-gapped self-hosts where the operator pipes mail through a
+   * different channel.
+   */
+  SMTP_HOST: optionalString,
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  SMTP_USER: optionalString,
+  SMTP_PASS: optionalString,
+  /**
+   * From-address used on every outbound email. Defaults to
+   * `no-reply@<PUBLIC_BASE_URL host>` if unset.
+   */
+  SMTP_FROM: optionalString,
+  /** Lifetime of a password-reset token, in seconds. Default 1 hour. */
+  PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60),
+
+  // WebAuthn / passkeys ----------------------------------------------------
+  /**
+   * Relying-Party identifier — must be the registrable domain (NOT the URL)
+   * the user sees in the browser bar. Default `localhost` works for dev;
+   * production deployments MUST set it to the canonical host (e.g.
+   * `tavern.example.com`). WebAuthn refuses to register a credential when
+   * RP ID and the page origin disagree, which is exactly how it defends
+   * against phishing.
+   */
+  WEBAUTHN_RP_ID: z.string().default('localhost'),
+  /** Friendly relying-party name shown by the authenticator. */
+  WEBAUTHN_RP_NAME: optionalString,
+  /**
+   * The full https origin the browser sees. Defaults to WEB_BASE_URL. Must
+   * match exactly (scheme + host + port) — the authenticator binds the
+   * credential to this origin.
+   */
+  WEBAUTHN_ORIGIN: optionalString,
+
+  // AI / LLM ---------------------------------------------------------------
+  /**
+   * Wave 3 #48 — operator-configured OpenAI-compatible endpoint for AI
+   * session recaps. Set to a Chat Completions URL (e.g.
+   * `https://api.openai.com/v1`, `http://localhost:11434/v1` for Ollama,
+   * `http://localhost:8080/v1` for llama.cpp's server). When blank,
+   * `/api/campaigns/:id/recaps` returns 503 with a clear message and the UI
+   * hides the "Generate recap" button.
+   */
+  LLM_ENDPOINT: optionalString,
+  LLM_API_KEY: optionalString,
+  /** Model identifier to send in the request body. Default suits OpenAI. */
+  LLM_MODEL: z.string().default('gpt-4o-mini'),
+
+  // OIDC / SSO -------------------------------------------------------------
+  /**
+   * Wave 3 #36 — OpenID Connect single sign-on. When `OIDC_ISSUER_URL` is
+   * set, Tavern fetches `/.well-known/openid-configuration` from it on
+   * boot, exposes a "Sign in with SSO" button on /login, and accepts
+   * callbacks at `/api/auth/sso/callback`. Tested-against:
+   * Keycloak, Authentik, Auth0, Microsoft Entra, Google. SAML deferred.
+   */
+  OIDC_ISSUER_URL: optionalString,
+  OIDC_CLIENT_ID: optionalString,
+  OIDC_CLIENT_SECRET: optionalString,
+  /** Where the IdP redirects after auth. Defaults to `<PUBLIC_BASE_URL>/api/auth/sso/callback`. */
+  OIDC_REDIRECT_URI: optionalString,
+  /** Label shown on the login button. */
+  OIDC_BUTTON_LABEL: z.string().default('Sign in with SSO'),
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -171,5 +257,10 @@ export function describeConfig(cfg: Config): string {
         : `disabled (allowUnscanned=${cfg.ALLOW_UNSCANNED_UPLOADS})`
     }`,
     `  livekit:  ${cfg.LIVEKIT_URL ?? 'disabled (voice/video routes return 503)'}`,
+    `  smtp:     ${
+      cfg.SMTP_HOST
+        ? `${cfg.SMTP_HOST}:${cfg.SMTP_PORT}${cfg.SMTP_SECURE ? ' (tls)' : ''}`
+        : 'disabled (password-reset mails logged to console)'
+    }`,
   ].join('\n');
 }

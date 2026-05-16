@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import crypto from 'node:crypto';
 import { TavernError } from '@tavern/shared';
 import { prisma } from '@tavern/db';
 import type { JwtService } from '../lib/jwt.js';
@@ -48,6 +49,37 @@ async function tryAuthenticate(
   if (!header || !header.startsWith('Bearer ')) return null;
   const token = header.slice('Bearer '.length).trim();
   if (!token) return null;
+
+  // Wave 2 #19 — API tokens for users and bot accounts. Tokens are prefixed
+  // `tvn_pat_` (personal access tokens) or `tvn_bot_` (bot accounts) so we
+  // can short-circuit before the JWT decode attempt and skip the session
+  // table lookup (tokens are session-less).
+  if (token.startsWith('tvn_pat_') || token.startsWith('tvn_bot_')) {
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const apiToken = await prisma.apiToken.findUnique({
+      where: { tokenHash: hash },
+      include: {
+        user: { select: { id: true, isInstanceAdmin: true } },
+      },
+    });
+    if (!apiToken || apiToken.revokedAt) {
+      throw TavernError.unauthorized('Token is no longer valid');
+    }
+    if (apiToken.expiresAt && apiToken.expiresAt < new Date()) {
+      throw TavernError.unauthorized('Token has expired');
+    }
+    // Fire-and-forget lastUsedAt bump so the token list reflects activity.
+    void prisma.apiToken
+      .update({ where: { id: apiToken.id }, data: { lastUsedAt: new Date() } })
+      .catch(() => undefined);
+    return {
+      userId: apiToken.user.id,
+      // Synthetic session id — token auth has no Session row. Routes that
+      // need to revoke "this session" should look up the API token instead.
+      sessionId: `apitoken:${apiToken.id}`,
+      isInstanceAdmin: apiToken.user.isInstanceAdmin,
+    };
+  }
 
   const payload = await jwt.verifyAccess(token);
 

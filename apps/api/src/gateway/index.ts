@@ -38,6 +38,7 @@ import type { JwtService } from '../lib/jwt.js';
 import { getChannelPermissions } from '../services/permissions-service.js';
 import { gatewayBroker, type GatewayEvent } from '../services/gateway-broker.js';
 import { activeBanServerIds } from '../services/ban-service.js';
+import { markConnected, markDisconnected } from '../services/presence-service.js';
 import { voiceStateGatewayPayloadSchema } from '@tavern/shared';
 
 interface Client {
@@ -67,6 +68,21 @@ const BUFFER_MAX = 256;
  * (a single dispatch is typically < 4 KiB). RT-002.
  */
 const MAX_BUFFERED_BYTES = 1 * 1024 * 1024;
+/**
+ * How long we keep a disconnected client's buffered events around for a
+ * potential RESUME. Within this window a same-process reconnect can splice
+ * the orphaned buffer onto its new socket and catch up without a full
+ * state refetch. Past it, RESUME falls back to a fresh READY.
+ */
+const ORPHAN_BUFFER_TTL_MS = 30_000;
+
+interface OrphanedSession {
+  userId: string;
+  seq: number;
+  buffer: Array<{ s: number; payload: GatewayPayload }>;
+  bufferFloor: number;
+  expiresAt: number;
+}
 
 export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
   const clients = new Map<string, Client>();
@@ -77,6 +93,13 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
    * a voice state where the browser dropped without a proper /voice/leave).
    */
   const userConnections = new Map<string, Set<string>>();
+  /**
+   * Buffers belonging to disconnected clients, keyed by their old connection
+   * id (which is what the client sent us as `sessionId` in HELLO). A RESUME
+   * within the TTL adopts the buffer onto its new socket and replays the
+   * events the old socket missed; past the TTL the entry is swept.
+   */
+  const orphanedSessions = new Map<string, OrphanedSession>();
 
   // Wire broker -> sockets.
   const unsub = gatewayBroker.subscribe((event) => {
@@ -115,6 +138,12 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
           /* ignore */
         }
       }
+    }
+    // Sweep orphan buffers past their TTL; the memory they hold scales with
+    // disconnects-per-window, so capping it matters even if no one resumes.
+    const now = Date.now();
+    for (const [sid, orphan] of orphanedSessions) {
+      if (orphan.expiresAt < now) orphanedSessions.delete(sid);
     }
   }, 5_000);
   app.addHook('onClose', async () => clearInterval(interval));
@@ -195,6 +224,19 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
     socket.on('close', () => {
       clearTimeout(identifyTimer);
       clients.delete(id);
+      // RT-010 follow-up: stash the buffer so a near-immediate reconnect can
+      // RESUME and replay events instead of refetching state. Only worth
+      // doing if the client made it past IDENTIFY and actually has buffered
+      // events to hand back.
+      if (client.identified && client.userId && client.buffer.length > 0) {
+        orphanedSessions.set(client.id, {
+          userId: client.userId,
+          seq: client.seq,
+          buffer: client.buffer,
+          bufferFloor: client.bufferFloor,
+          expiresAt: Date.now() + ORPHAN_BUFFER_TTL_MS,
+        });
+      }
       // RT-009: untrack the user's connection set. If this was the last open
       // socket for the user, sweep any presence flags that may have stuck on
       // (a browser tab that crashed without firing /voice/leave). The sweep
@@ -210,6 +252,9 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
             });
           }
         }
+        void markDisconnected(client.userId).catch((err) => {
+          app.log.warn({ err, userId: client.userId }, 'presence markDisconnected failed');
+        });
       }
     });
 
@@ -234,6 +279,10 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
       client.sessionId = access.sid;
       client.identified = true;
       registerUserConnection(client.userId, client.id);
+      // Fire-and-forget: presence broadcast is best-effort, must never delay READY.
+      void markConnected(client.userId).catch((err) => {
+        app.log.warn({ err, userId: client.userId }, 'presence markConnected failed');
+      });
 
       const ready = await buildReadyPayload(access.sub);
       sendDispatch(client, 'READY', ready);
@@ -251,42 +300,50 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
         throw TavernError.unauthorized('Session is no longer valid');
       }
 
-      // RT-003: cross-process resume cannot replay events held only in another
-      // replica's per-process buffer. If the client is asking for a seq we
-      // can't service, surface that explicitly so it can re-IDENTIFY and
-      // refetch state, instead of silently dropping events between READY and
-      // their next dispatch.
-      if (client.bufferFloor > 0 && r.lastSeq < client.bufferFloor) {
-        app.log.warn(
-          { userId: access.sub, requestedSeq: r.lastSeq, bufferFloor: client.bufferFloor },
-          'gateway resume: client lastSeq older than buffer floor; forcing fresh IDENTIFY',
-        );
-        sendRaw(client, {
-          op: GatewayOp.INVALID_SESSION,
-          d: { reason: 'BUFFER_GAP' },
-          s: null,
-          t: null,
-        });
-        return;
-      }
-
       client.userId = access.sub;
       client.sessionId = access.sid;
       client.identified = true;
       registerUserConnection(client.userId, client.id);
+      void markConnected(client.userId).catch((err) => {
+        app.log.warn({ err, userId: client.userId }, 'presence markConnected failed (resume)');
+      });
 
-      // RT-010: when the buffer can service the requested seq, replay
-      // everything after `lastSeq` to the new socket. The previous behaviour
-      // always re-READYed; now a same-process reconnect (overwhelmingly the
-      // common case) catches up without a full state refetch.
-      const replayable = client.buffer.filter((b) => b.s > r.lastSeq);
-      if (replayable.length > 0 && client.bufferFloor <= r.lastSeq + 1) {
+      // RT-010: look up the orphan buffer parked for the prior connection.
+      // Same-process reconnect within the TTL adopts the buffer onto this
+      // new socket and replays everything after the client's lastSeq, so
+      // they don't need a fresh READY.
+      const orphan = orphanedSessions.get(r.sessionId);
+      if (orphan && orphan.userId === access.sub && orphan.expiresAt > Date.now()) {
+        orphanedSessions.delete(r.sessionId);
+        // RT-003: if events were already evicted from the orphan buffer
+        // (because it filled past BUFFER_MAX while disconnected), the client
+        // can't be brought back consistent — force a fresh IDENTIFY instead
+        // of silently dropping events between READY and their next dispatch.
+        if (orphan.bufferFloor > r.lastSeq + 1) {
+          app.log.warn(
+            { userId: access.sub, requestedSeq: r.lastSeq, bufferFloor: orphan.bufferFloor },
+            'gateway resume: orphan bufferFloor advanced past client lastSeq; BUFFER_GAP',
+          );
+          sendRaw(client, {
+            op: GatewayOp.INVALID_SESSION,
+            d: { reason: 'BUFFER_GAP' },
+            s: null,
+            t: null,
+          });
+          return;
+        }
+        client.seq = orphan.seq;
+        client.buffer = orphan.buffer;
+        client.bufferFloor = orphan.bufferFloor;
+        const replayable = orphan.buffer.filter((b) => b.s > r.lastSeq);
         for (const item of replayable) {
           sendRaw(client, item.payload);
         }
         return;
       }
-      // Cross-process or buffer-empty resume: fall back to a fresh READY.
+
+      // No live orphan (cross-process, TTL expired, or first-time mismatch).
+      // Fall back to a fresh READY so the client repopulates from scratch.
       const ready = await buildReadyPayload(access.sub);
       sendDispatch(client, 'READY', ready);
       return;
@@ -309,9 +366,17 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
     // (channelId, userId) — every viewer-of-the-same-channel hits the same
     // entry after the first fetch. The cache lives for one fanout call only.
     const channelPermCache = new Map<string, ReturnType<typeof getChannelPermissions>>();
+    // PRESENCE-001: precompute the audience (users who share a server or DM
+    // with the target) once per fanout instead of running per-recipient
+    // queries inside shouldDeliver. Two queries up front beats O(n) per
+    // open socket on every idle ↔ active flip.
+    let presenceAudience: Set<string> | null = null;
+    if (event.type === 'PRESENCE_UPDATE' && event.userId) {
+      presenceAudience = await computePresenceAudience(event.userId);
+    }
     for (const c of clientsMap.values()) {
       if (!c.identified || !c.userId) continue;
-      const should = await shouldDeliver(event, c.userId, channelPermCache);
+      const should = await shouldDeliver(event, c.userId, channelPermCache, presenceAudience);
       if (!should) continue;
       sendDispatch(c, event.type, event.data);
     }
@@ -422,6 +487,35 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
   void gatewayHelloPayloadSchema;
 }
 
+/**
+ * Set of user ids who can see `targetUserId`'s presence — anyone who shares
+ * at least one server, plus anyone who is a member of a DM channel with
+ * them. Two queries; results are unioned. The target itself is excluded —
+ * callers handle self-delivery directly.
+ */
+async function computePresenceAudience(targetUserId: string): Promise<Set<string>> {
+  const [sharedServerMembers, sharedDmMembers] = await Promise.all([
+    prisma.serverMember.findMany({
+      where: {
+        userId: { not: targetUserId },
+        server: { members: { some: { userId: targetUserId } } },
+      },
+      select: { userId: true },
+    }),
+    prisma.dmChannelMember.findMany({
+      where: {
+        userId: { not: targetUserId },
+        channel: { members: { some: { userId: targetUserId } } },
+      },
+      select: { userId: true },
+    }),
+  ]);
+  const audience = new Set<string>();
+  for (const m of sharedServerMembers) audience.add(m.userId);
+  for (const m of sharedDmMembers) audience.add(m.userId);
+  return audience;
+}
+
 async function buildReadyPayload(userId: string): Promise<unknown> {
   const [memberships, bannedFrom] = await Promise.all([
     prisma.serverMember.findMany({
@@ -452,7 +546,27 @@ async function shouldDeliver(
   event: GatewayEvent,
   userId: string,
   channelPermCache?: Map<string, ReturnType<typeof getChannelPermissions>>,
+  presenceAudience?: Set<string> | null,
 ): Promise<boolean> {
+  // PRESENCE_UPDATE: deliver only to the target themselves plus the set of
+  // users who share a server or DM with them. The audience is precomputed
+  // once per fanout and passed in. The event.userId field marks the *target*
+  // (whose presence changed), not a recipient filter.
+  if (event.type === 'PRESENCE_UPDATE') {
+    if (!event.userId) return false;
+    if (event.userId === userId) return true;
+    return presenceAudience?.has(userId) ?? false;
+  }
+
+  // DM routing: membership in the DmChannel grants delivery.
+  if (event.dmChannelId) {
+    const m = await prisma.dmChannelMember.findUnique({
+      where: { dmChannelId_userId: { dmChannelId: event.dmChannelId, userId } },
+      select: { userId: true },
+    });
+    return Boolean(m);
+  }
+
   if (event.userId && event.userId !== userId) return false;
   if (event.userId === userId) return true;
 

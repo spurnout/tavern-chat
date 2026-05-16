@@ -27,6 +27,7 @@ export interface GatewayEvent<T = unknown> {
   type: GatewayDispatchEventName;
   serverId?: string | undefined;
   channelId?: string | undefined;
+  dmChannelId?: string | undefined;
   userId?: string | undefined;
   data: T;
 }
@@ -45,7 +46,14 @@ class InProcessBroker implements GatewayBrokerHandle {
   }
 
   publish<T>(event: GatewayEvent<T>): void {
-    this.emitter.emit('event', event);
+    // Publish is fire-and-forget by contract. A throwing subscriber must
+    // never propagate into the route handler that triggered the publish —
+    // a typing-broadcast or voice-state hiccup should not 500 the request.
+    try {
+      this.emitter.emit('event', event);
+    } catch (err) {
+      console.warn('[gateway-broker] in-process publish failed', err);
+    }
   }
 
   subscribe(handler: (event: GatewayEvent) => void): () => void {
@@ -108,7 +116,18 @@ class RedisBroker implements GatewayBrokerHandle {
   }
 
   publish<T>(event: GatewayEvent<T>): void {
-    void this.publisher.publish(RedisBroker.CHANNEL, JSON.stringify(event));
+    // Same fire-and-forget contract as InProcessBroker. If the publisher is
+    // in a transient bad state (reconnect in progress, etc.) ioredis can
+    // throw synchronously; never let that bubble into the route handler.
+    try {
+      void this.publisher.publish(RedisBroker.CHANNEL, JSON.stringify(event));
+    } catch (err) {
+      this.log({
+        msg: 'gateway.broker.publish_failed',
+        err: err instanceof Error ? err.message : String(err),
+        type: event.type,
+      });
+    }
   }
 
   subscribe(handler: (event: GatewayEvent) => void): () => void {

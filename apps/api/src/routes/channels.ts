@@ -109,6 +109,9 @@ export async function registerChannelRoutes(app: FastifyInstance): Promise<void>
         ...(body.videoEnabled !== undefined ? { videoEnabled: body.videoEnabled } : {}),
         ...(body.position !== undefined ? { position: body.position } : {}),
         ...(body.parentId !== undefined ? { parentId: body.parentId } : {}),
+        // Wave 2 #8 / #9 — slow mode and posting scope.
+        ...(body.slowmodeSeconds !== undefined ? { slowmodeSeconds: body.slowmodeSeconds } : {}),
+        ...(body.postingScope !== undefined ? { postingScope: body.postingScope } : {}),
       },
     });
     await writeAuditEntry({
