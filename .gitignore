@@ -60,3 +60,8 @@ logs/
 # Temp
 tmp/
 .temp/
+
+# Claude Code local state (memory, plans, project metadata)
+.claude/
+# AGENTS.md is per-clone agent config — keep local
+AGENTS.md
