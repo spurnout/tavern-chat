@@ -3,6 +3,56 @@
 This file is the source of truth for what is **wired end-to-end**. Honest
 status, no aspiration.
 
+## Wave 3 (autonomous run, 2026-05-14 → 2026-05-15)
+
+Six autonomous batches plus the seventh UI close-out batch. Backend
+wired end-to-end across all items; the four batch-7 UI surfaces still
+need a click-through (#25 stage rooms, #29 breakouts, #32 recording,
+#34 whiteboard).
+
+| # | Feature | Status |
+|---|---------|--------|
+| 35 | WebAuthn passkeys (second factor alongside TOTP) | Built |
+| 37 | Password reset via email | Built |
+| 38 | GDPR user data export (zip download) | Built |
+| 39 | Server backup zip + download | Built |
+| 43 | Content warnings / spoiler / NSFW (verified built) | Built |
+| 5  | Cross-device draft sync | Built |
+| 8  | Forum-style channels (`type: 'forum'`) | Built |
+| 11 | Code block syntax highlighting + diff rendering | Built |
+| 12 | Reminder follow-ups | Built |
+| 46 | Native PWA + push notifications | Built |
+| 19 | Music & ambient pads | Built |
+| 20 | Card decks | Built |
+| 21 | Campaign wiki (`[[wikilink]]`) | Built |
+| 23 | Safety tools panel (X-card, lines & veils) | Built |
+| 16 | Combat tracker overlay (verified built) | Built |
+| 17 | GM screen (NPC roster, secret rolls) | Built |
+| 25 | Stage rooms (raise hand, promote/demote) — UI batch 7 | Built |
+| 31 | Per-user audio mixer (per-peer volume slider) | Built |
+| 40 | Discord/Slack/Matrix JSON importer | Built |
+| 44 | Accessibility pass (keyboard nav, ARIA, reduced motion) | Built |
+| 26 | Watch parties (MP4; YouTube link deferred) | Built |
+| 49 | BYO storage docs (S3/Garage) | Built |
+| 29 | Breakout rooms — UI batch 7 | Built |
+| 30 | Noise suppression (browser-level via `getUserMedia`) | Built |
+| 32 | Recording with consent — UI batch 7 | Built |
+| 33 | Live captions (Chromium `SpeechRecognition`) | Built |
+| 34 | Whiteboard — UI batch 7 | Built |
+| 36 | SSO via OIDC | Built |
+| 47 | Plugin SDK manifest (`plugin.json`) | Built |
+| 48 | AI session recap (OpenAI-compatible endpoint) | Built |
+
+Permanent exclusion: **#45 Federation** — the Tavern manifesto rules it
+out and the self-hosted-private-community framing actively benefits from
+being a closed graph.
+
+V2 follow-ups documented inline in the per-batch results
+(`C:\Users\spurn\.claude\plans\can-you-go-ahead-atomic-mango.md`):
+LiveKit Egress for server-side recording, Whisper-based captions,
+SAML SSO, CRDT whiteboard, VM-isolated plugin execution, streamed LLM
+responses, native Dropbox/Nextcloud storage backends.
+
 ## Phase 0 — Foundation
 
 | Item | Status |
