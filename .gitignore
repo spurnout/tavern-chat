@@ -65,3 +65,5 @@ tmp/
 .claude/
 # AGENTS.md is per-clone agent config — keep local
 AGENTS.md
+# Internal design mockup drafts dropped at repo root — not for tracking
+tavern-admin-mockup.html
