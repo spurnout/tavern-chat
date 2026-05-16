@@ -50,90 +50,104 @@ export async function registerTotpRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  app.post('/api/me/totp/setup', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: ctx.userId },
-      select: { username: true, totpEnabled: true },
-    });
-    if (user.totpEnabled) {
-      throw TavernError.validation('2FA is already enabled — disable it first to re-enrol');
-    }
-    const { secret } = generateTotpSecret();
-    await prisma.user.update({
-      where: { id: ctx.userId },
-      data: { totpSecret: secret },
-    });
-    const url = otpauthUrl(secret, user.username, APP_NAME);
-    reply.send(ok({ secret, otpauthUrl: url }));
+  app.post('/api/me/totp/setup', {
+    config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { id: ctx.userId },
+        select: { username: true, totpEnabled: true },
+      });
+      if (user.totpEnabled) {
+        throw TavernError.validation('2FA is already enabled — disable it first to re-enrol');
+      }
+      const { secret } = generateTotpSecret();
+      await prisma.user.update({
+        where: { id: ctx.userId },
+        data: { totpSecret: secret },
+      });
+      const url = otpauthUrl(secret, user.username, APP_NAME);
+      reply.send(ok({ secret, otpauthUrl: url }));
+    },
   });
 
-  app.post('/api/me/totp/verify', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    const body = codeBodySchema.parse(req.body);
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: ctx.userId },
-      select: { totpSecret: true, totpEnabled: true },
-    });
-    if (!user.totpSecret) throw TavernError.validation('Setup first via /me/totp/setup');
-    if (user.totpEnabled) throw TavernError.validation('2FA already enabled');
-    if (!verifyTotp(user.totpSecret, body.code)) {
-      throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
-    }
-    const backup = generateBackupCodes(10);
-    await prisma.user.update({
-      where: { id: ctx.userId },
-      data: {
-        totpEnabled: true,
-        totpBackupCodes: backup.map(hashBackupCode),
-      },
-    });
-    reply.send(ok({ enabled: true, backupCodes: backup }));
+  app.post('/api/me/totp/verify', {
+    // Tight limit — verify accepts a 6-digit code; without throttling an
+    // attacker who's stolen a session could brute-force the second factor.
+    config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const body = codeBodySchema.parse(req.body);
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { id: ctx.userId },
+        select: { totpSecret: true, totpEnabled: true },
+      });
+      if (!user.totpSecret) throw TavernError.validation('Setup first via /me/totp/setup');
+      if (user.totpEnabled) throw TavernError.validation('2FA already enabled');
+      if (!verifyTotp(user.totpSecret, body.code)) {
+        throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
+      }
+      const backup = generateBackupCodes(10);
+      await prisma.user.update({
+        where: { id: ctx.userId },
+        data: {
+          totpEnabled: true,
+          totpBackupCodes: backup.map(hashBackupCode),
+        },
+      });
+      reply.send(ok({ enabled: true, backupCodes: backup }));
+    },
   });
 
-  app.post('/api/me/totp/disable', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    const body = codeBodySchema.parse(req.body);
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: ctx.userId },
-      select: { totpSecret: true, totpEnabled: true, totpBackupCodes: true },
-    });
-    if (!user.totpEnabled) throw TavernError.validation('2FA is not enabled');
-    const ok2 = user.totpSecret ? verifyTotp(user.totpSecret, body.code) : false;
-    const backup = Array.isArray(user.totpBackupCodes) ? (user.totpBackupCodes as string[]) : [];
-    const matchedBackup = !ok2 && backup.includes(hashBackupCode(body.code));
-    if (!ok2 && !matchedBackup) {
-      throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
-    }
-    await prisma.user.update({
-      where: { id: ctx.userId },
-      data: {
-        totpSecret: null,
-        totpEnabled: false,
-        totpBackupCodes: [],
-      },
-    });
-    reply.send(ok({ enabled: false }));
+  app.post('/api/me/totp/disable', {
+    config: { rateLimit: { max: 10, timeWindow: '5 minutes' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const body = codeBodySchema.parse(req.body);
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { id: ctx.userId },
+        select: { totpSecret: true, totpEnabled: true, totpBackupCodes: true },
+      });
+      if (!user.totpEnabled) throw TavernError.validation('2FA is not enabled');
+      const ok2 = user.totpSecret ? verifyTotp(user.totpSecret, body.code) : false;
+      const backup = Array.isArray(user.totpBackupCodes) ? (user.totpBackupCodes as string[]) : [];
+      const matchedBackup = !ok2 && backup.includes(hashBackupCode(body.code));
+      if (!ok2 && !matchedBackup) {
+        throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
+      }
+      await prisma.user.update({
+        where: { id: ctx.userId },
+        data: {
+          totpSecret: null,
+          totpEnabled: false,
+          totpBackupCodes: [],
+        },
+      });
+      reply.send(ok({ enabled: false }));
+    },
   });
 
-  app.post('/api/me/totp/backup-codes', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    const body = codeBodySchema.parse(req.body);
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: ctx.userId },
-      select: { totpSecret: true, totpEnabled: true },
-    });
-    if (!user.totpEnabled || !user.totpSecret) {
-      throw TavernError.validation('2FA is not enabled');
-    }
-    if (!verifyTotp(user.totpSecret, body.code)) {
-      throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
-    }
-    const codes = generateBackupCodes(10);
-    await prisma.user.update({
-      where: { id: ctx.userId },
-      data: { totpBackupCodes: codes.map(hashBackupCode) },
-    });
-    reply.send(ok({ backupCodes: codes }));
+  app.post('/api/me/totp/backup-codes', {
+    config: { rateLimit: { max: 5, timeWindow: '5 minutes' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const body = codeBodySchema.parse(req.body);
+      const user = await prisma.user.findUniqueOrThrow({
+        where: { id: ctx.userId },
+        select: { totpSecret: true, totpEnabled: true },
+      });
+      if (!user.totpEnabled || !user.totpSecret) {
+        throw TavernError.validation('2FA is not enabled');
+      }
+      if (!verifyTotp(user.totpSecret, body.code)) {
+        throw new TavernError('INVALID_CREDENTIALS', 'Code did not match', 400);
+      }
+      const codes = generateBackupCodes(10);
+      await prisma.user.update({
+        where: { id: ctx.userId },
+        data: { totpBackupCodes: codes.map(hashBackupCode) },
+      });
+      reply.send(ok({ backupCodes: codes }));
+    },
   });
 }

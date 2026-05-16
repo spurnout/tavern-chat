@@ -82,13 +82,18 @@ export async function registerSsoRoutes(app: FastifyInstance, opts: SsoRouteOpts
     },
   });
 
-  app.post('/api/me/sso/start', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    if (!opts.oidc.isEnabled()) {
-      throw new TavernError('INTERNAL_ERROR', 'SSO is not configured.', 503);
-    }
-    const url = await opts.oidc.buildAuthorizeUrl({ linkingUserId: ctx.userId });
-    reply.send(ok({ url }));
+  app.post('/api/me/sso/start', {
+    // Bounds the rate at which a session can mint OIDC authorize URLs — keeps
+    // a stolen session from hammering the upstream IdP.
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      if (!opts.oidc.isEnabled()) {
+        throw new TavernError('INTERNAL_ERROR', 'SSO is not configured.', 503);
+      }
+      const url = await opts.oidc.buildAuthorizeUrl({ linkingUserId: ctx.userId });
+      reply.send(ok({ url }));
+    },
   });
 
   app.post('/api/me/sso/unlink', async (req, reply) => {

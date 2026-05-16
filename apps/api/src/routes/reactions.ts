@@ -77,37 +77,42 @@ export async function registerReactionRoutes(app: FastifyInstance): Promise<void
     );
   });
 
-  app.put('/api/messages/:id/reactions/:emoji', async (req, reply) => {
-    const ctx = await app.requireUser(req, reply);
-    const { id, emoji } = z
-      .object({ id: idSchema, emoji: reactionEmojiSchema })
-      .parse(req.params);
-    const message = await prisma.message.findUnique({
-      where: { id },
-      select: { channelId: true, dmChannelId: true, deletedAt: true, serverId: true },
-    });
-    if (!message || message.deletedAt) throw TavernError.notFound();
-    await authorizeReaction(message, ctx.userId);
+  app.put('/api/messages/:id/reactions/:emoji', {
+    // Generous limit — reactions are normal social behavior, but bounded so
+    // a runaway client can't spam the realtime fan-out.
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      const ctx = await app.requireUser(req, reply);
+      const { id, emoji } = z
+        .object({ id: idSchema, emoji: reactionEmojiSchema })
+        .parse(req.params);
+      const message = await prisma.message.findUnique({
+        where: { id },
+        select: { channelId: true, dmChannelId: true, deletedAt: true, serverId: true },
+      });
+      if (!message || message.deletedAt) throw TavernError.notFound();
+      await authorizeReaction(message, ctx.userId);
 
-    if (emoji.startsWith('custom:')) {
-      const emojiId = emoji.slice('custom:'.length);
-      const custom = await prisma.customEmoji.findUnique({ where: { id: emojiId } });
-      // Custom emojis are server-scoped; DM messages can only use unicode
-      // (or any custom emoji is rejected since there's no serverId to match).
-      if (!custom || custom.serverId !== message.serverId) {
-        throw TavernError.validation('Custom emoji unavailable in this channel');
+      if (emoji.startsWith('custom:')) {
+        const emojiId = emoji.slice('custom:'.length);
+        const custom = await prisma.customEmoji.findUnique({ where: { id: emojiId } });
+        // Custom emojis are server-scoped; DM messages can only use unicode
+        // (or any custom emoji is rejected since there's no serverId to match).
+        if (!custom || custom.serverId !== message.serverId) {
+          throw TavernError.validation('Custom emoji unavailable in this channel');
+        }
       }
-    }
 
-    await prisma.messageReaction.upsert({
-      where: { messageId_userId_emoji: { messageId: id, userId: ctx.userId, emoji } },
-      create: { messageId: id, userId: ctx.userId, emoji },
-      update: {},
-    });
-    gatewayBroker.publish(
-      reactionEvent('REACTION_ADD', message, { messageId: id, userId: ctx.userId, emoji }),
-    );
-    reply.send(ok({ ok: true }));
+      await prisma.messageReaction.upsert({
+        where: { messageId_userId_emoji: { messageId: id, userId: ctx.userId, emoji } },
+        create: { messageId: id, userId: ctx.userId, emoji },
+        update: {},
+      });
+      gatewayBroker.publish(
+        reactionEvent('REACTION_ADD', message, { messageId: id, userId: ctx.userId, emoji }),
+      );
+      reply.send(ok({ ok: true }));
+    },
   });
 
   app.delete('/api/messages/:id/reactions/:emoji', async (req, reply) => {
