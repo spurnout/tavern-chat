@@ -57,6 +57,27 @@ export const rsvpSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+/**
+ * Live-session dock payload — what `GET /channels/:id/live-session` returns
+ * when an active session is bound to the channel. The `agenda` string on the
+ * session doubles as the scene-beats source: lines that start with `*` (or
+ * `>`) mark the currently-active beat. This is a stopgap until a dedicated
+ * SceneBeat model lands.
+ */
+export const liveSessionGmNoteSchema = z.object({
+  id: idSchema,
+  title: z.string(),
+  body: z.string(),
+  pinned: z.boolean(),
+  updatedAt: z.string().datetime(),
+});
+
+export const liveSessionPayloadSchema = z.object({
+  session: campaignSessionSchema,
+  isGm: z.boolean(),
+  gmNotes: z.array(liveSessionGmNoteSchema),
+});
+
 export type CampaignSessionStatus = z.infer<typeof campaignSessionStatusSchema>;
 export type RsvpStatus = z.infer<typeof rsvpStatusSchema>;
 export type CampaignSession = z.infer<typeof campaignSessionSchema>;
@@ -64,3 +85,5 @@ export type CreateCampaignSessionRequest = z.infer<typeof createCampaignSessionR
 export type UpdateCampaignSessionRequest = z.infer<typeof updateCampaignSessionRequestSchema>;
 export type RsvpRequest = z.infer<typeof rsvpRequestSchema>;
 export type Rsvp = z.infer<typeof rsvpSchema>;
+export type LiveSessionGmNote = z.infer<typeof liveSessionGmNoteSchema>;
+export type LiveSessionPayload = z.infer<typeof liveSessionPayloadSchema>;

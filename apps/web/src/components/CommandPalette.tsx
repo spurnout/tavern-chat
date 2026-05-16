@@ -1,0 +1,302 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from '@tanstack/react-router';
+import {
+  Flame,
+  Gavel,
+  Hash,
+  Home,
+  MessageCircle,
+  Plus,
+  Search,
+  Settings,
+  Shield,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { useRealtime } from '../lib/store.js';
+import {
+  actionCommands,
+  searchCommands,
+  type PaletteEntry,
+  type PaletteGroup,
+  type PaletteIcon,
+} from '../lib/palette-commands.js';
+
+/**
+ * Wave 3 #6 — Cmd/Ctrl+K command palette. Fuzzy-find across rooms, DMs, and
+ * settings; trigger app-shell actions; search messages. Grouped into
+ * **Jump to** / **Action** / **Search**.
+ */
+export function CommandPalette(): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const params = useParams({ strict: false }) as { serverId?: string };
+  const serversById = useRealtime((s) => s.serversById);
+  const channelsByServer = useRealtime((s) => s.channelsByServer);
+  const dmChannelsById = useRealtime((s) => s.dmChannelsById);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      const trigger = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
+      if (trigger) {
+        e.preventDefault();
+        setOpen((v) => !v);
+      } else if (open && e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      queueMicrotask(() => inputRef.current?.focus());
+      setQ('');
+      setActive(0);
+    }
+  }, [open]);
+
+  const jumpEntries = useMemo<PaletteEntry[]>(() => {
+    const out: PaletteEntry[] = [
+      {
+        id: 'jump:home',
+        group: 'jump',
+        label: 'Home',
+        hint: 'Taverns index',
+        icon: 'home',
+        go: () => void navigate({ to: '/app' }),
+      },
+      {
+        id: 'jump:dms',
+        group: 'jump',
+        label: 'Direct messages',
+        hint: 'DMs',
+        icon: 'dm',
+        go: () => void navigate({ to: '/app/dms' }),
+      },
+      {
+        id: 'jump:account',
+        group: 'jump',
+        label: 'Account settings',
+        hint: '2FA, sessions, data, themes',
+        icon: 'settings',
+        go: () => void navigate({ to: '/app/account' }),
+      },
+    ];
+    for (const [serverId, channels] of Object.entries(channelsByServer)) {
+      const serverName = serversById[serverId]?.name ?? '…';
+      for (const c of channels) {
+        if (c.type === 'voice' || c.type === 'category') continue;
+        out.push({
+          id: `jump:room:${c.id}`,
+          group: 'jump',
+          label: `#${c.name}`,
+          hint: serverName,
+          icon: 'hash',
+          go: () =>
+            void navigate({
+              to: '/app/servers/$serverId/channels/$channelId',
+              params: { serverId, channelId: c.id },
+            }),
+        });
+      }
+    }
+    for (const dm of Object.values(dmChannelsById)) {
+      out.push({
+        id: `jump:dm:${dm.id}`,
+        group: 'jump',
+        label: dm.name ?? 'DM',
+        hint: 'Direct message',
+        icon: 'dm',
+        go: () =>
+          void navigate({
+            to: '/app/dms/$dmChannelId',
+            params: { dmChannelId: dm.id },
+          }),
+      });
+    }
+    return out;
+  }, [serversById, channelsByServer, dmChannelsById, navigate]);
+
+  const actionEntries = useMemo<PaletteEntry[]>(
+    () => actionCommands({ navigate, activeServerId: params.serverId ?? null }),
+    [navigate, params.serverId],
+  );
+
+  const searchEntries = useMemo<PaletteEntry[]>(
+    () => searchCommands({ navigate, activeServerId: params.serverId ?? null, query: q }),
+    [navigate, params.serverId, q],
+  );
+
+  const filtered = useMemo<PaletteEntry[]>(() => {
+    const needle = q.trim().toLowerCase();
+    function match(e: PaletteEntry): boolean {
+      if (!needle) return true;
+      return `${e.label} ${e.hint ?? ''}`.toLowerCase().includes(needle);
+    }
+    // Search items always appear at the bottom when the query is non-empty.
+    const jumps = jumpEntries.filter(match).slice(0, 25);
+    const actions = actionEntries.filter(match);
+    return [...jumps, ...actions, ...searchEntries];
+  }, [jumpEntries, actionEntries, searchEntries, q]);
+
+  useEffect(() => setActive(0), [q]);
+
+  if (!open) return null;
+
+  const grouped = groupBy(filtered);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Command palette"
+      className="fixed inset-0 z-50 grid place-items-start pt-[10vh]"
+      onClick={() => setOpen(false)}
+    >
+      <div
+        className="w-full max-w-xl rounded-lg border border-subtle bg-surface shadow-xl"
+        style={{ margin: '0 auto' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center gap-2 border-b border-subtle px-3 py-2">
+          <Search size={14} className="text-fg-muted" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Find a room, member, message, or action…"
+            className="flex-1 bg-transparent text-sm outline-none"
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive((i) => Math.min(i + 1, filtered.length - 1));
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive((i) => Math.max(i - 1, 0));
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const choice = filtered[active];
+                if (choice) {
+                  choice.go();
+                  setOpen(false);
+                }
+              }
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="rounded p-1 hover:bg-raised"
+            aria-label="Close"
+          >
+            <X size={12} />
+          </button>
+        </header>
+        <div className="max-h-96 overflow-y-auto py-1">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-4 text-sm text-fg-muted">No matches.</p>
+          ) : null}
+          {(['jump', 'action', 'search'] as const).map((g) =>
+            grouped[g].length === 0 ? null : (
+              <section key={g}>
+                <div className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-fg-faint">
+                  {labelForGroup(g)}
+                </div>
+                <ul>
+                  {grouped[g].map((e) => {
+                    const idx = filtered.indexOf(e);
+                    return (
+                      <li key={e.id}>
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActive(idx)}
+                          onClick={() => {
+                            e.go();
+                            setOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                            idx === active ? 'bg-tint-ember text-ember-hi' : 'text-fg-muted'
+                          }`}
+                        >
+                          <IconFor name={e.icon} active={idx === active} />
+                          <span className={idx === active ? 'text-ember-hi' : 'text-fg'}>
+                            {e.label}
+                          </span>
+                          {e.hint ? (
+                            <span className="ml-auto truncate text-xs text-fg-faint">
+                              {e.hint}
+                            </span>
+                          ) : null}
+                          {e.kbd ? (
+                            <kbd className="ml-2 rounded border border-subtle bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-fg-faint">
+                              {e.kbd}
+                            </kbd>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ),
+          )}
+        </div>
+        <footer className="border-t border-subtle px-3 py-1.5 text-xs text-fg-muted">
+          <span className="font-mono">↑ ↓</span> to navigate ·{' '}
+          <span className="font-mono">Enter</span> to open ·{' '}
+          <span className="font-mono">Esc</span> to close
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function groupBy(entries: PaletteEntry[]): Record<PaletteGroup, PaletteEntry[]> {
+  const out: Record<PaletteGroup, PaletteEntry[]> = { jump: [], action: [], search: [] };
+  for (const e of entries) out[e.group].push(e);
+  return out;
+}
+
+function labelForGroup(group: PaletteGroup): string {
+  switch (group) {
+    case 'jump':
+      return 'Jump to';
+    case 'action':
+      return 'Action';
+    case 'search':
+      return 'Search';
+  }
+}
+
+function IconFor({ name, active }: { name: PaletteIcon; active: boolean }): JSX.Element {
+  const size = 14;
+  const className = active ? 'text-ember' : 'text-fg-muted';
+  switch (name) {
+    case 'hash':
+      return <Hash size={size} className={className} />;
+    case 'dm':
+      return <MessageCircle size={size} className={className} />;
+    case 'settings':
+      return <Settings size={size} className={className} />;
+    case 'search':
+      return <Search size={size} className={className} />;
+    case 'plus':
+      return <Plus size={size} className={className} />;
+    case 'flame':
+      return <Flame size={size} className={className} />;
+    case 'gavel':
+      return <Gavel size={size} className={className} />;
+    case 'shield':
+      return <Shield size={size} className={className} />;
+    case 'sparkles':
+      return <Sparkles size={size} className={className} />;
+    default:
+      return <Home size={size} className={className} />;
+  }
+}

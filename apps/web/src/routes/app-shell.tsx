@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Outlet, useNavigate, useParams } from '@tanstack/react-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, Outlet, useNavigate, useParams, useRouterState } from '@tanstack/react-router';
 import {
   Dice5,
   Hash,
   LogOut,
+  User as UserIcon,
+  MessageCircle,
   Menu,
   Monitor,
   Plus,
@@ -16,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.js';
 import { useAnyScreenSharing, useRealtime } from '../lib/store.js';
+import { useNotificationSettings } from '../lib/notification-settings.js';
 import { startRealtime, stopRealtime } from '../lib/realtime.js';
 import { api } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -23,6 +26,14 @@ import type { Channel, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
 import { CreateServerModal } from '../components/CreateServerModal.js';
 import { CreateChannelModal } from '../components/CreateChannelModal.js';
+import { NotificationSettingsModal } from '../components/NotificationSettingsModal.js';
+import { UserStatusPopover } from '../components/UserStatusPopover.js';
+import { VoiceRoom } from '../components/VoiceRoom.js';
+import { InboxPanel } from '../components/InboxPanel.js';
+import { SavedPanel } from '../components/SavedPanel.js';
+import { ImageLightbox } from '../components/ImageLightbox.js';
+import { CommandPalette } from '../components/CommandPalette.js';
+import { onUi } from '../lib/ui-events.js';
 
 export function AppShell(): JSX.Element {
   const me = useAuth((s) => s.me);
@@ -39,15 +50,60 @@ export function AppShell(): JSX.Element {
   const channelsByServer = useRealtime((s) => s.channelsByServer);
   const upsertServer = useRealtime((s) => s.upsertServer);
   const upsertChannels = useRealtime((s) => s.upsertChannels);
+  const setActiveChannelId = useRealtime((s) => s.setActiveChannelId);
 
   const params = useParams({ strict: false }) as {
     serverId?: string;
     channelId?: string;
   };
 
+  // Persistent voice: the LiveKit session lives on the AppShell so it
+  // survives navigation to other channels. The voice route just records
+  // the user's intent in `currentVoice`; the actual <VoiceRoom> is mounted
+  // below and stays alive until the user hits hangup.
+  const currentVoice = useRealtime((s) => s.currentVoice);
+  const setCurrentVoice = useRealtime((s) => s.setCurrentVoice);
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isOnVoiceRoute =
+    !!currentVoice && pathname === `/app/servers/${currentVoice.serverId}/voice/${currentVoice.channelId}`;
+
+  const handleVoiceLeave = useCallback((): void => {
+    const voice = useRealtime.getState().currentVoice;
+    setCurrentVoice(null);
+    // If they hit hangup from the expanded view, send them back to the
+    // server home. From the minimized bar on another channel, stay put.
+    if (voice && pathname === `/app/servers/${voice.serverId}/voice/${voice.channelId}`) {
+      void navigate({ to: '/app/servers/$serverId', params: { serverId: voice.serverId } });
+    }
+  }, [setCurrentVoice, navigate, pathname]);
+
+  const handleVoiceExpand = useCallback((): void => {
+    if (!currentVoice) return;
+    void navigate({
+      to: '/app/servers/$serverId/voice/$channelId',
+      params: { serverId: currentVoice.serverId, channelId: currentVoice.channelId },
+    });
+  }, [navigate, currentVoice]);
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [createServerOpen, setCreateServerOpen] = useState(false);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
+  const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+
+  // Palette → shell signals: the command palette dispatches typed UI events
+  // (e.g. "open the create-server modal") so distant call sites don't need to
+  // thread callbacks down through the tree.
+  useEffect(() => {
+    return onUi((e) => {
+      if (e.kind === 'open-create-server') setCreateServerOpen(true);
+      else if (e.kind === 'open-create-channel') {
+        if (params.serverId) setCreateChannelOpen(true);
+        else toast.info('Pick a tavern first, then open a new room.');
+      } else if (e.kind === 'open-notification-settings') {
+        setNotificationSettingsOpen(true);
+      }
+    });
+  }, [params.serverId]);
 
   // FE-03: ref-guarded one-shot auto-navigate. The original effect had a
   // blank deps array and captured the mount-time value of params.serverId; if
@@ -57,6 +113,11 @@ export function AppShell(): JSX.Element {
   const autoNavigatedRef = useRef(false);
   useEffect(() => {
     startRealtime();
+    // Fetch the user's global notification preferences once on shell mount.
+    // Per-tavern prefs load lazily when the relevant settings tab opens.
+    void useNotificationSettings.getState().loadGlobal();
+    // Wave 3 #5 — pull cross-device composer drafts. Cheap; never blocks UI.
+    void useRealtime.getState().loadDrafts();
     api<Server[]>('/servers')
       .then((list) => {
         for (const s of list) upsertServer(s);
@@ -89,6 +150,14 @@ export function AppShell(): JSX.Element {
   useEffect(() => {
     setDrawerOpen(false);
   }, [params.channelId, params.serverId]);
+
+  // Mirror the active channel id into the store so the chat-sound gate
+  // can tell "viewing this channel right now" from "in the app but
+  // elsewhere." Cleared on unmount so a stale id doesn't leak.
+  useEffect(() => {
+    setActiveChannelId(params.channelId ?? null);
+    return () => setActiveChannelId(null);
+  }, [params.channelId, setActiveChannelId]);
 
   const activeServer = params.serverId ? servers.find((s) => s.id === params.serverId) : null;
   const channels = params.serverId ? (channelsByServer[params.serverId] ?? []) : [];
@@ -133,6 +202,7 @@ export function AppShell(): JSX.Element {
           me={me}
           onLogout={() => void logout()}
           onCreateChannel={() => setCreateChannelOpen(true)}
+          onOpenSettings={() => setNotificationSettingsOpen(true)}
         />
       </div>
 
@@ -147,7 +217,33 @@ export function AppShell(): JSX.Element {
       ) : null}
 
       <main id="main-content" tabIndex={-1} className="flex min-w-0 flex-1 flex-col focus:outline-none">
-        <Outlet />
+        {/* Route content. Hidden (but still mounted, so VoicePage's effect
+            keeps firing) when the voice room is expanded over this column. */}
+        <div
+          className={cn(
+            'flex min-w-0 flex-1 flex-col',
+            currentVoice && isOnVoiceRoute ? 'hidden' : 'flex',
+          )}
+        >
+          <Outlet />
+        </div>
+        {/* Persistent voice room. Same component instance on every render —
+            navigating from /voice/$id to /channels/$id flips `minimized`
+            but never unmounts <VoiceRoom>, so the LiveKit Room and the
+            user's camera/mic state survive across channel changes. */}
+        {currentVoice ? (
+          <div className={isOnVoiceRoute ? 'flex min-w-0 flex-1 flex-col' : 'shrink-0'}>
+            <VoiceRoom
+              key={currentVoice.channelId}
+              channelId={currentVoice.channelId}
+              channelName={currentVoice.channelName}
+              serverId={currentVoice.serverId}
+              minimized={!isOnVoiceRoute}
+              onLeave={handleVoiceLeave}
+              onExpand={handleVoiceExpand}
+            />
+          </div>
+        ) : null}
       </main>
 
       <CreateServerModal open={createServerOpen} onOpenChange={setCreateServerOpen} />
@@ -158,6 +254,12 @@ export function AppShell(): JSX.Element {
           onOpenChange={setCreateChannelOpen}
         />
       ) : null}
+      <NotificationSettingsModal
+        open={notificationSettingsOpen}
+        onOpenChange={setNotificationSettingsOpen}
+      />
+      <ImageLightbox />
+      <CommandPalette />
     </div>
   );
 }
@@ -173,6 +275,15 @@ function ServerRail({
 }): JSX.Element {
   return (
     <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-subtle bg-sunken py-4">
+      <Link
+        to="/app/dms"
+        aria-label="Direct messages"
+        title="Direct messages"
+        className="grid h-12 w-12 place-items-center rounded-2xl bg-raised text-fg transition-base hover:rounded-xl hover:bg-ember-hi hover:text-fg-on-accent"
+      >
+        <MessageCircle size={18} />
+      </Link>
+      <div className="my-1 h-px w-8 bg-raised" />
       {servers.map((s) => {
         const active = s.id === activeId;
         return (
@@ -214,6 +325,7 @@ interface ChannelSidebarProps {
   me: { displayName: string; username: string } | null;
   onLogout: () => void;
   onCreateChannel: () => void;
+  onOpenSettings: () => void;
 }
 
 function ChannelSidebar({
@@ -224,6 +336,7 @@ function ChannelSidebar({
   me,
   onLogout,
   onCreateChannel,
+  onOpenSettings,
 }: ChannelSidebarProps): JSX.Element {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">
@@ -336,7 +449,23 @@ function ChannelSidebar({
           <div className="truncate font-serif font-medium">{me?.displayName ?? '—'}</div>
           <div className="truncate font-mono text-xs text-fg-muted">@{me?.username}</div>
         </div>
-        <button aria-label="Settings" className="rounded p-1 hover:bg-raised" title="Settings">
+        <UserStatusPopover />
+        <InboxPanel />
+        <SavedPanel />
+        <Link
+          to="/app/account"
+          aria-label="Account settings"
+          className="rounded p-1 hover:bg-raised"
+          title="Account settings"
+        >
+          <UserIcon size={16} />
+        </Link>
+        <button
+          aria-label="Notification settings"
+          onClick={onOpenSettings}
+          className="rounded p-1 hover:bg-raised"
+          title="Notification settings"
+        >
           <Settings size={16} />
         </button>
         <button

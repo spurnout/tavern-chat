@@ -45,14 +45,18 @@ export async function registerBanRoutes(app: FastifyInstance): Promise<void> {
       if (expiresAt && expiresAt <= new Date()) {
         throw TavernError.validation('Ban expiry must be in the future');
       }
-      await banMember({
+      const sweepRecentHours = body.alsoDeleteRecentMessages
+        ? (body.deleteWithinHours ?? 24)
+        : null;
+      const { messagesDeleted } = await banMember({
         serverId,
         targetUserId: body.userId,
         actorUserId: ctx.userId,
         reason: body.reason ?? null,
         expiresAt,
+        sweepRecentHours,
       });
-      reply.status(201).send(ok({ serverId, userId: body.userId }));
+      reply.status(201).send(ok({ serverId, userId: body.userId, messagesDeleted }));
     },
   });
 

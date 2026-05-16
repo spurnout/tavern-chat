@@ -5,6 +5,12 @@ import { MessageList } from '../components/MessageList.js';
 import { MessageComposer } from '../components/MessageComposer.js';
 import { MemberSidebar } from '../components/MemberSidebar.js';
 import { TypingIndicator } from '../components/TypingIndicator.js';
+import { PinsPopover } from '../components/PinsPopover.js';
+import { EncounterPanel } from '../components/EncounterPanel.js';
+import { LiveSessionDock } from '../components/LiveSessionDock.js';
+import { ChannelSettingsPopover } from '../components/ChannelSettingsPopover.js';
+import { useCanIn } from '../lib/store.js';
+import { Permission } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import type { Channel } from '@tavern/shared';
@@ -26,6 +32,7 @@ export function ChannelPage(): JSX.Element {
     return null;
   });
   const upsertChannel = useRealtime((s) => s.upsertChannel);
+  const canManageChannel = useCanIn(serverId ?? null, Permission.MANAGE_CHANNELS);
 
   useEffect(() => {
     if (!channelId || channel) return;
@@ -45,7 +52,18 @@ export function ChannelPage(): JSX.Element {
           {channel?.topic ? (
             <span className="ml-3 truncate text-sm text-fg-muted">{channel.topic}</span>
           ) : null}
+          <div className="ml-auto flex items-center gap-1">
+            <PinsPopover channelId={channelId} />
+            {channel ? (
+              <ChannelSettingsPopover
+                channel={channel}
+                canManage={canManageChannel}
+              />
+            ) : null}
+          </div>
         </header>
+        <LiveSessionDock channelId={channelId} />
+        <EncounterPanel channelId={channelId} />
         <MessageList channelId={channelId} />
         <TypingIndicator channelId={channelId} />
         <MessageComposer channelId={channelId} />

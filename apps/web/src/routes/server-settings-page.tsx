@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from '@tanstack/react-router';
-import { Ban, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
+import { Ban, Bell, Bot, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
 import type {
   CustomEmoji,
   Member,
@@ -19,13 +19,27 @@ import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
 import { awaitTerminal } from '../lib/attachment-ready.js';
+import { BanModal } from '../components/BanModal.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
+import { PerTavernNotificationSettings } from '../components/PerTavernNotificationSettings.js';
+import { ServerIntegrationsPanel } from '../components/ServerIntegrationsPanel.js';
 
-type Tab = 'roles' | 'members' | 'bans' | 'emoji' | 'policy';
+type Tab = 'roles' | 'members' | 'bans' | 'emoji' | 'policy' | 'notifications' | 'integrations';
+
+function readInitialSettingsState(): { tab: Tab; autoBan: boolean } {
+  if (typeof window === 'undefined') return { tab: 'roles', autoBan: false };
+  const sp = new URLSearchParams(window.location.search);
+  const tabParam = sp.get('tab');
+  const allowed: Tab[] = ['roles', 'members', 'bans', 'emoji', 'policy', 'notifications', 'integrations'];
+  const tab = (allowed as string[]).includes(tabParam ?? '') ? (tabParam as Tab) : 'roles';
+  const autoBan = tab === 'bans' && sp.get('action') === 'ban';
+  return { tab, autoBan };
+}
 
 export function ServerSettingsPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
-  const [tab, setTab] = useState<Tab>('roles');
+  const initial = readInitialSettingsState();
+  const [tab, setTab] = useState<Tab>(initial.tab);
 
   if (!serverId) return <div className="p-12">Pick a den.</div>;
 
@@ -50,14 +64,22 @@ export function ServerSettingsPage(): JSX.Element {
           <TabButton active={tab === 'policy'} onClick={() => setTab('policy')}>
             <ShieldCheck size={12} /> Safety policy
           </TabButton>
+          <TabButton active={tab === 'notifications'} onClick={() => setTab('notifications')}>
+            <Bell size={12} /> Notifications
+          </TabButton>
+          <TabButton active={tab === 'integrations'} onClick={() => setTab('integrations')}>
+            <Bot size={12} /> Integrations
+          </TabButton>
         </div>
       </header>
       <div className="p-6">
         {tab === 'roles' ? <RolesPanel serverId={serverId} /> : null}
         {tab === 'members' ? <MembersPanel serverId={serverId} /> : null}
-        {tab === 'bans' ? <BansPanel serverId={serverId} /> : null}
+        {tab === 'bans' ? <BansPanel serverId={serverId} autoOpenBan={initial.autoBan} /> : null}
         {tab === 'emoji' ? <EmojiPanel serverId={serverId} /> : null}
         {tab === 'policy' ? <SafetyPolicyPanel serverId={serverId} /> : null}
+        {tab === 'notifications' ? <PerTavernNotificationSettings serverId={serverId} /> : null}
+        {tab === 'integrations' ? <ServerIntegrationsPanel serverId={serverId} /> : null}
       </div>
     </div>
   );
@@ -350,13 +372,15 @@ function MembersPanel({ serverId }: { serverId: string }): JSX.Element {
     <div className="space-y-4">
       {error ? <p className="text-sm text-danger">{error}</p> : null}
       <ul className="space-y-2">
-        {members.map((m) => (
+        {members.map((m) => {
+          const name = m.nickname ?? m.user.displayName;
+          return (
           <li key={m.userId} className="card flex flex-wrap items-center gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-raised font-serif text-sm font-semibold">
-              {m.userId.slice(-2).toUpperCase()}
+              {name.slice(0, 2).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate font-serif font-medium">{m.nickname ?? m.userId.slice(0, 8)}</div>
+              <div className="truncate font-serif font-medium">{name}</div>
               <div className="text-xs text-fg-muted">
                 joined{' '}
                 <time className="font-mono">
@@ -390,7 +414,8 @@ function MembersPanel({ serverId }: { serverId: string }): JSX.Element {
                 })}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );
@@ -601,12 +626,17 @@ function SafetyPolicyPanel({ serverId }: { serverId: string }): JSX.Element {
 
 // ---- Bans -----------------------------------------------------------------
 
-function BansPanel({ serverId }: { serverId: string }): JSX.Element {
+function BansPanel({
+  serverId,
+  autoOpenBan,
+}: {
+  serverId: string;
+  autoOpenBan?: boolean;
+}): JSX.Element {
   const [bans, setBans] = useState<ServerBan[]>([]);
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading');
-  const [targetUserId, setTargetUserId] = useState('');
-  const [reason, setReason] = useState('');
   const [unbanTarget, setUnbanTarget] = useState<ServerBan | null>(null);
+  const [banOpen, setBanOpen] = useState(!!autoOpenBan);
 
   const refresh = (): void => {
     setLoadState('loading');
@@ -623,27 +653,6 @@ function BansPanel({ serverId }: { serverId: string }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
 
-  const onBan = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
-    e.preventDefault();
-    const trimmed = targetUserId.trim();
-    if (!trimmed) return;
-    try {
-      await api(`/servers/${serverId}/bans`, {
-        method: 'POST',
-        body: {
-          userId: trimmed,
-          reason: reason.trim() || undefined,
-        },
-      });
-      toast.success('Member banned.');
-      setTargetUserId('');
-      setReason('');
-      refresh();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not ban that member.');
-    }
-  };
-
   const onUnban = async (ban: ServerBan): Promise<void> => {
     try {
       await api(`/servers/${serverId}/bans/${ban.userId}`, { method: 'DELETE' });
@@ -657,32 +666,18 @@ function BansPanel({ serverId }: { serverId: string }): JSX.Element {
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <h2 className="font-serif text-lg font-medium">Ban a member</h2>
-        <p className="text-xs text-fg-muted">
-          Banned members are removed from the tavern, their open connections are
-          severed, and they cannot rejoin until the ban is lifted.
-        </p>
-        <form onSubmit={(e) => void onBan(e)} className="flex flex-wrap items-end gap-2">
-          <label className="flex-1 text-xs">
-            <span className="mb-1 inline-block text-fg-muted">User ID</span>
-            <input
-              className="input"
-              value={targetUserId}
-              onChange={(e) => setTargetUserId(e.target.value)}
-              placeholder="01JX…"
-              required
-            />
-          </label>
-          <label className="flex-1 text-xs">
-            <span className="mb-1 inline-block text-fg-muted">Reason (optional)</span>
-            <input
-              className="input"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-            />
-          </label>
-          <button type="submit" className="btn-danger">Ban</button>
-        </form>
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <h2 className="font-serif text-lg font-medium">Bans</h2>
+            <p className="text-xs text-fg-muted">
+              Banned members are removed from the tavern, their open connections are severed,
+              and they cannot rejoin until the ban is lifted.
+            </p>
+          </div>
+          <button type="button" className="btn-danger" onClick={() => setBanOpen(true)}>
+            Ask someone to leave…
+          </button>
+        </div>
       </section>
 
       <section className="space-y-2">
@@ -716,7 +711,7 @@ function BansPanel({ serverId }: { serverId: string }): JSX.Element {
                   className="btn-ghost"
                   onClick={() => setUnbanTarget(b)}
                 >
-                  Lift ban
+                  Welcome back
                 </button>
               </li>
             ))}
@@ -724,11 +719,18 @@ function BansPanel({ serverId }: { serverId: string }): JSX.Element {
         )}
       </section>
 
+      <BanModal
+        serverId={serverId}
+        open={banOpen}
+        onOpenChange={setBanOpen}
+        onApplied={refresh}
+      />
+
       {unbanTarget ? (
         <ConfirmDialog
-          title="Lift this ban?"
+          title="Welcome them back?"
           description={`The user will be able to rejoin via any valid invite.`}
-          confirmLabel="Lift ban"
+          confirmLabel="Welcome back"
           onCancel={() => setUnbanTarget(null)}
           onConfirm={async () => {
             const target = unbanTarget;

@@ -143,6 +143,66 @@ export async function registerSessionRoutes(app: FastifyInstance): Promise<void>
     reply.send(ok(serialize(updated as SessionRow)));
   });
 
+  /**
+   * Live-session dock data for a channel: returns the single `status: 'live'`
+   * session whose voice or text channel is the one being viewed, plus a small
+   * batch of GM-only notes when the caller is the campaign's GM. The dock
+   * collapses to nothing when no live session is bound to this channel.
+   */
+  app.get('/api/channels/:channelId/live-session', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { channelId } = z.object({ channelId: idSchema }).parse(req.params);
+
+    const channel = await prisma.channel.findUnique({
+      where: { id: channelId },
+      select: { serverId: true },
+    });
+    if (!channel) return reply.send(ok(null));
+    const perms = await getServerPermissions(channel.serverId, ctx.userId);
+    if (perms === 0n) throw TavernError.notFound();
+
+    const session = await prisma.campaignSession.findFirst({
+      where: {
+        status: 'live',
+        OR: [{ voiceChannelId: channelId }, { textChannelId: channelId }],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!session) return reply.send(ok(null));
+
+    const campaign = await prisma.campaign.findUnique({
+      where: { id: session.campaignId },
+      select: { gmUserId: true },
+    });
+    const isGm =
+      campaign?.gmUserId === ctx.userId ||
+      (perms & Permission.MANAGE_CAMPAIGN_NOTES) !== 0n ||
+      (perms & Permission.MANAGE_SESSIONS) !== 0n;
+
+    const gmNotes = isGm
+      ? await prisma.campaignNote.findMany({
+          where: { campaignId: session.campaignId, visibility: 'gm_only' },
+          orderBy: [{ pinned: 'desc' }, { updatedAt: 'desc' }],
+          take: 3,
+          select: { id: true, title: true, body: true, pinned: true, updatedAt: true },
+        })
+      : [];
+
+    reply.send(
+      ok({
+        session: serialize(session as SessionRow),
+        isGm,
+        gmNotes: gmNotes.map((n) => ({
+          id: n.id,
+          title: n.title,
+          body: n.body,
+          pinned: n.pinned,
+          updatedAt: n.updatedAt.toISOString(),
+        })),
+      }),
+    );
+  });
+
   app.put('/api/sessions/:id/rsvp', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { id } = z.object({ id: idSchema }).parse(req.params);

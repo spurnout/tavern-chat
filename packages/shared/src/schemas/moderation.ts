@@ -46,20 +46,49 @@ export const moderationActionSchema = z.enum([
   'report_workflow',
 ]);
 
+export const reportEventSchema = z.object({
+  at: z.string().datetime(),
+  kind: z.string(),
+  message: z.string(),
+});
+
 export const reportSchema = z.object({
   id: idSchema,
   serverId: idSchema.nullable(),
   reporterId: idSchema,
+  /** Hydrated by the queue endpoint. Null when the reporting user is gone. */
+  reporterDisplayName: z.string().nullable().optional(),
   targetType: reportTargetTypeSchema,
   targetId: idSchema,
+  /**
+   * Hydrated by the queue endpoint for `targetType === 'profile'` (the user
+   * being reported is the target itself) or where the target row carries a
+   * resolvable author/uploader.
+   */
+  targetUserId: idSchema.nullable().optional(),
+  targetUserDisplayName: z.string().nullable().optional(),
+  /** When the target is a message, a short preview of its content. */
+  targetPreview: z.string().nullable().optional(),
   category: reportCategorySchema,
   notes: z.string().max(2000).nullable(),
   status: reportStatusSchema,
   resolvedById: idSchema.nullable(),
   resolutionNotes: z.string().max(4000).nullable(),
+  /** Derived from related audit entries. Most-recent first. */
+  events: z.array(reportEventSchema).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
+
+export const moderationStatsSchema = z.object({
+  openReports: z.number().int(),
+  inReview: z.number().int(),
+  newToday: z.number().int(),
+  oldestUnreviewedAt: z.string().datetime().nullable(),
+});
+
+export type ReportEvent = z.infer<typeof reportEventSchema>;
+export type ModerationStats = z.infer<typeof moderationStatsSchema>;
 
 export const createReportRequestSchema = z.object({
   targetType: reportTargetTypeSchema,
@@ -124,9 +153,19 @@ export const auditLogEntrySchema = z.object({
   id: idSchema,
   serverId: idSchema.nullable(),
   actorId: idSchema.nullable(),
+  /**
+   * Hydrated by the audit-log endpoint. Null when the actor was a system
+   * action or when the user has since been deleted.
+   */
+  actorDisplayName: z.string().nullable().optional(),
+  actorUsername: z.string().nullable().optional(),
   action: auditLogActionSchema,
   targetType: z.string().max(64).nullable(),
   targetId: idSchema.nullable(),
+  /**
+   * Action-specific payload. When a write captures a configuration change,
+   * it should include `before` and `after` keys so the UI can render a diff.
+   */
   metadata: z.unknown(),
   createdAt: z.string().datetime(),
 });

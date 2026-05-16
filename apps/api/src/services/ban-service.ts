@@ -26,10 +26,16 @@ interface BanInput {
   actorUserId: string;
   reason?: string | null;
   expiresAt?: Date | null;
+  /**
+   * If set, soft-delete the target's messages in this server created within
+   * the last `deleteWithinHours` (defaults to 24 when sweepRecentHours is
+   * truthy without an explicit value).
+   */
+  sweepRecentHours?: number | null;
 }
 
-export async function banMember(input: BanInput): Promise<void> {
-  const { serverId, targetUserId, actorUserId, reason, expiresAt } = input;
+export async function banMember(input: BanInput): Promise<{ messagesDeleted: number }> {
+  const { serverId, targetUserId, actorUserId, reason, expiresAt, sweepRecentHours } = input;
   if (targetUserId === actorUserId) {
     throw TavernError.validation('You cannot ban yourself');
   }
@@ -65,6 +71,8 @@ export async function banMember(input: BanInput): Promise<void> {
     }
   }
 
+  let messagesDeleted = 0;
+
   await prisma.$transaction(async (tx) => {
     // Upsert: re-banning an already-banned user updates the reason/expiry
     // rather than failing on a primary-key conflict.
@@ -98,6 +106,23 @@ export async function banMember(input: BanInput): Promise<void> {
       where: { serverId, userId: targetUserId },
       data: { channelId: null, joinedAt: null, screenSharing: false, cameraOn: false },
     });
+
+    // Optional sweep of the user's recent messages. Soft-delete to match the
+    // existing message-deletion path (deletedAt + content cleared) so the
+    // serializer hides the body without orphaning replies/threads.
+    if (sweepRecentHours && sweepRecentHours > 0) {
+      const cutoff = new Date(Date.now() - sweepRecentHours * 60 * 60 * 1000);
+      const result = await tx.message.updateMany({
+        where: {
+          serverId,
+          authorId: targetUserId,
+          createdAt: { gte: cutoff },
+          deletedAt: null,
+        },
+        data: { deletedAt: new Date(), content: '' },
+      });
+      messagesDeleted = result.count;
+    }
   });
 
   await writeAuditEntry({
@@ -109,6 +134,9 @@ export async function banMember(input: BanInput): Promise<void> {
     metadata: {
       reason: reason ?? null,
       expiresAt: expiresAt ? expiresAt.toISOString() : null,
+      ...(sweepRecentHours
+        ? { sweepRecentHours, messagesDeleted }
+        : {}),
     },
   });
 
@@ -118,6 +146,8 @@ export async function banMember(input: BanInput): Promise<void> {
     userId: targetUserId,
     data: { serverId, userId: targetUserId },
   });
+
+  return { messagesDeleted };
 }
 
 export async function unbanMember(input: {
