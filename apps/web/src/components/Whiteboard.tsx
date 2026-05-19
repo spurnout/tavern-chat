@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Eraser, Pen, Trash2, X } from 'lucide-react';
 import { Permission, ulid } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
@@ -76,7 +76,10 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
     ctx.globalCompositeOperation = 'source-over';
   }
 
-  function redraw(): void {
+  // Stable identity — depends only on refs, which never change. Without
+  // useCallback its identity would flip on every render and the effects
+  // below would re-bind their voice-event listeners every time.
+  const redraw = useCallback((): void => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -84,7 +87,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     for (const s of strokesRef.current) drawStroke(ctx, s);
     if (drawingRef.current) drawStroke(ctx, drawingRef.current);
-  }
+  }, []);
 
   // Hydrate from server on mount.
   useEffect(() => {
@@ -99,7 +102,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
     return () => {
       cancelled = true;
     };
-  }, [channelId]);
+  }, [channelId, redraw]);
 
   // Subscribe to remote strokes + clears.
   useEffect(() => {
@@ -117,7 +120,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
       offStroke();
       offClear();
     };
-  }, [channelId]);
+  }, [channelId, redraw]);
 
   function pointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
     const canvas = canvasRef.current;

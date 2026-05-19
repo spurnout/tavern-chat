@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Dice5, Plus, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -38,7 +38,7 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeChannelId = useRealtime((s) => s.activeChannelId);
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
       const r = await api<Table[]>(`/servers/${serverId}/tables`);
@@ -49,10 +49,10 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
     } finally {
       setLoading(false);
     }
-  }
+  }, [serverId, campaignId]);
   useEffect(() => {
     void refresh();
-  }, [serverId, campaignId]);
+  }, [refresh]);
 
   async function create(): Promise<void> {
     if (!name.trim()) return;

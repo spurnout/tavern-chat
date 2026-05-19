@@ -17,6 +17,7 @@ import { ok } from '../lib/responses.js';
 import type { WebAuthnService } from '../services/webauthn-service.js';
 import {
   type AuthService,
+  getStagedTotpKey,
   signStagedTotpToken,
   verifyStagedTotpToken,
 } from '../services/auth-service.js';
@@ -112,7 +113,7 @@ export async function registerWebauthnRoutes(
       // Stage a token bound to the resolved (or fake) user id so verify-step
       // doesn't have to be told it again — and so a leaked staged token
       // can't be reused against a different account.
-      const stagedToken = signStagedTotpToken(userId, opts.config.JWT_ACCESS_SECRET);
+      const stagedToken = signStagedTotpToken(userId, getStagedTotpKey(opts.config));
       reply.send(ok({ stagedToken, options, hasCredentials }));
     },
   });
@@ -121,7 +122,7 @@ export async function registerWebauthnRoutes(
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     handler: async (req, reply) => {
       const body = webauthnLoginFinishSchema.parse(req.body);
-      const userId = verifyStagedTotpToken(body.stagedToken, opts.config.JWT_ACCESS_SECRET);
+      const userId = verifyStagedTotpToken(body.stagedToken, getStagedTotpKey(opts.config));
       if (!userId) {
         throw TavernError.unauthorized('Staged token invalid or expired');
       }

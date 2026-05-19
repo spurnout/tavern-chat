@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Copy, Plus, Trash2, Webhook as WebhookIcon } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -133,7 +133,7 @@ function WebhooksSection({ serverId }: { serverId: string }): JSX.Element {
     if (!selected && textChannels[0]) setSelected(textChannels[0].id);
   }, [textChannels, selected]);
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     if (!selected) return;
     try {
       const r = await api<WebhookRow[]>(`/channels/${selected}/webhooks`);
@@ -141,10 +141,10 @@ function WebhooksSection({ serverId }: { serverId: string }): JSX.Element {
     } catch {
       setRows([]);
     }
-  }
+  }, [selected]);
   useEffect(() => {
     void refresh();
-  }, [selected]);
+  }, [refresh]);
 
   async function create(): Promise<void> {
     if (!selected || !name.trim()) return;

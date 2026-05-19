@@ -20,6 +20,15 @@ const envSchema = z.object({
 
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
+  /**
+   * Separate HMAC key for the short-lived staged-TOTP token issued between
+   * password step and TOTP step of login. Domain-separated from the JWT
+   * secret so a process that can mint access tokens cannot also forge a
+   * staged token for an arbitrary userId (bypassing the password check).
+   * When blank, falls back to JWT_ACCESS_SECRET prefixed with a domain
+   * label — better than nothing but the operator should set this.
+   */
+  STAGED_TOTP_SECRET: optionalString,
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 15),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
 

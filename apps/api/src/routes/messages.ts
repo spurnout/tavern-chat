@@ -57,9 +57,17 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
       ...(query.after ? { id: { gt: query.after } } : {}),
     };
 
+    // When `after` is set, the page is the N OLDEST messages newer than the
+    // cursor (a contiguous forward-scroll slice). Sorting `desc` here would
+    // instead return the N globally newest messages where id > after, which
+    // can skip messages in busy channels and break jump-to-message. Sort asc
+    // and reverse before send so the response always lands in newest-first
+    // order (consistent with the `before` / no-cursor paths).
+    const useAscOrder = Boolean(query.after) && !query.before;
+
     const messages = await prisma.message.findMany({
       where,
-      orderBy: { id: 'desc' },
+      orderBy: { id: useAscOrder ? 'asc' : 'desc' },
       take: query.limit,
       include: {
         attachments: { select: { id: true } },
@@ -84,7 +92,8 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
       },
     });
 
-    reply.send(ok(messages.map((m: MessageRow) => serializeMessage(m, ctx.userId))));
+    const ordered = useAscOrder ? [...messages].reverse() : messages;
+    reply.send(ok(ordered.map((m: MessageRow) => serializeMessage(m, ctx.userId))));
   });
 
   // Create a message --------------------------------------------------------
@@ -373,6 +382,23 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
           dmChannelId: null,
         });
       }
+      // Wave 3 #8 — forum channels: seed the sibling Thread row atomically
+      // with the root message. Doing this OUTSIDE the transaction (the
+      // previous arrangement) meant a transient DB error could leave the
+      // forum view permanently broken for that post — the thread row is the
+      // only thing the listing keys on.
+      if (channelMeta?.type === 'forum' && !body.replyToMessageId) {
+        const title = body.content.trim().split('\n')[0]?.slice(0, 120) || 'Untitled thread';
+        await tx.thread.create({
+          data: {
+            id: ulid(),
+            channelId,
+            rootMessageId: messageId,
+            title,
+            createdBy: ctx.userId,
+          },
+        });
+      }
       return tx.message.findUniqueOrThrow({
         where: { id: messageId },
         include: {
@@ -398,29 +424,6 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
         },
       });
     });
-
-    // Wave 3 #8 — forum channels: every root post seeds a new Thread.
-    // Replies (those with replyToMessageId set) ride the existing thread
-    // semantics and are not auto-rooted again.
-    if (channelMeta?.type === 'forum' && !body.replyToMessageId) {
-      const title = body.content.trim().split('\n')[0]?.slice(0, 120) || 'Untitled thread';
-      await prisma.thread
-        .create({
-          data: {
-            id: ulid(),
-            channelId,
-            rootMessageId: messageId,
-            title,
-            createdBy: ctx.userId,
-          },
-        })
-        .catch((err) => {
-          // Don't fail the message just because the thread couldn't be
-          // seeded — log and move on. The forum-view UI gracefully handles
-          // posts without a sibling Thread row.
-          req.log.warn({ err, messageId }, 'forum auto-thread create failed');
-        });
-    }
 
     const dto = serializeMessage(fullRow as MessageRow, ctx.userId);
     gatewayBroker.publish({
@@ -488,6 +491,36 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
     if (message.authorId !== ctx.userId) throw TavernError.forbidden('Only the author can edit a message');
 
     const cleanContent = sanitizeContent(body.content);
+    // SEC: re-run the mention permission gates on edit. Without this, a user
+    // can post a benign message, then edit it to add @everyone / a non-
+    // mentionable role and bypass the same checks the create route enforces.
+    if (message.serverId && message.channelId) {
+      const parsedMentions = parseMentions(cleanContent);
+      const editPerms = await getChannelPermissions(message.channelId, ctx.userId);
+      if (!editPerms) throw TavernError.notFound('Message not found');
+      const editIsAdmin = hasFlag(editPerms.perms, Permission.ADMINISTRATOR);
+      const canMentionEveryone =
+        editIsAdmin || hasFlag(editPerms.perms, Permission.MENTION_EVERYONE);
+      if (hasGroupMention(parsedMentions) && !canMentionEveryone) {
+        throw TavernError.forbidden('You cannot use @everyone or @here in this room');
+      }
+      const candidateRoleNames = nameMentions(parsedMentions);
+      if (candidateRoleNames.length > 0 && !canMentionEveryone) {
+        const nonMentionableRoles = await prisma.role.findMany({
+          where: {
+            serverId: message.serverId,
+            name: { in: candidateRoleNames },
+            mentionable: false,
+          },
+          select: { name: true },
+        });
+        if (nonMentionableRoles.length > 0) {
+          throw TavernError.forbidden(
+            `Role @${nonMentionableRoles[0]?.name} is not mentionable here`,
+          );
+        }
+      }
+    }
     // Wave 2 #10 — append previous content to edit history *before* the
     // mutation so we never lose a revision (rolls back if the update fails).
     const updated = await prisma.$transaction(async (tx) => {
@@ -585,9 +618,20 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
     }
 
     const deletedAt = new Date();
-    await prisma.message.update({
-      where: { id },
-      data: { deletedAt, content: '' },
+    // Soft-delete tombstones the message but does NOT cascade — the schema's
+    // ON DELETE CASCADE only fires on hard-delete. Without explicit cleanup
+    // the pinned-message list keeps the (now empty) row, the mention bell
+    // keeps the unread highlight, and reactions accumulate against content
+    // nobody can see. Wrap in a transaction so a partial cleanup either
+    // commits fully or rolls back the deletedAt write.
+    await prisma.$transaction(async (tx) => {
+      await tx.message.update({
+        where: { id },
+        data: { deletedAt, content: '' },
+      });
+      await tx.messageReaction.deleteMany({ where: { messageId: id } });
+      await tx.userMention.deleteMany({ where: { messageId: id } });
+      await tx.pinnedMessage.deleteMany({ where: { messageId: id } });
     });
     if (message.authorId !== ctx.userId && message.serverId) {
       await writeAuditEntry({

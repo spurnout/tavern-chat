@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Music, Play, Repeat, Square, Trash2, Upload, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -33,7 +33,7 @@ export function SoundboardPanel({ serverId, voiceChannelId, onClose }: Props): J
   const [playingAmbient, setPlayingAmbient] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
       const r = await api<Clip[]>(`/servers/${serverId}/soundboard`);
@@ -43,10 +43,10 @@ export function SoundboardPanel({ serverId, voiceChannelId, onClose }: Props): J
     } finally {
       setLoading(false);
     }
-  }
+  }, [serverId]);
   useEffect(() => {
     void refresh();
-  }, [serverId]);
+  }, [refresh]);
 
   async function play(clip: Clip): Promise<void> {
     try {

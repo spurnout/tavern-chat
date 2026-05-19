@@ -65,18 +65,34 @@ export function otpauthUrl(secret: string, label: string, issuer: string): strin
 }
 
 export function verifyTotp(secret: string, code: string, window = 1): boolean {
-  if (!/^\d{6}$/.test(code)) return false;
+  return verifyTotpWithCounter(secret, code, window) !== null;
+}
+
+/**
+ * RFC-6238 verification that also returns the matched counter, so callers
+ * can reject codes whose counter has already been used (replay protection).
+ * Returns `null` if no counter in the window produces the given code.
+ *
+ * The counter is `floor(unix_seconds / 30)` of the matched slot.
+ */
+export function verifyTotpWithCounter(
+  secret: string,
+  code: string,
+  window = 1,
+): { counter: number } | null {
+  if (!/^\d{6}$/.test(code)) return null;
   let secretBuf: Buffer;
   try {
     secretBuf = base32Decode(secret);
   } catch {
-    return false;
+    return null;
   }
   const counter = Math.floor(Date.now() / 1000 / 30);
   for (let w = -window; w <= window; w++) {
-    if (hotp(secretBuf, counter + w) === code) return true;
+    const candidate = counter + w;
+    if (hotp(secretBuf, candidate) === code) return { counter: candidate };
   }
-  return false;
+  return null;
 }
 
 /**

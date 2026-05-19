@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 
@@ -70,24 +70,20 @@ export function CharacterSheetDnD5e({ character, canEdit, onUpdated }: Props): J
   const [concept, setConcept] = useState(character.conceptOneLiner ?? '');
   const [dirty, setDirty] = useState(false);
 
-  // Reset when character switches.
+  // Reset when character switches. The dep array is deliberately just
+  // `character.id` — adding `character.name`, `.conceptOneLiner`, and
+  // `.sheetJson` (as eslint would suggest) would re-fire the reset every
+  // time the parent receives an updated copy of the same character, wiping
+  // local edits that have not yet been saved back.
   useEffect(() => {
     setSheet(character.sheetJson);
     setName(character.name);
     setConcept(character.conceptOneLiner ?? '');
     setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [character.id]);
 
-  // Debounced auto-save.
-  useEffect(() => {
-    if (!dirty || !canEdit) return;
-    const t = setTimeout(() => {
-      void save();
-    }, 800);
-    return () => clearTimeout(t);
-  }, [dirty, sheet, name, concept]);
-
-  async function save(): Promise<void> {
+  const save = useCallback(async (): Promise<void> => {
     try {
       const updated = await api<Character>(`/characters/${character.id}`, {
         method: 'PATCH',
@@ -98,7 +94,18 @@ export function CharacterSheetDnD5e({ character, canEdit, onUpdated }: Props): J
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not save');
     }
-  }
+  }, [character.id, name, concept, sheet, onUpdated]);
+
+  // Debounced auto-save. The timer resets on every keystroke (which mutates
+  // sheet/name/concept and therefore re-runs the effect), firing 800ms after
+  // the user stops typing.
+  useEffect(() => {
+    if (!dirty || !canEdit) return;
+    const t = setTimeout(() => {
+      void save();
+    }, 800);
+    return () => clearTimeout(t);
+  }, [dirty, canEdit, save]);
 
   function touch<T extends keyof Dnd5eSheet>(key: T, value: Dnd5eSheet[T]): void {
     setSheet((s) => ({ ...s, [key]: value }));

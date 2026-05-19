@@ -1,6 +1,13 @@
-import pino, { type Logger } from 'pino';
+import pino from 'pino';
+import type { FastifyBaseLogger } from 'fastify';
 
-export function createLogger(env: string): Logger {
+/**
+ * Pino is structurally compatible with FastifyBaseLogger but its concrete
+ * `Logger` type adds members (notably `msgPrefix`) that FastifyBaseLogger
+ * doesn't declare. Narrowing the return type here lets `loggerInstance` be
+ * assigned cleanly without an `as any` cast at the call site.
+ */
+export function createLogger(env: string): FastifyBaseLogger {
   if (env === 'production') {
     return pino({ level: process.env.LOG_LEVEL ?? 'info' });
   }

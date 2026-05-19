@@ -58,6 +58,16 @@ model User {
   totpSecret          String?
   totpEnabled         Boolean   @default(false)
   totpBackupCodes     Json      @default("[]")
+  // Last accepted TOTP counter (Math.floor(unix_seconds/30) + window offset).
+  // We reject any code whose matched counter <= this value, which closes the
+  // replay window where a captured (code, stagedToken) pair could be
+  // resubmitted before the 30-second slot ticks over.
+  totpLastCounter     BigInt    @default(0)
+  // Symmetric counterpart to failedLoginAttempts for the TOTP step. Without
+  // this, an attacker who has a valid password but no TOTP code can brute-
+  // force the 6-digit code from a staged token during its TTL.
+  failedTotpAttempts  Int       @default(0)
+  totpLockedUntil     DateTime?
   // Wave 3 #36: SSO / OIDC. When the user logged in via an external IdP,
   // (oidcIssuer, oidcSubject) is the global identity. The pair is unique
   // (see @@unique below) so a re-login matches the same Tavern account.

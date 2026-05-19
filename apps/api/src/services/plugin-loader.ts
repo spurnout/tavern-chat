@@ -42,6 +42,12 @@ interface LoadedPlugin {
 }
 
 const plugins: LoadedPlugin[] = [];
+/**
+ * Stashed during `loadPluginsFrom` so `dispatchHook` can route hook-failure
+ * messages through the same structured logger. Defaults to a no-op so the
+ * function is safe to call before any load attempt.
+ */
+let hookLog: FastifyBaseLogger | null = null;
 
 export function pluginsLoaded(): number {
   return plugins.length;
@@ -58,6 +64,7 @@ export function listLoadedPlugins(): PluginManifest[] {
  * installs surface in logs rather than running unchecked.
  */
 export async function loadPluginsFrom(dir: string, log: FastifyBaseLogger): Promise<void> {
+  hookLog = log;
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -134,14 +141,25 @@ export async function dispatchHook<K extends keyof PluginHooks>(
   name: K,
   ...args: Parameters<NonNullable<PluginHooks[K]>>
 ): Promise<void> {
-  await Promise.all(
+  // allSettled (not all) so a plugin that returns a rejected promise without
+  // throwing synchronously can't propagate into the route handler that
+  // dispatched the hook. The per-plugin try/catch already handles thrown
+  // errors; allSettled is the belt-and-braces guard.
+  await Promise.allSettled(
     plugins.map(async (entry) => {
       const fn = entry.hooks[name] as ((...a: unknown[]) => unknown) | undefined;
       if (!fn) return;
       try {
         await fn(...(args as unknown[]));
       } catch (err) {
-        console.warn(`[plugin:${entry.manifest.name}] ${String(name)} threw`, err);
+        hookLog?.warn(
+          {
+            plugin: entry.manifest.name,
+            hook: String(name),
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'tavern.plugin.hook_threw',
+        );
       }
     }),
   );

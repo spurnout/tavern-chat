@@ -103,23 +103,27 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
 
   // Wire broker -> sockets.
   const unsub = gatewayBroker.subscribe((event) => {
-    fanout(event, clients).catch((err) => {
+    const fanoutPromise = fanout(event, clients).catch((err) => {
       app.log.error({ err }, 'gateway fanout error');
     });
     // PERM-002: a GUILD_BAN_ADD targeting a user must also sever their open
     // WebSocket(s) so the banned user is actually disconnected, not merely
-    // notified. Run after the dispatch fanout above so the client receives
-    // the event before the close frame.
+    // notified. Await the dispatch fanout first so the BAN event is on the
+    // wire before the 4403 close frame — without the await these raced, and
+    // the close often beat the dispatch (the comment lied, the code didn't).
     if (event.type === 'GUILD_BAN_ADD' && event.userId) {
-      for (const c of clients.values()) {
-        if (c.userId === event.userId) {
-          try {
-            c.ws.close(4403, 'banned');
-          } catch {
-            /* ignore */
+      const bannedUserId = event.userId;
+      void fanoutPromise.then(() => {
+        for (const c of clients.values()) {
+          if (c.userId === bannedUserId) {
+            try {
+              c.ws.close(4403, 'banned');
+            } catch {
+              /* ignore */
+            }
           }
         }
-      }
+      });
     }
   });
   app.addHook('onClose', async () => unsub());
@@ -241,6 +245,9 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
       // socket for the user, sweep any presence flags that may have stuck on
       // (a browser tab that crashed without firing /voice/leave). The sweep
       // is best-effort and async — the close handler does not await it.
+      // PRESENCE: `markDisconnected` ONLY fires when the user has no remaining
+      // open sockets. Firing it on every close (including non-last tabs)
+      // flapped presence between online and offline for multi-tab users.
       if (client.userId) {
         const set = userConnections.get(client.userId);
         if (set) {
@@ -250,11 +257,11 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
             void cleanupAfterLastConnection(client.userId).catch((err) => {
               app.log.warn({ err, userId: client.userId }, 'last-connection cleanup failed');
             });
+            void markDisconnected(client.userId).catch((err) => {
+              app.log.warn({ err, userId: client.userId }, 'presence markDisconnected failed');
+            });
           }
         }
-        void markDisconnected(client.userId).catch((err) => {
-          app.log.warn({ err, userId: client.userId }, 'presence markDisconnected failed');
-        });
       }
     });
 
@@ -366,6 +373,11 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
     // (channelId, userId) — every viewer-of-the-same-channel hits the same
     // entry after the first fetch. The cache lives for one fanout call only.
     const channelPermCache = new Map<string, ReturnType<typeof getChannelPermissions>>();
+    // PERF: companion cache for server-only events (e.g. MEMBER_ADD,
+    // EMOJI_UPDATE). Without it, a 1000-member server doing one event takes
+    // ~2000 DB queries (member + owner lookup per recipient). Keyed by
+    // (serverId, userId) and lives one fanout call.
+    const serverMembershipCache = new Map<string, Promise<boolean>>();
     // PRESENCE-001: precompute the audience (users who share a server or DM
     // with the target) once per fanout instead of running per-recipient
     // queries inside shouldDeliver. Two queries up front beats O(n) per
@@ -376,7 +388,13 @@ export function registerGateway(app: FastifyInstance, jwt: JwtService): void {
     }
     for (const c of clientsMap.values()) {
       if (!c.identified || !c.userId) continue;
-      const should = await shouldDeliver(event, c.userId, channelPermCache, presenceAudience);
+      const should = await shouldDeliver(
+        event,
+        c.userId,
+        channelPermCache,
+        presenceAudience,
+        serverMembershipCache,
+      );
       if (!should) continue;
       sendDispatch(c, event.type, event.data);
     }
@@ -547,6 +565,7 @@ async function shouldDeliver(
   userId: string,
   channelPermCache?: Map<string, ReturnType<typeof getChannelPermissions>>,
   presenceAudience?: Set<string> | null,
+  serverMembershipCache?: Map<string, Promise<boolean>>,
 ): Promise<boolean> {
   // PRESENCE_UPDATE: deliver only to the target themselves plus the set of
   // users who share a server or DM with them. The audience is precomputed
@@ -586,16 +605,24 @@ async function shouldDeliver(
   }
 
   if (event.serverId) {
-    const member = await prisma.serverMember.findUnique({
-      where: { serverId_userId: { serverId: event.serverId, userId } },
-      select: { userId: true },
-    });
-    if (member) return true;
-    const owner = await prisma.server.findUnique({
-      where: { id: event.serverId },
-      select: { ownerUserId: true },
-    });
-    return owner?.ownerUserId === userId;
+    const cacheKey = `${event.serverId}:${userId}`;
+    let cached = serverMembershipCache?.get(cacheKey);
+    if (!cached) {
+      cached = (async () => {
+        const member = await prisma.serverMember.findUnique({
+          where: { serverId_userId: { serverId: event.serverId!, userId } },
+          select: { userId: true },
+        });
+        if (member) return true;
+        const owner = await prisma.server.findUnique({
+          where: { id: event.serverId },
+          select: { ownerUserId: true },
+        });
+        return owner?.ownerUserId === userId;
+      })();
+      serverMembershipCache?.set(cacheKey, cached);
+    }
+    return cached;
   }
 
   // Untargeted (broadcast) events get filtered by the caller. Default deny.

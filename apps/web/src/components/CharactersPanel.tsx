@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Dice5, Plus, Swords, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -43,24 +43,27 @@ export function CharactersPanel({ campaignId, channelId }: Props): JSX.Element {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
       const r = await api<Character[]>(`/campaigns/${campaignId}/characters`);
       setCharacters(r);
-      if (!selectedId && r.length > 0) {
-        setSelectedId(r[0]?.id ?? null);
-      }
+      // Functional update so this callback doesn't capture `selectedId` —
+      // capturing it would force a useCallback dep that re-runs the effect
+      // every time the user picks a different character, which would refetch
+      // the list pointlessly. With the functional form, the first refresh
+      // seeds selection and subsequent ones leave the user's pick alone.
+      setSelectedId((prev) => prev ?? r[0]?.id ?? null);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not load characters');
     } finally {
       setLoading(false);
     }
-  }
+  }, [campaignId]);
 
   useEffect(() => {
     void refresh();
-  }, [campaignId]);
+  }, [refresh]);
 
   const selected = useMemo(
     () => characters.find((c) => c.id === selectedId) ?? null,
@@ -194,17 +197,17 @@ function MacrosPanel({
   const [label, setLabel] = useState('');
   const [notation, setNotation] = useState('1d20+5');
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     try {
       const r = await api<MacroRow[]>(`/characters/${character.id}/macros`);
       setMacros(r);
     } catch {
       // silent
     }
-  }
+  }, [character.id]);
   useEffect(() => {
     void refresh();
-  }, [character.id]);
+  }, [refresh]);
 
   async function create(): Promise<void> {
     if (!label.trim() || !notation.trim()) return;

@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import { hashPassword, verifyPassword } from '../lib/passwords.js';
 import { sha256, randomTokenHex } from '../lib/hash.js';
 import { generateInviteCode } from '../lib/invite-codes.js';
-import { hashBackupCode, verifyTotp } from '../lib/totp.js';
+import { hashBackupCode, verifyTotpWithCounter } from '../lib/totp.js';
 import type { JwtService } from '../lib/jwt.js';
 import type { Config } from '../config.js';
 import type { MailService } from './mail-service.js';
@@ -37,17 +37,32 @@ export class TotpRequiredError extends Error {
 const STAGED_TOTP_TTL_MS = 5 * 60 * 1000;
 const STAGED_TOTP_VERSION = 1;
 
-export function signStagedTotpToken(userId: string, secret: string): string {
+/**
+ * Resolve the HMAC key for staged-TOTP tokens. Prefers a dedicated config
+ * value so it's domain-separated from JWT_ACCESS_SECRET — without that
+ * separation, any process holding the JWT signing key could forge a staged
+ * token for any userId and skip the password step. When unset, falls back
+ * to a labelled derivation so existing deployments keep working; operators
+ * SHOULD set STAGED_TOTP_SECRET explicitly in production.
+ */
+export function getStagedTotpKey(config: Config): string {
+  if (config.STAGED_TOTP_SECRET && config.STAGED_TOTP_SECRET.length >= 32) {
+    return config.STAGED_TOTP_SECRET;
+  }
+  return `tvn-totp-stage-fallback:${config.JWT_ACCESS_SECRET}`;
+}
+
+export function signStagedTotpToken(userId: string, key: string): string {
   const expires = Date.now() + STAGED_TOTP_TTL_MS;
   const payload = `${STAGED_TOTP_VERSION}.${userId}.${expires}`;
   const sig = crypto
-    .createHmac('sha256', `tvn-totp-stage:${secret}`)
+    .createHmac('sha256', `tvn-totp-stage:${key}`)
     .update(payload)
     .digest('base64url');
   return `${payload}.${sig}`;
 }
 
-export function verifyStagedTotpToken(token: string, secret: string): string | null {
+export function verifyStagedTotpToken(token: string, key: string): string | null {
   const parts = token.split('.');
   if (parts.length !== 4) return null;
   const [version, userId, expiresStr, sig] = parts;
@@ -55,7 +70,7 @@ export function verifyStagedTotpToken(token: string, secret: string): string | n
   const expires = Number(expiresStr);
   if (!Number.isFinite(expires) || expires < Date.now()) return null;
   const expected = crypto
-    .createHmac('sha256', `tvn-totp-stage:${secret}`)
+    .createHmac('sha256', `tvn-totp-stage:${key}`)
     .update(`${version}.${userId}.${expiresStr}`)
     .digest('base64url');
   if (expected.length !== sig.length) return null;
@@ -79,6 +94,13 @@ export interface SessionContext {
 const FAILED_LOGIN_LOCKOUT_THRESHOLD = 10;
 /** How long a locked account stays locked after the threshold is hit. */
 const FAILED_LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+/**
+ * Mirror of FAILED_LOGIN_LOCKOUT_THRESHOLD for the TOTP step. Without this,
+ * an attacker with a valid password but no TOTP code can grind the 6-digit
+ * code from a staged token (5-minute TTL) without ever hitting a counter.
+ */
+const FAILED_TOTP_LOCKOUT_THRESHOLD = 8;
+const FAILED_TOTP_LOCKOUT_MS = 15 * 60 * 1000;
 /**
  * Per-user active session cap (SEC-009). When a new session is issued and the
  * user already has more than this many active sessions, the oldest are
@@ -370,7 +392,7 @@ export class AuthService {
     // challenge instead of a session. The client then calls
     // /api/auth/login/totp with the staged token + the user's code.
     if (user.totpEnabled) {
-      const stagedToken = signStagedTotpToken(user.id, this.deps.config.JWT_ACCESS_SECRET);
+      const stagedToken = signStagedTotpToken(user.id, getStagedTotpKey(this.deps.config));
       throw new TotpRequiredError(stagedToken);
     }
 
@@ -380,42 +402,119 @@ export class AuthService {
   /**
    * Second step of the TOTP login flow. Accepts the staged token from
    * /api/auth/login and either a TOTP code or a one-time backup code.
+   *
+   * SEC: every accepted TOTP code's counter is recorded so the same code
+   * cannot be replayed within its 30-second window. SEC: backup-code
+   * consumption uses an atomic predicate update so two concurrent calls
+   * with the same code cannot both succeed. SEC: failed attempts lock the
+   * account symmetric with the password step.
    */
   async loginTotp(stagedToken: string, code: string, ctx: SessionContext): Promise<TokenPair> {
-    const userId = verifyStagedTotpToken(stagedToken, this.deps.config.JWT_ACCESS_SECRET);
+    const userId = verifyStagedTotpToken(stagedToken, getStagedTotpKey(this.deps.config));
     if (!userId) {
       throw new TavernError(ErrorCodes.INVALID_TOKEN, 'Staged token invalid or expired', 401);
     }
     const user = await prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { id: true, totpSecret: true, totpEnabled: true, totpBackupCodes: true },
+      select: {
+        id: true,
+        totpSecret: true,
+        totpEnabled: true,
+        totpBackupCodes: true,
+        totpLastCounter: true,
+        failedTotpAttempts: true,
+        totpLockedUntil: true,
+      },
     });
     if (!user.totpEnabled || !user.totpSecret) {
       // Race: TOTP turned off between login step 1 and step 2. Restart.
       throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'TOTP no longer required', 400);
     }
-    const trimmed = code.trim();
-    let success = verifyTotp(user.totpSecret, trimmed);
-    if (!success) {
-      // Try backup code — consume one if matched.
-      const backup = Array.isArray(user.totpBackupCodes)
-        ? (user.totpBackupCodes as string[])
-        : [];
-      const provided = hashBackupCode(trimmed);
-      const idx = backup.indexOf(provided);
-      if (idx >= 0) {
-        const remaining = backup.filter((_, i) => i !== idx);
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { totpBackupCodes: remaining },
-        });
-        success = true;
-      }
-    }
-    if (!success) {
+    if (user.totpLockedUntil && user.totpLockedUntil > new Date()) {
       throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
     }
-    return this.issueSession(user.id, ctx);
+    const trimmed = code.trim();
+
+    // Try TOTP first. Replay-guard: reject if the matched counter is at or
+    // below the last accepted one — that means the same code already
+    // unlocked a session within the same 30-second window.
+    const totpResult = verifyTotpWithCounter(user.totpSecret, trimmed);
+    if (totpResult) {
+      const matchedCounter = BigInt(totpResult.counter);
+      const lastCounter = BigInt(user.totpLastCounter);
+      if (matchedCounter <= lastCounter) {
+        // Replay — treat as a failed attempt so the lockout still tightens.
+        await this.recordFailedTotpAttempt(user.id, user.failedTotpAttempts);
+        throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
+      }
+      // Atomically advance the counter so a parallel call with the same code
+      // can't also pass this check. updateMany with the counter predicate
+      // returns 0 on a race; treat that as a failed attempt.
+      const advanced = await prisma.user.updateMany({
+        where: { id: user.id, totpLastCounter: user.totpLastCounter },
+        data: {
+          totpLastCounter: matchedCounter,
+          failedTotpAttempts: 0,
+          totpLockedUntil: null,
+        },
+      });
+      if (advanced.count !== 1) {
+        await this.recordFailedTotpAttempt(user.id, user.failedTotpAttempts);
+        throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
+      }
+      return this.issueSession(user.id, ctx);
+    }
+
+    // Fall through to backup-code path. Atomic consumption: we recompute the
+    // remaining list ourselves but write it conditional on the array still
+    // matching what we read, which makes the read-modify-write idempotent.
+    const backup = Array.isArray(user.totpBackupCodes)
+      ? (user.totpBackupCodes as string[])
+      : [];
+    const provided = hashBackupCode(trimmed);
+    const idx = backup.indexOf(provided);
+    if (idx >= 0) {
+      const remaining = backup.filter((_, i) => i !== idx);
+      const consumed = await prisma.user.updateMany({
+        where: { id: user.id, totpBackupCodes: { equals: backup } },
+        data: {
+          totpBackupCodes: remaining,
+          failedTotpAttempts: 0,
+          totpLockedUntil: null,
+        },
+      });
+      if (consumed.count !== 1) {
+        // Two concurrent loginTotp with the same backup code raced — only one
+        // can win. The loser is indistinguishable from a wrong code.
+        await this.recordFailedTotpAttempt(user.id, user.failedTotpAttempts);
+        throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
+      }
+      return this.issueSession(user.id, ctx);
+    }
+
+    await this.recordFailedTotpAttempt(user.id, user.failedTotpAttempts);
+    throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid code', 401);
+  }
+
+  /**
+   * Increment `failedTotpAttempts`. At the threshold we set `totpLockedUntil`
+   * so subsequent calls are rejected up front. Best-effort: a DB hiccup here
+   * shouldn't turn a wrong-code response into a 500.
+   */
+  private async recordFailedTotpAttempt(userId: string, currentAttempts: number): Promise<void> {
+    const next = currentAttempts + 1;
+    const reached = next >= FAILED_TOTP_LOCKOUT_THRESHOLD;
+    try {
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          failedTotpAttempts: next,
+          totpLockedUntil: reached ? new Date(Date.now() + FAILED_TOTP_LOCKOUT_MS) : undefined,
+        },
+      });
+    } catch {
+      /* swallow — caller is already returning INVALID_CREDENTIALS */
+    }
   }
 
   async refresh(refreshToken: string, ctx: SessionContext): Promise<TokenPair> {
@@ -436,8 +535,34 @@ export class AuthService {
     if (session.expiresAt < new Date()) {
       throw new TavernError(ErrorCodes.EXPIRED_TOKEN, 'Refresh token expired', 401);
     }
-    if (session.refreshTokenHash !== sha256(refreshToken)) {
+    // Timing-safe equality on the SHA-256 hex of the presented token. The
+    // hashes are fixed length so leakage from `!==` short-circuiting is
+    // theoretical, but timingSafeEqual is the right primitive here and
+    // costs nothing.
+    const presentedHash = sha256(refreshToken);
+    const storedHashBuf = Buffer.from(session.refreshTokenHash, 'hex');
+    const presentedHashBuf = Buffer.from(presentedHash, 'hex');
+    if (
+      storedHashBuf.length !== presentedHashBuf.length ||
+      !crypto.timingSafeEqual(storedHashBuf, presentedHashBuf)
+    ) {
       throw new TavernError(ErrorCodes.INVALID_TOKEN, 'Refresh token does not match session', 401);
+    }
+    // SEC: re-check the user's lifecycle state on every refresh. A
+    // scheduledDeleteAt in the past means the account is past its grace
+    // window and should be considered deleted — minting fresh access tokens
+    // for it would be a privilege-escalation against the deletion job.
+    const user = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { id: true, scheduledDeleteAt: true },
+    });
+    if (!user || (user.scheduledDeleteAt && user.scheduledDeleteAt < new Date())) {
+      // Burn the session so subsequent refresh attempts also fail fast.
+      await prisma.session.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date() },
+      });
+      throw TavernError.unauthorized('Account no longer active');
     }
 
     // Rotate: revoke this session and issue a new one.

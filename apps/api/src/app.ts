@@ -98,7 +98,7 @@ import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerDmRoutes } from './routes/dms.js';
 import { registerUserRoutes } from './routes/users.js';
 import { registerGateway } from './gateway/index.js';
-import { initRedisBroker } from './services/gateway-broker.js';
+import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
 
 export interface BuildAppOptions {
@@ -116,8 +116,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       ? opts.config.TRUST_PROXY
       : opts.config.NODE_ENV === 'production';
   const app: FastifyInstance = Fastify({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    loggerInstance: createLogger(opts.config.NODE_ENV) as any,
+    loggerInstance: createLogger(opts.config.NODE_ENV),
     bodyLimit: 2 * 1024 * 1024,
     trustProxy,
     // SEC-013: request logging is on in production by default and suppressed
@@ -125,6 +124,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // can still flip it explicitly via LOG_LEVEL.
     disableRequestLogging: opts.config.NODE_ENV === 'test',
   });
+  // Plumb app.log into the gateway broker so its in-process publish failures
+  // surface via structured logging instead of console.warn.
+  setBrokerLogger((msg) => app.log.warn(msg));
 
   await app.register(sensible);
   // Cookie support — used by the auth slice to deliver the refresh token as

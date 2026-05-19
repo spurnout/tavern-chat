@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Plus, Skull, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -26,7 +26,7 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
   const [newName, setNewName] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  async function refresh(): Promise<void> {
+  const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
       const r = await api<Npc[]>(`/campaigns/${campaignId}/npcs`);
@@ -36,10 +36,10 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
     } finally {
       setLoading(false);
     }
-  }
+  }, [campaignId]);
   useEffect(() => {
     void refresh();
-  }, [campaignId]);
+  }, [refresh]);
 
   const filtered = npcs.filter((n) =>
     [n.name, n.factionTag ?? '', n.locationTag ?? '']

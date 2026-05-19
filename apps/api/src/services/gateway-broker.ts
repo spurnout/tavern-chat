@@ -38,6 +38,9 @@ export interface GatewayBrokerHandle {
   close(): Promise<void>;
 }
 
+/** Default no-op logger; replaced via LazyBroker.setLogger when app.log is available. */
+let brokerLog: (msg: unknown) => void = () => undefined;
+
 class InProcessBroker implements GatewayBrokerHandle {
   readonly emitter = new EventEmitter();
 
@@ -52,7 +55,11 @@ class InProcessBroker implements GatewayBrokerHandle {
     try {
       this.emitter.emit('event', event);
     } catch (err) {
-      console.warn('[gateway-broker] in-process publish failed', err);
+      brokerLog({
+        msg: 'gateway.broker.in_process_publish_failed',
+        err: err instanceof Error ? err.message : String(err),
+        type: event.type,
+      });
     }
   }
 
@@ -193,15 +200,29 @@ class LazyBroker implements GatewayBrokerHandle {
 export const gatewayBroker = new LazyBroker();
 
 /**
+ * Attach a structured logger to the broker. Used by the in-process publish
+ * path to report synchronous subscriber failures and (when subsequently
+ * promoted via useRedis) to plumb malformed-payload reports. Idempotent —
+ * later calls overwrite the previous logger, so calling once at startup is
+ * sufficient.
+ */
+export function setBrokerLogger(log: (msg: unknown) => void): void {
+  brokerLog = log;
+}
+
+/**
  * Promote the broker to Redis-backed pub/sub. Call once during startup with
  * the API's REDIS_URL. Safe to call multiple times — second call is a no-op.
  * The optional logger is forwarded to the broker for structured malformed-
- * payload reporting (RT-004) and fallback diagnostics (RT-006).
+ * payload reporting (RT-004) and fallback diagnostics (RT-006). The same
+ * logger is also installed via `setBrokerLogger` for the in-process publish
+ * path so logger consistency holds whether or not Redis is reached.
  */
 export async function initRedisBroker(
   url: string,
   log?: (msg: unknown) => void,
 ): Promise<void> {
+  if (log) setBrokerLogger(log);
   await gatewayBroker.useRedis(url, log);
 }
 
