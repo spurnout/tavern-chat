@@ -27,6 +27,8 @@ import {
 } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+import { fanOutServerUpdate } from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 
 interface ServerRouteDeps {
   /**
@@ -37,6 +39,15 @@ interface ServerRouteDeps {
    * (the fan-out helper checks both layers).
    */
   federationEnabledOnInstance: boolean;
+  /**
+   * Queue client used to enqueue outbound federation envelopes for the P4-9
+   * server.update fan-out. Optional — when omitted (or when `selfHost` is
+   * missing), the fan-out hook short-circuits and the local SERVER_UPDATE
+   * broadcast is unaffected.
+   */
+  queues?: QueueClient;
+  /** The local instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
 }
 
 export async function registerServerRoutes(
@@ -152,6 +163,16 @@ export async function registerServerRoutes(
       );
     }
 
+    // Pre-PATCH read — we need `originInstanceId` (to skip the fan-out when
+    // T is a MIRROR of somebody else's server) and `ownerUserId` (the
+    // user-layer signer for the outbound envelope). One round-trip up front
+    // beats threading these through the update's `select`.
+    const beforeRow = await prisma.server.findUnique({
+      where: { id },
+      select: { id: true, originInstanceId: true, ownerUserId: true, federationEnabled: true },
+    });
+    if (!beforeRow) throw TavernError.notFound('Server not found');
+
     const updated = await prisma.server.update({
       where: { id },
       data: {
@@ -177,6 +198,61 @@ export async function registerServerRoutes(
       serverId: id,
       data: serializeServer(updated),
     });
+
+    // P4-9 — fan out the server update to every peered instance that has a
+    // member in this server. Best-effort: local clients have already received
+    // the broadcast above. Gated on:
+    //   1. Deps (queues + selfHost) wired in — i.e. FEDERATION_ENABLED is on
+    //   2. T is NOT a mirror of somebody else's server (originInstanceId is
+    //      null). A doesn't push updates for B's mirror back to B.
+    //   3. T's federationEnabled flag is true POST-update.
+    //
+    // If the PATCH is itself the "turn federation off" hop, the post-update
+    // flag is false and no envelope fires. Peers keep their existing mirror
+    // until the next time the operator flips federation back on (Phase 4
+    // intentionally does not synthesise a "federation went away" envelope at
+    // the server level — that surface area is reserved for a later phase).
+    if (
+      deps.queues &&
+      deps.selfHost &&
+      beforeRow.originInstanceId === null &&
+      updated.federationEnabled
+    ) {
+      try {
+        const owner = await prisma.user.findUnique({
+          where: { id: updated.ownerUserId },
+          select: { username: true },
+        });
+        if (owner) {
+          // Coerce `iconAttachmentId` (a local row id) to the wire format's
+          // `iconUrl` field. Phase 4 has no resolved icon URL pipeline; for
+          // now we only thread through the field if the PATCH actually
+          // touched it AND it was explicitly cleared (null). When set to a
+          // local attachment id, we skip the iconUrl field (the wire schema
+          // expects a fully-qualified URL we don't synthesise yet — that
+          // ships with the icon-fetching work in a later phase).
+          const iconUrl = body.iconAttachmentId === null ? null : undefined;
+          await fanOutServerUpdate({
+            queues: deps.queues,
+            selfHost: deps.selfHost,
+            serverId: id,
+            ownerUserId: updated.ownerUserId,
+            ownerUsername: owner.username,
+            name: body.name,
+            description: body.description,
+            iconUrl,
+            log: app.log,
+            federationEnabledOnInstance: deps.federationEnabledOnInstance,
+          });
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, serverId: id },
+          'federation fan-out failed for server.update',
+        );
+      }
+    }
 
     reply.send(ok(serializeServer(updated)));
   });

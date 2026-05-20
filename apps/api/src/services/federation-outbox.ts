@@ -20,11 +20,16 @@ import type { FastifyBaseLogger } from 'fastify';
 import { prisma } from '@tavern/db';
 import type { EnvelopeEventType } from '@tavern/shared';
 import {
+  channelCreatePayloadSchema,
+  channelDeletePayloadSchema,
+  channelUpdatePayloadSchema,
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
   reactionAddPayloadSchema,
   reactionRemovePayloadSchema,
+  serverUpdatePayloadSchema,
+  ulid,
 } from '@tavern/shared';
 import type { QueueClient } from './queues.js';
 
@@ -405,6 +410,299 @@ export async function fanOutReactionRemove(input: FanOutReactionRemoveInput): Pr
       const errObj = err instanceof Error ? err : new Error(String(err));
       input.log.warn(
         { err: errObj, peerInstanceId, messageId: input.messageId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+// --- P4-9 — server/channel lifecycle fan-out --------------------------------
+//
+// These helpers mirror the message-fan-out shape but route mirror-server
+// lifecycle envelopes (server.update, channel.create/update/delete) to peers
+// that hold at least one ServerMember in T. The caller has already gated on:
+//   - `server.federationEnabled` (server-level toggle)
+//   - `server.originInstanceId === null` (this instance owns T; we don't
+//     push updates for somebody else's mirror)
+//   - FEDERATION_ENABLED at the instance config level (gated again inside
+//     the helper as defence-in-depth, mirroring the message helpers).
+//
+// Author identity for the user-layer signature is the SERVER OWNER, because
+// the inbound mirror lifecycle handler resolves the author by looking up
+// `server.ownerUserId` (see `resolveMirrorOwner` in `federation-inbound.ts`).
+// The route layer reads the owner's id + username and passes them through;
+// the helper itself does not re-resolve to keep the contract explicit.
+//
+// `messageId` on the outbox job is reused as the dedupe / log key. For these
+// envelopes there is no underlying Message row — we pass the SERVER id for
+// `server.update` and the CHANNEL id for the three channel envelopes, since
+// those are the natural per-event identifiers an operator will grep for.
+// `nonce` is set explicitly to a fresh ULID per call so multiple PATCHes of
+// the same server / channel don't collapse to a single BullMQ job (the
+// default jobId derives from the nonce).
+
+export interface FanOutServerUpdateInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  /** The server owner's User.id — used to load the user-key signer. */
+  ownerUserId: string;
+  /** The server owner's username — used to build the qualified author id. */
+  ownerUsername: string;
+  /** Updated fields. All optional — only changed fields go on the wire. */
+  name?: string;
+  description?: string | null;
+  iconUrl?: string | null;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `server.update` envelope to every peered instance that has a
+ * ServerMember in this server. Caller has already verified:
+ *   - `server.federationEnabled === true`
+ *   - `server.originInstanceId === null` (we own T; do not push updates for
+ *     somebody else's mirror)
+ *   - FEDERATION_ENABLED at the instance level (defence-in-depth inside).
+ *
+ * The user-layer signer is the server OWNER (matches the inbound resolver in
+ * `federation-inbound.ts:resolveMirrorOwner`). `authorRemoteUserId` on the
+ * wire is implicit — the receiver derives it from envelope `fromInstance` +
+ * the mirror's owner row.
+ */
+export async function fanOutServerUpdate(input: FanOutServerUpdateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, eventType: 'server.update' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = serverUpdatePayloadSchema.parse({
+    serverId: input.serverId,
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.iconUrl !== undefined ? { iconUrl: input.iconUrl } : {}),
+  });
+
+  const eventType: EnvelopeEventType = 'server.update';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        // No Message row — use the serverId as the human-readable log key.
+        messageId: input.serverId,
+        peerInstanceId,
+        eventType,
+        // Fresh nonce per call so repeated PATCHes don't dedupe to a single
+        // BullMQ job (the default `nonce ?? messageId` would collapse them).
+        nonce: ulid(),
+        authorUserId: input.ownerUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, serverId: input.serverId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutChannelCreateInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  channel: {
+    id: string;
+    name: string;
+    type: 'text' | 'forum';
+    topic: string | null;
+    position: number;
+    federationMode: 'inherit' | 'force_on' | 'force_off';
+    nsfw: boolean;
+  };
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `channel.create` envelope to every peered instance that has a
+ * ServerMember in this server. Caller has already verified that the server
+ * is federated and not a mirror, and that the channel is text/forum (only
+ * those two types are federation-eligible on the wire schema).
+ */
+export async function fanOutChannelCreate(input: FanOutChannelCreateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, channelId: input.channel.id, eventType: 'channel.create' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = channelCreatePayloadSchema.parse({
+    serverId: input.serverId,
+    channel: {
+      id: input.channel.id,
+      name: input.channel.name,
+      type: input.channel.type,
+      topic: input.channel.topic,
+      position: input.channel.position,
+      federationMode: input.channel.federationMode,
+      nsfw: input.channel.nsfw,
+    },
+  });
+
+  const eventType: EnvelopeEventType = 'channel.create';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        // Channel id is the natural log/dedupe key for channel envelopes.
+        messageId: input.channel.id,
+        peerInstanceId,
+        eventType,
+        nonce: ulid(),
+        authorUserId: input.ownerUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, channelId: input.channel.id, serverId: input.serverId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutChannelUpdateInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  channelId: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  /** Updated fields. All optional — only changed fields go on the wire. */
+  name?: string;
+  topic?: string | null;
+  position?: number;
+  federationMode?: 'inherit' | 'force_on' | 'force_off';
+  nsfw?: boolean;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `channel.update` envelope. Critically, this fires REGARDLESS of
+ * effective per-channel federation as long as the SERVER is federated. A
+ * channel toggling its federationMode (including flipping to `force_off`) is
+ * itself a `channel.update` event peers must learn about — without it, the
+ * receiving side would keep expecting (and accepting) messages on a room
+ * that has gone silent.
+ */
+export async function fanOutChannelUpdate(input: FanOutChannelUpdateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, channelId: input.channelId, eventType: 'channel.update' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = channelUpdatePayloadSchema.parse({
+    serverId: input.serverId,
+    channelId: input.channelId,
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.topic !== undefined ? { topic: input.topic } : {}),
+    ...(input.position !== undefined ? { position: input.position } : {}),
+    ...(input.federationMode !== undefined ? { federationMode: input.federationMode } : {}),
+    ...(input.nsfw !== undefined ? { nsfw: input.nsfw } : {}),
+  });
+
+  const eventType: EnvelopeEventType = 'channel.update';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.channelId,
+        peerInstanceId,
+        eventType,
+        nonce: ulid(),
+        authorUserId: input.ownerUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, channelId: input.channelId, serverId: input.serverId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutChannelDeleteInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  channelId: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `channel.delete` envelope. Same gating contract as
+ * `fanOutChannelUpdate`: server must be federated and not a mirror; the
+ * per-channel federation override does not matter here (a deleted channel
+ * is by definition no longer producing messages either way, and peers need
+ * to know to tear down the mirror channel row).
+ */
+export async function fanOutChannelDelete(input: FanOutChannelDeleteInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, channelId: input.channelId, eventType: 'channel.delete' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = channelDeletePayloadSchema.parse({
+    serverId: input.serverId,
+    channelId: input.channelId,
+  });
+
+  const eventType: EnvelopeEventType = 'channel.delete';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.channelId,
+        peerInstanceId,
+        eventType,
+        nonce: ulid(),
+        authorUserId: input.ownerUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, channelId: input.channelId, serverId: input.serverId, eventType },
         'federation fan-out enqueue failed for peer',
       );
     }
