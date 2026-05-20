@@ -36,12 +36,19 @@ import {
   ulid,
 } from '@tavern/shared';
 import {
+  canonicalize,
   generateKeyPair,
   exportPublicKeyRaw,
+  publicKeyFromRaw,
   sign as edSign,
+  verify as edVerify,
   buildTwoLayerMessageEnvelope,
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
+import {
+  PROTOCOL_VERSION,
+  type MemberJoinedPayload,
+} from '@tavern/shared';
 
 let ctx: IntegrationContext | null = null;
 let prisma: PrismaClient;
@@ -434,6 +441,7 @@ async function cleanDb(): Promise<void> {
   await prisma.userMention.deleteMany({});
   await prisma.pinnedMessage.deleteMany({});
   await prisma.message.deleteMany({});
+  await prisma.invite.deleteMany({});
   await prisma.serverMember.deleteMany({});
   await prisma.permissionOverwrite.deleteMany({});
   await prisma.role.deleteMany({});
@@ -1646,6 +1654,483 @@ describe.skipIf(!dockerOk)('P3-9 — POST /_federation/event (reaction.remove)',
       expect(res.statusCode).toBe(403);
       const body = res.json();
       expect(body.error).toMatch(/custom emojis do not cross federation/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-7 — POST /_federation/event (member.join_request)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  /**
+   * Variant of makeFixture that also creates a federated invite minted on
+   * THIS instance (the home A side). Returns the fixture plus the invite
+   * details needed for the join_request envelope.
+   *
+   * The fixture's `localUserId` represents a synthetic mirror user of the
+   * remote joiner (alice@b.example). The handler will ALSO call
+   * ensureUserForRemoteUser; the unique constraint on remoteUserId makes
+   * both calls idempotent.
+   */
+  async function makeJoinFixture(opts?: {
+    remoteScope?: 'any_peer' | 'specific_instance' | 'specific_user';
+    remoteInstanceHost?: string | null;
+    remoteUserIdOnInvite?: string | null;
+    maxUses?: number | null;
+    expiresAt?: Date | null;
+    revokedAt?: Date | null;
+    extraLocalMembers?: number;
+  }): Promise<{
+    fx: PeerFixture;
+    inviteId: string;
+    inviteCode: string;
+    extraLocalMemberIds: string[];
+  }> {
+    const fx = await makeFixture();
+    const inviteId = ulid();
+    const inviteCode = `INV-${ulid().slice(-8)}`;
+    const remoteScope = opts?.remoteScope ?? 'any_peer';
+
+    // The joiner row already exists (makeFixture seeded it). For tests
+    // where we want extra local members in the roster, add them here.
+    const extraIds: string[] = [];
+    for (let i = 0; i < (opts?.extraLocalMembers ?? 0); i++) {
+      const id = ulid();
+      const username = `extra-${id.slice(-6).toLowerCase()}`;
+      await prisma.user.create({
+        data: {
+          id,
+          username,
+          usernameLower: username,
+          displayName: `Extra ${i}`,
+          email: `${username}@example.com`,
+          emailLower: `${username}@example.com`,
+          passwordHash: 'x',
+        },
+      });
+      await prisma.serverMember.create({
+        data: { serverId: fx.serverId, userId: id },
+      });
+      extraIds.push(id);
+    }
+
+    // Drop the joiner's pre-seeded membership — the handler will create
+    // it as part of the redeem flow. Without this the happy-path test
+    // can't distinguish a freshly-created membership from the pre-seed.
+    await prisma.serverMember.delete({
+      where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+    });
+
+    await prisma.invite.create({
+      data: {
+        id: inviteId,
+        code: inviteCode,
+        scope: 'server',
+        serverId: fx.serverId,
+        createdById: null,
+        maxUses: opts?.maxUses === undefined ? null : opts.maxUses,
+        uses: 0,
+        expiresAt: opts?.expiresAt ?? null,
+        revokedAt: opts?.revokedAt ?? null,
+        remoteScope,
+        remoteInstanceHost:
+          opts?.remoteInstanceHost === undefined
+            ? remoteScope === 'any_peer'
+              ? null
+              : PEER_HOST
+            : opts.remoteInstanceHost,
+        remoteUserId:
+          opts?.remoteUserIdOnInvite === undefined
+            ? remoteScope === 'specific_user'
+              ? fx.authorRemoteUserId
+              : null
+            : opts.remoteUserIdOnInvite,
+      },
+    });
+
+    return { fx, inviteId, inviteCode, extraLocalMemberIds: extraIds };
+  }
+
+  function buildJoinRequestEnvelope(input: {
+    fx: PeerFixture;
+    inviteCode: string;
+    joinerRemoteUserIdOverride?: string;
+    signUserOverride?: (bytes: Buffer) => Buffer;
+    signInstanceOverride?: (bytes: Buffer) => Buffer;
+  }): TwoLayerSignedEnvelope<unknown> {
+    const { fx } = input;
+    return buildTwoLayerMessageEnvelope({
+      eventType: 'member.join_request',
+      fromInstance: PEER_HOST,
+      toInstance: SELF_HOST,
+      payload: {
+        inviteCode: input.inviteCode,
+        joinerRemoteUserId:
+          input.joinerRemoteUserIdOverride ?? fx.authorRemoteUserId,
+      },
+      signUser:
+        input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+      signInstance:
+        input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+    });
+  }
+
+  /**
+   * Assert that the response body parses as a signed envelope of the
+   * given event type, signed by THIS instance's federation key. Returns
+   * the typed payload for further assertions.
+   */
+  async function assertSignedReply(
+    body: unknown,
+    expectedEventType: 'member.joined',
+  ): Promise<MemberJoinedPayload> {
+    expect(body).toMatchObject({
+      version: PROTOCOL_VERSION,
+      eventType: expectedEventType,
+      fromInstance: SELF_HOST,
+      toInstance: PEER_HOST,
+    });
+
+    const env = body as {
+      payload: MemberJoinedPayload;
+      signature: string;
+      version: string;
+      eventType: string;
+      nonce: string;
+      notBefore: string;
+      notAfter: string;
+      fromInstance: string;
+      toInstance: string;
+    };
+
+    // Pull this instance's federation public key from the DB and verify
+    // the signature over canonical(envelope-minus-signature).
+    const keyRow = await prisma.federationKey.findFirstOrThrow({
+      where: { isCurrent: true },
+    });
+    const pub = publicKeyFromRaw(Buffer.from(keyRow.publicKey));
+    const { signature, ...unsigned } = env;
+    const bytes = Buffer.from(canonicalize(unsigned as unknown), 'utf8');
+    expect(edVerify(bytes, Buffer.from(signature, 'base64'), pub)).toBe(true);
+
+    return env.payload;
+  }
+
+  // ─── 1. Happy path ─────────────────────────────────────────────────────────
+
+  it('happy path: redeems invite, creates ServerMember, returns signed snapshot', async () => {
+    const { fx, inviteCode, inviteId } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const body = res.json();
+      const replyPayload = await assertSignedReply(body, 'member.joined');
+      expect(replyPayload.inviteCode).toBe(inviteCode);
+      expect(replyPayload.serverSnapshot.serverId).toBe(fx.serverId);
+      expect(replyPayload.serverSnapshot.federationEnabled).toBe(true);
+
+      // ServerMember was inserted for the joiner.
+      const member = await prisma.serverMember.findUnique({
+        where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+      });
+      expect(member).not.toBeNull();
+
+      // Invite uses incremented from 0 → 1.
+      const invite = await prisma.invite.findUniqueOrThrow({
+        where: { id: inviteId },
+      });
+      expect(invite.uses).toBe(1);
+
+      // Snapshot includes the joiner. The makeFixture sets up an owner
+      // (local) and a synthetic mirror user (the joiner — Alice from B);
+      // both should appear.
+      const remoteUserIds = replyPayload.serverSnapshot.members.map(
+        (m) => m.remoteUserId,
+      );
+      expect(remoteUserIds).toContain(fx.authorRemoteUserId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 2. Invalid invite code → 404 ─────────────────────────────────────────
+
+  it('unknown invite code → 404', async () => {
+    const { fx } = await makeJoinFixture({ remoteScope: 'any_peer' });
+    const envelope = buildJoinRequestEnvelope({
+      fx,
+      inviteCode: 'DOES-NOT-EXIST',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/invite .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 3. Invite expired → 410 ──────────────────────────────────────────────
+
+  it('expired invite → 410', async () => {
+    const { fx, inviteCode } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(410);
+      const body = res.json();
+      expect(body.error).toMatch(/expired/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 4. Invite revoked → 410 ──────────────────────────────────────────────
+
+  it('revoked invite → 410', async () => {
+    const { fx, inviteCode } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+      revokedAt: new Date(),
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(410);
+      const body = res.json();
+      expect(body.error).toMatch(/revoked/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 5. Invite exhausted (uses >= maxUses) → 410 ──────────────────────────
+
+  it('exhausted invite (uses >= maxUses) → 410', async () => {
+    const { fx, inviteCode, inviteId } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+      maxUses: 1,
+    });
+    // Bump uses to maxUses so the initial validity check trips.
+    await prisma.invite.update({ where: { id: inviteId }, data: { uses: 1 } });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(410);
+      const body = res.json();
+      expect(body.error).toMatch(/fully used/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 6. Local-only invite (remoteScope=null) → 404 ────────────────────────
+
+  it('local-only invite (remoteScope null) → 404 (does not leak existence)', async () => {
+    // Set up the rest of the fixture but make the invite local-only.
+    const fx = await makeFixture();
+    await prisma.serverMember.delete({
+      where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+    });
+    const inviteCode = `LOCAL-${ulid().slice(-8)}`;
+    await prisma.invite.create({
+      data: {
+        id: ulid(),
+        code: inviteCode,
+        scope: 'server',
+        serverId: fx.serverId,
+        maxUses: null,
+        uses: 0,
+        expiresAt: null,
+        revokedAt: null,
+        // remoteScope is null → not a federated invite.
+        remoteScope: null,
+      },
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/not federated/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 7. specific_instance mismatch → 403 ──────────────────────────────────
+
+  it('specific_instance invite from wrong peer → 403', async () => {
+    const { fx, inviteCode } = await makeJoinFixture({
+      remoteScope: 'specific_instance',
+      remoteInstanceHost: 'someone-else.example',
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/scoped to/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 8. specific_user mismatch → 403 ──────────────────────────────────────
+
+  it('specific_user invite with wrong joinerRemoteUserId → 403', async () => {
+    const { fx, inviteCode } = await makeJoinFixture({
+      remoteScope: 'specific_user',
+      // Invite is pinned to a DIFFERENT remote user on the same host.
+      remoteUserIdOnInvite: `someone-else@${PEER_HOST}`,
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/scoped to a different user/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 9. Idempotent same joiner: second envelope succeeds, uses NOT double-incremented
+
+  it('idempotent same joiner: 2x envelopes → both 200, uses incremented only once', async () => {
+    const { fx, inviteCode, inviteId } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+    });
+    // Build TWO envelopes — different nonces so the replay log doesn't
+    // drop the second. The handler-level idempotency (P2002 catch on
+    // ServerMember.create) is what we're exercising.
+    const env1 = buildJoinRequestEnvelope({ fx, inviteCode });
+    const env2 = buildJoinRequestEnvelope({ fx, inviteCode });
+    expect(env1.nonce).not.toBe(env2.nonce);
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const r1 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: env1,
+      });
+      expect(r1.statusCode).toBe(200);
+
+      const r2 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: env2,
+      });
+      expect(r2.statusCode).toBe(200);
+
+      // Exactly one ServerMember row for the joiner — the second attempt
+      // hit the P2002 path and dedup'd.
+      const members = await prisma.serverMember.findMany({
+        where: { serverId: fx.serverId, userId: fx.localUserId },
+      });
+      expect(members).toHaveLength(1);
+
+      // Invite.uses incremented only once across the two calls.
+      const invite = await prisma.invite.findUniqueOrThrow({
+        where: { id: inviteId },
+      });
+      expect(invite.uses).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 10. Snapshot includes prior members + the new joiner ─────────────────
+
+  it('snapshot member roster includes prior members + joiner', async () => {
+    const { fx, inviteCode, extraLocalMemberIds } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+      extraLocalMembers: 2,
+    });
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      const replyPayload = await assertSignedReply(body, 'member.joined');
+
+      // Owner + 2 extras + joiner = 4 members.
+      expect(replyPayload.serverSnapshot.members).toHaveLength(4);
+
+      // Each extra local member appears with a `<localpart>@<selfHost>`
+      // qualified id (they're LOCAL users on this instance).
+      const remoteUserIds = replyPayload.serverSnapshot.members.map(
+        (m) => m.remoteUserId,
+      );
+      for (const extraId of extraLocalMemberIds) {
+        const extra = await prisma.user.findUniqueOrThrow({
+          where: { id: extraId },
+          select: { username: true },
+        });
+        expect(remoteUserIds).toContain(`${extra.username}@${SELF_HOST}`);
+      }
+
+      // Joiner is in the roster too — qualified id matches the verified
+      // RemoteUser.remoteUserId.
+      expect(remoteUserIds).toContain(fx.authorRemoteUserId);
     } finally {
       await app.close();
     }

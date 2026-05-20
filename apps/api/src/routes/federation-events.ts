@@ -54,9 +54,12 @@ function statusForCode(code: FederationInboundError['code']): number {
       return 403;
     case 'unknown_channel':
     case 'unknown_message':
+    case 'unknown_invite':
       return 404;
     case 'replay':
       return 409;
+    case 'invite_no_longer_valid':
+      return 410;
     case 'not_implemented':
       return 501;
   }

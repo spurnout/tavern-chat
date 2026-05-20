@@ -53,21 +53,27 @@ import { prisma as defaultPrisma } from '@tavern/db';
 import {
   canonicalize,
   verifyTwoLayerMessageEnvelope,
+  type FederationKeyStore,
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
 import {
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
+  memberJoinRequestPayloadSchema,
+  memberJoinedPayloadSchema,
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
   reactionAddPayloadSchema,
   reactionRemovePayloadSchema,
+  type MemberJoinRequestPayload,
+  type MemberJoinedPayload,
   type MessageCreatePayload,
   type MessageDeletePayload,
   type MessageUpdatePayload,
   type ReactionAddPayload,
   type ReactionRemovePayload,
+  type ServerSnapshot,
   ulid,
 } from '@tavern/shared';
 import { z } from 'zod';
@@ -76,6 +82,11 @@ import {
   computeEffectiveFederation,
   type FederationMode,
 } from './federation-outbox.js';
+import {
+  buildSignedEnvelope,
+  type SignedEnvelope,
+} from './federation-envelopes.js';
+import { deriveServerIconUrl } from './federation-invite-preview.js';
 import { FederationProfileService } from './federation-profile.js';
 import { gatewayBroker } from './gateway-broker.js';
 import { serializeMessage } from '../lib/serializers.js';
@@ -94,6 +105,8 @@ export type InboundErrorCode =
   | 'replay' // 409 — (peerInstanceId, nonce) already logged
   | 'unknown_channel' // 404 — payload references a channelId we don't have
   | 'unknown_message' // 404 — payload references a messageId we don't have
+  | 'unknown_invite' // 404 — payload.inviteCode not found / not federated
+  | 'invite_no_longer_valid' // 410 — invite is revoked / expired / exhausted
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
   | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
@@ -111,6 +124,19 @@ export class FederationInboundError extends Error {
 
 export interface FederationInboundServiceOptions {
   profile: FederationProfileService;
+  /**
+   * Instance keystore — only required for handlers that produce a signed
+   * response envelope (P4-7 `member.join_request` returns a signed
+   * `member.joined` envelope). Optional so older instantiations without
+   * P4-7 still type-check, but `processEnvelope` will throw at build time
+   * if a handler tries to set `responseEnvelopePayload` without keys.
+   */
+  keys?: FederationKeyStore;
+  /**
+   * This instance's federation host (e.g. `a.example`). Required when
+   * handlers produce signed response envelopes (used as `fromInstance`).
+   */
+  selfHost?: string;
   prisma?: PrismaClient;
 }
 
@@ -122,10 +148,14 @@ export interface ProcessEnvelopeResult {
 export class FederationInboundService {
   private readonly prisma: PrismaClient;
   private readonly profile: FederationProfileService;
+  private readonly keys: FederationKeyStore | null;
+  private readonly selfHost: string | null;
 
   constructor(opts: FederationInboundServiceOptions) {
     this.prisma = opts.prisma ?? defaultPrisma;
     this.profile = opts.profile;
+    this.keys = opts.keys ?? null;
+    this.selfHost = opts.selfHost ?? null;
   }
 
   /**
@@ -267,6 +297,9 @@ export class FederationInboundService {
 
     let result: ProcessEnvelopeResult;
     let postCommit: PostCommitAction | null = null;
+    let responseEnvelopePayload:
+      | { eventType: EnvelopeEventType; payload: unknown }
+      | null = null;
     try {
       const txOutput = await this.prisma.$transaction(async (tx) => {
         await tx.federationEnvelopeLog.create({
@@ -289,10 +322,12 @@ export class FederationInboundService {
           peer,
           remoteUser: remoteUserRow,
           tx,
+          selfHost: this.selfHost,
         });
       });
       result = txOutput.result;
       postCommit = txOutput.postCommit ?? null;
+      responseEnvelopePayload = txOutput.responseEnvelopePayload ?? null;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         // The unique-constraint failure is the log row in the vast majority
@@ -315,6 +350,32 @@ export class FederationInboundService {
     //     from this peer even if message persistence had to retry).
     if (postCommit) {
       await postCommit(this.prisma);
+    }
+
+    // P4-7: response-envelope wrapping. When the handler returned a
+    // `responseEnvelopePayload`, sign a single-layer envelope with this
+    // instance's key and use it as the HTTP response body. The signing
+    // happens AFTER the transaction commits because the snapshot fields
+    // (member roster etc.) reflect committed state, and we don't want to
+    // emit a signed envelope describing rows that could roll back.
+    if (responseEnvelopePayload) {
+      if (!this.keys || !this.selfHost) {
+        // Configuration bug — a handler asked for a signed response but the
+        // service wasn't wired with keys+selfHost. Crash loudly so the gap
+        // is caught at startup of any deployment that adds a handler.
+        throw new Error(
+          'FederationInboundService: handler returned responseEnvelopePayload ' +
+            'but service was constructed without keys/selfHost',
+        );
+      }
+      const signed: SignedEnvelope<unknown> = buildSignedEnvelope({
+        eventType: responseEnvelopePayload.eventType,
+        fromInstance: this.selfHost,
+        toInstance: verified.envelope.fromInstance,
+        payload: responseEnvelopePayload.payload,
+        sign: (bytes) => this.keys!.sign(bytes),
+      });
+      return { status: result.status, body: signed };
     }
     return result;
   }
@@ -339,10 +400,22 @@ export type PostCommitAction = (prisma: PrismaClient) => Promise<void>;
  * `lastSeenAt` cache touch). Splitting them lets `processEnvelope` keep the
  * "fire side effects only on commit" rule in one place — handlers don't
  * have to know they're being run inside a transaction.
+ *
+ * `responseEnvelopePayload` (P4-7) — when set, the dispatcher wraps the
+ * payload in a single-layer signed envelope (signed by THIS instance's
+ * instance key) and uses it as the HTTP response body. Used by
+ * `member.join_request` to return a `member.joined` envelope carrying the
+ * server snapshot. Mutually exclusive with `result.body`: when the
+ * dispatcher constructs the envelope it overrides whatever `result.body`
+ * the handler set, so handlers should leave `result.body` undefined.
  */
 export interface HandlerOutput {
   result: ProcessEnvelopeResult;
   postCommit?: PostCommitAction;
+  responseEnvelopePayload?: {
+    eventType: EnvelopeEventType;
+    payload: unknown;
+  };
 }
 
 /**
@@ -367,11 +440,18 @@ interface InboundHandler<TSchema extends z.ZodTypeAny> {
   handle: (input: {
     envelope: TwoLayerSignedEnvelope<z.infer<TSchema>>;
     payload: z.infer<TSchema>;
-    peer: { id: string };
+    peer: { id: string; host: string };
     remoteUser: NonNullable<
       Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
     >;
     tx: Prisma.TransactionClient;
+    /**
+     * This instance's federation host (e.g. `a.example`). Forwarded from
+     * the service constructor; only the `member.join_request` handler uses
+     * it (to build the qualified id for local members in the snapshot
+     * roster). Other handlers can ignore it.
+     */
+    selfHost: string | null;
   }) => Promise<HandlerOutput>;
 }
 
@@ -428,6 +508,18 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleReactionRemove as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'member.join_request': {
+    payloadSchema: memberJoinRequestPayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      // The joiner IS the author of the user-layer signature on this
+      // envelope. They aren't a local user on THIS instance — they live
+      // on the peer that sent the envelope.
+      const v = (payload as { joinerRemoteUserId?: unknown } | null)
+        ?.joinerRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleMemberJoinRequest as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -1171,6 +1263,424 @@ async function handleReactionRemove(input: {
         data: { lastSeenAt: new Date() },
       });
     },
+  };
+}
+
+// --- member.join_request handler --------------------------------------------
+
+/**
+ * Inbound `member.join_request` (P4-7).
+ *
+ * The peer (B) is asking us (A, the home of a federated invite) to redeem
+ * a code. The envelope's two-layer signature has already proved (a) the
+ * peer's instance signature checks out and (b) the joiner's user
+ * signature over the payload checks out — so we know who is asking and
+ * from which instance.
+ *
+ * Flow:
+ *   1. Look up the invite. Must exist, must be federated, must point at
+ *      a real Server.
+ *   2. Apply validity gates (revoked / expired / exhausted) → 410.
+ *   3. Apply scope gates:
+ *        - any_peer        → no extra check (peer is peered already)
+ *        - specific_instance → invite.remoteInstanceHost === peer.host
+ *        - specific_user   → invite.remoteUserId === joinerRemoteUserId
+ *      Anything mismatched → 403.
+ *   4. Materialise the joiner as a local synthetic User via
+ *      `ensureUserForRemoteUser`. The user-layer signature already
+ *      established their public key, so we use the RemoteUser row
+ *      resolved upstream.
+ *   5. Attempt `ServerMember.create` and catch P2002 — this is the
+ *      idempotency boundary. If the joiner is already a member, we
+ *      skip the `invite.uses` increment.
+ *   6. If the member was newly created, atomically increment
+ *      `invite.uses` (conditional updateMany so a concurrent join can't
+ *      push us past maxUses).
+ *   7. Build the snapshot — Server + federation-enabled text/forum
+ *      Channels + all current ServerMembers.
+ *   8. Return `responseEnvelopePayload` so the dispatcher wraps the
+ *      snapshot in a signed `member.joined` envelope, broadcast
+ *      `MEMBER_ADD` post-commit, and TODO(P4-10) fan out `member.add`
+ *      to OTHER peers in T.
+ */
+async function handleMemberJoinRequest(input: {
+  envelope: TwoLayerSignedEnvelope<MemberJoinRequestPayload>;
+  payload: MemberJoinRequestPayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+  selfHost: string | null;
+}): Promise<HandlerOutput> {
+  const { envelope, payload, peer, remoteUser, tx, selfHost } = input;
+
+  if (!selfHost) {
+    // Configuration bug — see `processEnvelope` for the matching check.
+    // Raised here so the join handler can't be invoked on a service that
+    // doesn't know its own host (the snapshot uses selfHost for local
+    // members' qualified ids).
+    throw new Error(
+      'member.join_request requires selfHost on FederationInboundService',
+    );
+  }
+
+  // Defence-in-depth: the user-layer signature verified that the payload
+  // was signed by `remoteUser.publicKey`. Make sure the joiner field in
+  // the payload matches the verified RemoteUser, so a malicious peer
+  // can't sign with user A's key and pretend the joiner is user B. The
+  // signing flow on the sending side puts the same id in both places;
+  // they should never diverge in practice.
+  if (payload.joinerRemoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'bad_envelope',
+      `joinerRemoteUserId ${payload.joinerRemoteUserId} does not match ` +
+        `verified user ${remoteUser.remoteUserId}`,
+    );
+  }
+
+  // Step 1 — look up the invite. Includes everything needed to validate
+  // scope + build the snapshot in one round-trip.
+  const invite = await tx.invite.findUnique({
+    where: { code: payload.inviteCode },
+    select: {
+      id: true,
+      code: true,
+      scope: true,
+      serverId: true,
+      maxUses: true,
+      uses: true,
+      expiresAt: true,
+      revokedAt: true,
+      remoteScope: true,
+      remoteInstanceHost: true,
+      remoteUserId: true,
+    },
+  });
+
+  if (!invite) {
+    throw new FederationInboundError(
+      'unknown_invite',
+      `invite ${payload.inviteCode} not found`,
+    );
+  }
+  // Local-only invites are indistinguishable from non-existent ones —
+  // matches the invite-preview surface so a malicious peer can't probe
+  // local invite codes by trying to redeem them.
+  if (invite.remoteScope === null) {
+    throw new FederationInboundError(
+      'unknown_invite',
+      `invite ${payload.inviteCode} is not federated`,
+    );
+  }
+  if (invite.scope !== 'server' || !invite.serverId) {
+    // Federation Phase 4 only supports server-scoped invites. Channel-
+    // scoped federated invites are not implemented; treat as unknown
+    // rather than a 4xx that leaks invite-existence.
+    throw new FederationInboundError(
+      'unknown_invite',
+      `invite ${payload.inviteCode} is not server-scoped`,
+    );
+  }
+
+  // Step 2 — validity gates. Order matches the preview route's wording
+  // for consistency, but the wire status is the same (410) for all three.
+  if (invite.revokedAt) {
+    throw new FederationInboundError(
+      'invite_no_longer_valid',
+      'invite has been revoked',
+    );
+  }
+  if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) {
+    throw new FederationInboundError(
+      'invite_no_longer_valid',
+      'invite has expired',
+    );
+  }
+  if (invite.maxUses !== null && invite.uses >= invite.maxUses) {
+    throw new FederationInboundError(
+      'invite_no_longer_valid',
+      'invite has been fully used',
+    );
+  }
+
+  // Step 3 — scope check. `any_peer` requires no extra check (the peer is
+  // already verified as peered before dispatch). Specific scopes pin the
+  // invite to a host or qualified user id; mismatch → 403.
+  if (invite.remoteScope === 'specific_instance') {
+    if (invite.remoteInstanceHost !== peer.host) {
+      throw new FederationInboundError(
+        'forbidden',
+        `invite is scoped to ${invite.remoteInstanceHost ?? '<unset>'}, not ${peer.host}`,
+      );
+    }
+  } else if (invite.remoteScope === 'specific_user') {
+    // specific_user pins both the host AND the user id. The host check
+    // mirrors specific_instance — even though the user id contains the
+    // host, an inconsistent pair is still a protocol violation.
+    if (
+      invite.remoteInstanceHost !== peer.host ||
+      invite.remoteUserId !== payload.joinerRemoteUserId
+    ) {
+      throw new FederationInboundError(
+        'forbidden',
+        `invite is scoped to a different user`,
+      );
+    }
+  }
+
+  // Step 4 — materialise the joiner as a local synthetic User. The
+  // `ensureUserForRemoteUser` helper is keyed on RemoteUser.remoteUserId,
+  // which is unique; it is idempotent across concurrent calls.
+  const localJoiner = await ensureUserForRemoteUser(
+    remoteUser,
+    tx as unknown as PrismaClient,
+  );
+
+  // Step 5 — try to create the ServerMember. P2002 on the composite PK
+  // (serverId, userId) means the joiner is already a member; treat that
+  // as an idempotent success and skip the uses increment.
+  let newMember = true;
+  try {
+    await tx.serverMember.create({
+      data: { serverId: invite.serverId, userId: localJoiner.id },
+    });
+  } catch (err) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      newMember = false;
+    } else {
+      throw err;
+    }
+  }
+
+  // Step 6 — atomic uses increment, only when we actually added a row.
+  // The conditional updateMany mirrors the auth-service register() flow:
+  // if a concurrent join already consumed the last use, our updateMany's
+  // WHERE clause no longer matches and result.count comes back 0. We
+  // treat that as "invite was exhausted under us" and surface 410. This
+  // can technically race against the maxUses check above; serializing
+  // the read+write across two queries is the only way to ensure a
+  // strictly-bounded count.
+  if (newMember) {
+    const result = await tx.invite.updateMany({
+      where: {
+        id: invite.id,
+        revokedAt: null,
+        ...(invite.maxUses !== null
+          ? { uses: { lt: invite.maxUses } }
+          : {}),
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      data: { uses: { increment: 1 } },
+    });
+    if (result.count === 0) {
+      // Race lost — another joiner consumed the final use between our
+      // initial validity check and now. Rolling back the transaction
+      // means we ALSO drop the ServerMember we just inserted, which is
+      // the correct outcome (the invite is no longer valid).
+      throw new FederationInboundError(
+        'invite_no_longer_valid',
+        'invite has been fully used',
+      );
+    }
+  }
+
+  // Step 7 — build the snapshot. The roster includes the joiner (the
+  // ServerMember we just inserted is committed to `tx`) and every other
+  // current ServerMember.
+  const snapshot = await buildServerSnapshot({
+    tx,
+    serverId: invite.serverId,
+    selfHost,
+  });
+
+  // Step 8 — return. The dispatcher will wrap `responseEnvelopePayload`
+  // in a single-layer signed envelope; post-commit fires the MEMBER_ADD
+  // gateway broadcast + lastSeenAt touch.
+  const memberJoinedPayload: MemberJoinedPayload = {
+    inviteCode: payload.inviteCode,
+    serverSnapshot: snapshot,
+  };
+  // Defence-in-depth: validate our own outgoing payload before signing
+  // it. Catches drift between this code and the wire schema at the
+  // sending side rather than at every peer.
+  memberJoinedPayloadSchema.parse(memberJoinedPayload);
+
+  const serverIdForBroadcast = invite.serverId;
+  const localJoinerId = localJoiner.id;
+  // envelope.eventType is used in the log line for consistency; the
+  // postCommit closure captures the few primitives it needs.
+  void envelope;
+
+  return {
+    result: { status: 200 },
+    responseEnvelopePayload: {
+      eventType: 'member.joined',
+      payload: memberJoinedPayload,
+    },
+    postCommit: async (prisma) => {
+      // Broadcast locally so any client currently viewing the home
+      // server gets the new member without a roster refetch. Skipped on
+      // the idempotent path (member was already present) — there's no
+      // new state to announce.
+      if (newMember) {
+        gatewayBroker.publish({
+          type: 'MEMBER_ADD',
+          serverId: serverIdForBroadcast,
+          data: { serverId: serverIdForBroadcast, userId: localJoinerId },
+        });
+      }
+      // TODO(P4-10): fan out `member.add` to OTHER peers of T (every
+      // peered instance besides the joiner's home). The shape will mirror
+      // the message-fan-out helpers — see `fanOutMemberAdd` placeholder
+      // in `federation-outbox.ts`. Until P4-10 lands, peers other than
+      // the joiner's home don't learn about the new member until they
+      // happen to receive a different envelope from them.
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+/**
+ * Build a `ServerSnapshot` payload from committed state inside a
+ * transaction. Used by `handleMemberJoinRequest` and (later) any other
+ * path that needs to bootstrap a peer with the current shape of T.
+ *
+ * The roster includes EVERY current ServerMember — local users carry a
+ * qualified id `<localpart>@<selfHost>`; remote-mirror users carry
+ * `User.remoteUserId` directly. Channels are filtered to text + forum
+ * with effective federation ON.
+ */
+async function buildServerSnapshot(input: {
+  tx: Prisma.TransactionClient;
+  serverId: string;
+  selfHost: string;
+}): Promise<ServerSnapshot> {
+  const { tx, serverId, selfHost } = input;
+
+  const server = await tx.server.findUnique({
+    where: { id: serverId },
+    select: {
+      id: true,
+      ownerUserId: true,
+      name: true,
+      description: true,
+      iconAttachmentId: true,
+      federationEnabled: true,
+      createdAt: true,
+    },
+  });
+  if (!server) {
+    // Invariant violation — the invite has serverId pointing at this row,
+    // and Invite.serverId has a Cascade FK. If we got here, something
+    // deleted the Server between the invite lookup and the snapshot
+    // build (or the row's id never existed). Surface as a 500 by throwing
+    // a plain Error so the route layer doesn't translate it as a
+    // recoverable code.
+    throw new Error(`server ${serverId} disappeared mid-transaction`);
+  }
+  if (!server.federationEnabled) {
+    // Defence-in-depth: even if an invite was minted while federation was
+    // on, the operator may have flipped it off afterwards. Reject the
+    // join rather than expose a snapshot for a non-federated server.
+    throw new FederationInboundError(
+      'invite_no_longer_valid',
+      `server ${serverId} has federation disabled`,
+    );
+  }
+
+  // Owner identity — local users carry a qualified id built from their
+  // username + selfHost. The owner is by definition LOCAL on the home
+  // instance (you can't own a mirror you don't run); we still guard
+  // against `null` username gracefully via findUniqueOrThrow.
+  const owner = await tx.user.findUnique({
+    where: { id: server.ownerUserId },
+    select: { username: true, remoteUserId: true },
+  });
+  if (!owner) {
+    throw new Error(`server ${serverId} owner ${server.ownerUserId} has no User row`);
+  }
+  // Mirror servers shouldn't be reachable here (the route is only on the
+  // home), but the owner's qualified id falls through to their
+  // remoteUserId if they happen to be a synthetic mirror user.
+  const ownerRemoteUserId = owner.remoteUserId ?? `${owner.username}@${selfHost}`;
+
+  // Channels — only text + forum, only with effective federation ON.
+  // Voice / stage / category / campaign / session / board_game channels
+  // are per-instance state and not part of the mirror surface.
+  const channelRows = await tx.channel.findMany({
+    where: {
+      serverId,
+      type: { in: ['text', 'forum'] },
+    },
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      topic: true,
+      position: true,
+      federationMode: true,
+      nsfw: true,
+    },
+    orderBy: { position: 'asc' },
+  });
+  const channels = channelRows
+    .filter((c) => {
+      const mode = (c.federationMode ?? 'inherit') as FederationMode;
+      return computeEffectiveFederation(server.federationEnabled, mode);
+    })
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      type: c.type as 'text' | 'forum',
+      topic: c.topic,
+      position: c.position,
+      federationMode: (c.federationMode ?? 'inherit') as
+        | 'inherit'
+        | 'force_on'
+        | 'force_off',
+      nsfw: c.nsfw,
+    }));
+
+  // Member roster — local users carry `<localpart>@<selfHost>`; mirror
+  // users carry `User.remoteUserId` directly. `displayName` falls back
+  // to the user's username when unset.
+  const memberRows = await tx.serverMember.findMany({
+    where: { serverId },
+    select: {
+      joinedAt: true,
+      user: {
+        select: {
+          username: true,
+          displayName: true,
+          remoteUserId: true,
+        },
+      },
+    },
+    orderBy: { joinedAt: 'asc' },
+  });
+  const members = memberRows.map((m) => ({
+    remoteUserId: m.user.remoteUserId ?? `${m.user.username}@${selfHost}`,
+    displayName: m.user.displayName,
+    joinedAt: m.joinedAt.toISOString(),
+  }));
+
+  return {
+    serverId: server.id,
+    ownerRemoteUserId,
+    name: server.name,
+    description: server.description,
+    iconUrl: deriveServerIconUrl(server.iconAttachmentId, selfHost),
+    federationEnabled: true,
+    channels,
+    members,
+    createdAt: server.createdAt.toISOString(),
   };
 }
 

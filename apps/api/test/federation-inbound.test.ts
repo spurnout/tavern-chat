@@ -93,7 +93,9 @@ describe('POST /_federation/event — route shell', () => {
     { code: 'forbidden', status: 403 },
     { code: 'unknown_channel', status: 404 },
     { code: 'unknown_message', status: 404 },
+    { code: 'unknown_invite', status: 404 },
     { code: 'replay', status: 409 },
+    { code: 'invite_no_longer_valid', status: 410 },
     { code: 'not_implemented', status: 501 },
   ];
 

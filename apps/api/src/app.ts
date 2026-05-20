@@ -350,8 +350,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // P3-7 — inbound message-event endpoint. Re-uses the same profile
       // service for the on-cache-miss `fetchRemoteProfile` lookup that
       // resolves an unknown author's public key.
+      //
+      // P4-7 — also passes `keys` + `selfHost` so the `member.join_request`
+      // handler can wrap the snapshot it returns in a single-layer signed
+      // `member.joined` envelope.
       const federationInbound = new FederationInboundService({
         profile: federationProfile,
+        keys: federationKeys!,
+        selfHost,
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
