@@ -1,0 +1,9 @@
+a.tavern.local {
+  tls /etc/ssl/local/a.crt /etc/ssl/local/a.key
+  reverse_proxy tavern-a:3001
+}
+
+b.tavern.local {
+  tls /etc/ssl/local/b.crt /etc/ssl/local/b.key
+  reverse_proxy tavern-b:3001
+}

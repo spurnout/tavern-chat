@@ -1,0 +1,71 @@
+# Two Tavern instances on a shared bridge network, behind Caddy with a local CA.
+# Use for manual + e2e testing of the peering handshake.
+#
+# Hostnames: a.tavern.local, b.tavern.local — add both to /etc/hosts pointing at 127.0.0.1.
+# Local CA: run ./federation/gen-certs.sh once before first `docker compose up`.
+
+services:
+  caddy:
+    image: caddy:2
+    ports: ['443:443', '80:80']
+    volumes:
+      - ./federation/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./federation/certs:/etc/ssl/local:ro
+    networks: [fednet]
+
+  postgres-a:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tavern
+      POSTGRES_USER: tavern
+      POSTGRES_PASSWORD: tavern
+    networks: [fednet]
+
+  postgres-b:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tavern
+      POSTGRES_USER: tavern
+      POSTGRES_PASSWORD: tavern
+    networks: [fednet]
+
+  tavern-a:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://tavern:tavern@postgres-a:5432/tavern
+      PUBLIC_BASE_URL: https://a.tavern.local
+      WEB_BASE_URL: https://a.tavern.local
+      ALLOWED_ORIGINS: https://a.tavern.local
+      JWT_ACCESS_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      JWT_REFRESH_SECRET: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab
+      FEDERATION_ENABLED: 'true'
+      TAVERN_DATA_KEY: ${TAVERN_DATA_KEY_A:?run gen-certs.sh first which prints a key to use}
+      NODE_EXTRA_CA_CERTS: /etc/ssl/local/ca.crt
+    volumes:
+      - ./federation/certs/ca.crt:/etc/ssl/local/ca.crt:ro
+    depends_on: [postgres-a]
+    networks: [fednet]
+
+  tavern-b:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://tavern:tavern@postgres-b:5432/tavern
+      PUBLIC_BASE_URL: https://b.tavern.local
+      WEB_BASE_URL: https://b.tavern.local
+      ALLOWED_ORIGINS: https://b.tavern.local
+      JWT_ACCESS_SECRET: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      JWT_REFRESH_SECRET: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+      FEDERATION_ENABLED: 'true'
+      TAVERN_DATA_KEY: ${TAVERN_DATA_KEY_B:?run gen-certs.sh first which prints a key to use}
+      NODE_EXTRA_CA_CERTS: /etc/ssl/local/ca.crt
+    volumes:
+      - ./federation/certs/ca.crt:/etc/ssl/local/ca.crt:ro
+    depends_on: [postgres-b]
+    networks: [fednet]
+
+networks:
+  fednet: {}
