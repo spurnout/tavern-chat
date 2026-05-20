@@ -1994,7 +1994,9 @@ describe.skipIf(!dockerOk)('P4-7 — POST /_federation/event (member.join_reques
       });
       expect(res.statusCode).toBe(404);
       const body = res.json();
-      expect(body.error).toMatch(/not federated/i);
+      // Same message as the unknown-code branch: a peer cannot distinguish
+      // a missing invite from a local-only one.
+      expect(body.error).toMatch(/invite .* not found/i);
     } finally {
       await app.close();
     }

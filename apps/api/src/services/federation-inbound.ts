@@ -1366,11 +1366,12 @@ async function handleMemberJoinRequest(input: {
   }
   // Local-only invites are indistinguishable from non-existent ones —
   // matches the invite-preview surface so a malicious peer can't probe
-  // local invite codes by trying to redeem them.
+  // local invite codes by trying to redeem them. Same error message as
+  // the missing-invite branch above so a peer can't distinguish the two.
   if (invite.remoteScope === null) {
     throw new FederationInboundError(
       'unknown_invite',
-      `invite ${payload.inviteCode} is not federated`,
+      `invite ${payload.inviteCode} not found`,
     );
   }
   if (invite.scope !== 'server' || !invite.serverId) {
