@@ -100,6 +100,9 @@ import { registerUserRoutes } from './routes/users.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
+import { registerWellKnownRoutes } from './routes/well-known.js';
+import { FederationKeyStore } from './services/federation-keys.js';
+import { loadDataKey } from './lib/data-key.js';
 
 export interface BuildAppOptions {
   config: Config;
@@ -240,6 +243,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         ),
         ssoButtonLabel: opts.config.OIDC_BUTTON_LABEL,
         aiRecapEnabled: Boolean(opts.config.LLM_ENDPOINT),
+        federationEnabled: opts.config.FEDERATION_ENABLED,
       },
     }),
   );
@@ -259,6 +263,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       scanner,
       logger: app.log,
     });
+
+    let federationKeys: FederationKeyStore | null = null;
+    if (opts.config.FEDERATION_ENABLED) {
+      const dataKey = loadDataKey(opts.config.TAVERN_DATA_KEY);
+      federationKeys = new FederationKeyStore({ dataKey });
+      await federationKeys.bootstrap();
+      registerWellKnownRoutes(app, {
+        keys: federationKeys,
+        config: opts.config,
+        softwareVersion: 'tavern/0.0.0',
+      });
+    }
 
     await registerServerRoutes(app);
     await registerChannelRoutes(app);
