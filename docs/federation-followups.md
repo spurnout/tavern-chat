@@ -88,6 +88,18 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 - **Trigger:** when avatar federation is expected to work (coordinate with #7)
 - **What:** `RemoteUserCard` renders `avatarUrl` directly in `<img src>`. The web frontend's CSP `img-src` directive must be extended to allow cross-origin Tavern hosts. No code change needed for Phase 2 since the URLs return 401 anyway (per #7), but both must land together when avatar federation becomes functional.
 
+### 13. `MAX_CLOCK_SKEW` guard for inbound `editedAt` / `deletedAt`
+
+- **Phase:** 3 (P3-8 review)
+- **Trigger:** before production federation rollout
+- **What:** P3 follow-up: add a `MAX_CLOCK_SKEW` guard around inbound `editedAt` / `deletedAt` timestamps in `federation-inbound.ts` before production federation rollout. A malicious peer can otherwise set arbitrary timestamps that only affect UI sort. Severity: low; cosmetic gap, no security boundary crossed.
+
+### 14. `MessageEdit.editedBy` attribution for federated edits
+
+- **Phase:** 3 (P3-8 review)
+- **Trigger:** when moderation propagation lands (Phase 7)
+- **What:** P3 follow-up: `MessageEdit.editedBy` for a federated edit currently uses the local mirror of the remote author's User row. This will be wrong if Phase 7 introduces moderator edits. Revisit when moderation propagation lands.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up

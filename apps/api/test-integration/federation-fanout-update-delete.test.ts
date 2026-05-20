@@ -22,6 +22,7 @@ import { randomBytes } from 'node:crypto';
 import crypto from 'node:crypto';
 import {
   PERMISSION_DEFAULT_EVERYONE,
+  Permission,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
   serializePermissions,
@@ -397,6 +398,89 @@ describe.skipIf(!dockerOk)('P3-8 — outbound fan-out (PATCH/DELETE routes)', ()
       expect(del.statusCode).toBe(200);
       await new Promise<void>((r) => setTimeout(r, 50));
 
+      expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("moderator deleting another user's message does NOT federate (Phase 3; per R4 — 'remove globally' is Phase 7)", async () => {
+    // R4 from the P3-8 plan: moderators can still delete others' messages
+    // locally (existing MANAGE_MESSAGES gate in the route), but those deletes
+    // MUST NOT fan out. Only the original author's delete federates in
+    // Phase 3 — the "remove globally" moderator button is a Phase 7 deferral,
+    // and the inbound handler enforces the symmetric "actor must equal
+    // author" check.
+    //
+    // The gate is the `message.authorId === ctx.userId` check on the fan-out
+    // branch of the DELETE handler. This test pins it: drop the gate and the
+    // assertion on `enqueue` fires.
+    const fx = await makeFixture();
+
+    // Alice (the message author) is already wired up by makeFixture as the
+    // ordinary `authorId` member. Add Mod: a second LOCAL user with a role
+    // that carries MANAGE_MESSAGES.
+    const mod = await createUser({ username: `mod-${ulid().slice(-6).toLowerCase()}` });
+    const modRoleId = ulid();
+    await prisma.role.create({
+      data: {
+        id: modRoleId,
+        serverId: fx.serverId,
+        name: 'Mod',
+        position: 10,
+        permissions: new Prisma.Decimal(serializePermissions(Permission.MANAGE_MESSAGES)),
+      },
+    });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: mod.id } });
+    await prisma.serverMemberRole.create({
+      data: { serverId: fx.serverId, userId: mod.id, roleId: modRoleId },
+    });
+
+    // Alice posts a message. Seed directly via Prisma — the route path is
+    // already covered by the create/edit/delete-federates tests above.
+    const messageId = ulid();
+    await prisma.message.create({
+      data: {
+        id: messageId,
+        serverId: fx.serverId,
+        channelId: fx.channelId,
+        authorId: fx.authorId,
+        type: 'default',
+        content: 'alice posted, mod about to delete',
+      },
+    });
+
+    const { buildApp } = await import('../src/app.js');
+    const { loadConfig } = await import('../src/config.js');
+    const enqueue = vi.fn(async () => undefined);
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const modToken = await mintTokenFor(mod.id);
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/api/messages/${messageId}`,
+        headers: { authorization: `Bearer ${modToken}` },
+      });
+      // Mod has MANAGE_MESSAGES → local delete succeeds.
+      expect(del.statusCode).toBe(200);
+      // Soft-delete landed locally (deletedAt set, content cleared).
+      const row = await prisma.message.findUniqueOrThrow({
+        where: { id: messageId },
+        select: { deletedAt: true, content: true },
+      });
+      expect(row.deletedAt).not.toBeNull();
+      expect(row.content).toBe('');
+      // Let any fire-and-forget federation hook flush.
+      await new Promise<void>((r) => setTimeout(r, 50));
+      // The key assertion: moderator deletes do NOT enter the federation
+      // outbox. Phase 7 will revisit this when "remove globally" ships.
       expect(enqueue).not.toHaveBeenCalled();
     } finally {
       await app.close();
