@@ -1,8 +1,10 @@
 # IR20 federation network — design
 
-> **Status: Phase 0 + 1 implemented (peering handshake only — no content on the wire).**
+> **Status: Phase 0–2 implemented.** Peering handshake + remote-user identity
+> (qualified mentions, profile previews, per-user signing keys). No message
+> content federates yet — that's Phase 3.
 > All 7 open design questions are locked per the recommendations below.
-> Phases 2 through 8 are pending. See [Rollout phases](#rollout-phases).
+> Phases 3 through 8 are pending. See [Rollout phases](#rollout-phases).
 
 Tavern was originally framed as a closed-graph, self-hosted community
 app. The IR20 work reverses that stance: identity, invites, messages,

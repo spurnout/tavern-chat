@@ -212,3 +212,53 @@ FEDERATION_E2E=1 pnpm test:e2e --grep "federation peering"
 ```
 
 See `infra/docker/federation/README.md` for details.
+
+---
+
+## Phase 2: Remote-user identity
+
+Phase 2 adds per-user signing keys and the first visible cross-instance feature: qualified
+mentions and profile previews. No messages federate yet.
+
+### What works now
+
+Users can write `@alice@b.tavern.local` in any message. The mention renders as a styled pill
+with a home-instance badge. Hovering the pill fetches Alice's display name and avatar from
+`b.tavern.local` via a signed federation envelope. The result is cached for 1 hour in the
+`RemoteUser` table; the next hover after expiry triggers a fresh fetch.
+
+### What doesn't work yet
+
+- **Messages don't federate** — the mention appears locally but nothing is sent to
+  `b.tavern.local`. That's Phase 3.
+- **No remote notification** — Alice's home instance is not told she was mentioned.
+  Also Phase 3.
+- **Remote users don't appear in member lists** — that requires the federated invite flow
+  from Phase 4.
+- **DMs to remote users aren't possible** — Phase 5.
+
+### User keypairs
+
+Every new local user gets an Ed25519 keypair at registration. The private half is encrypted
+with `TAVERN_DATA_KEY` before storage. Pre-federation users (accounts created before Phase 2
+was deployed) are lazy-backfilled: the first time a peer requests their profile, the API
+generates and stores their keypair on the fly. No operator action is required — the backfill
+is fully automatic.
+
+### Cache TTL
+
+`RemoteUser.lastSeenAt` is updated on every successful profile fetch. Any lookup that finds
+`lastSeenAt` older than 1 hour re-fetches from the home instance before returning. If the
+home instance is unreachable, the cached values are served stale with a warning in the
+response envelope.
+
+### Endpoints exposed
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `POST /_federation/profile` | Envelope-authenticated (peer instance key) | Peer → this instance: resolve a local user's public profile |
+| `GET /api/federation/users/:remoteUserId/profile` | Session (any logged-in user) | Browser → this instance: fetch a cached remote user profile for the hover card |
+
+The `/_federation/profile` route is public in the sense that any peer with a valid signed
+envelope can call it. It returns only non-sensitive fields: `displayName`, `avatarUrl`
+(best-effort — see follow-up #7), `publicKey`, and `homeInstance`.
