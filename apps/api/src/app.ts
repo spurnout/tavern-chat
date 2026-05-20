@@ -105,6 +105,7 @@ import { registerFederationPeeringRoutes } from './routes/federation-peering.js'
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
+import { UserKeyStore } from './services/user-keys.js';
 import { loadDataKey } from './lib/data-key.js';
 
 export interface BuildAppOptions {
@@ -223,7 +224,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
   }
 
   const mailService = new MailService(opts.config, app.log);
-  const authService = new AuthService({ jwt, config: opts.config, mail: mailService });
+
+  // Hoisted so AuthService (constructed below) can receive it even though
+  // the federation block that populates it lives inside the !authOnly guard.
+  // Non-federation or authOnly builds leave it null → AuthService skips keypair
+  // provisioning (safe — the field is optional).
+  let userKeys: UserKeyStore | null = null;
+
+  const authService = new AuthService({
+    jwt,
+    config: opts.config,
+    mail: mailService,
+    get userKeyStore() { return userKeys ?? undefined; },
+    logger: app.log,
+  });
   const webauthnService = new WebAuthnService(opts.config);
 
   app.get('/healthz', async () => ok({ ok: true, app: APP_NAME, env: opts.config.NODE_ENV }));
@@ -284,6 +298,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         keys: federationKeys!,
         config: opts.config,
       });
+      // Provision the per-user key store so new users get a signing keypair
+      // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
+      userKeys = new UserKeyStore({ dataKey });
     }
 
     await registerServerRoutes(app);

@@ -20,6 +20,7 @@ import { hashBackupCode, verifyTotpWithCounter } from '../lib/totp.js';
 import type { JwtService } from '../lib/jwt.js';
 import type { Config } from '../config.js';
 import type { MailService } from './mail-service.js';
+import type { UserKeyStore } from './user-keys.js';
 
 /**
  * Error thrown by `login()` when the user has TOTP enabled. The route
@@ -82,6 +83,10 @@ export interface AuthServiceDeps {
   jwt: JwtService;
   config: Config;
   mail: MailService;
+  /** Optional: when FEDERATION_ENABLED, provision a signing keypair for new users. */
+  userKeyStore?: UserKeyStore;
+  /** Optional structured logger (pino-compatible). Falls back to console.warn when absent. */
+  logger?: { warn: (obj: Record<string, unknown>, msg: string) => void };
 }
 
 export interface SessionContext {
@@ -199,6 +204,17 @@ export class AuthService {
       });
       return u;
     });
+
+    if (this.deps.userKeyStore) {
+      try {
+        await this.deps.userKeyStore.ensureKeyFor(user.id);
+      } catch (err) {
+        (this.deps.logger ?? console).warn(
+          { err, userId: user.id },
+          'failed to provision federation keypair',
+        );
+      }
+    }
 
     return this.issueSession(user.id, ctx);
   }
@@ -334,6 +350,17 @@ export class AuthService {
     },
       { isolationLevel: 'Serializable' },
     );
+
+    if (this.deps.userKeyStore) {
+      try {
+        await this.deps.userKeyStore.ensureKeyFor(userId);
+      } catch (err) {
+        (this.deps.logger ?? console).warn(
+          { err, userId },
+          'failed to provision federation keypair',
+        );
+      }
+    }
 
     return this.issueSession(userId, sessionCtx);
   }
