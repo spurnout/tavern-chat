@@ -46,7 +46,7 @@ model User {
   displayName         String
   email               String    @unique
   emailLower          String    @unique
-  passwordHash        String
+  passwordHash        String?
   avatarAttachmentId  String?
   bio                 String?
   isInstanceAdmin     Boolean   @default(false)
@@ -78,6 +78,12 @@ model User {
   // (see apps/api/src/lib/at-rest.ts) using TAVERN_DATA_KEY.
   federationKeyPublic   Bytes?
   federationKeyPrivate  Bytes?   // AES-256-GCM encrypted PKCS8 (via TAVERN_DATA_KEY)
+  // Federation Phase 3: remote users live as User rows for fan-out targets.
+  // For local users both fields are null; for remote users they identify the
+  // home instance and the qualified "alice@b.example" remote identity.
+  remoteUserId       String? @unique  // qualified "alice@b.example" — set on remote users only
+  remoteInstanceId   String?
+  remoteInstance     RemoteInstance? @relation("UserRemoteInstance", fields: [remoteInstanceId], references: [id], onDelete: SetNull)
   // Wave 2 #18: account deletion grace period.
   scheduledDeleteAt   DateTime?
   // Wave 3 #30/#33: appearance preferences (theme, font, motion).
@@ -354,6 +360,9 @@ model Server {
   description         String?
   iconAttachmentId    String?
   defaultRoleId       String?  @unique
+  // Federation Phase 3: per-Tavern opt-in. When false, no messages are
+  // fanned out to peers even if the channel mode would allow it.
+  federationEnabled   Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -544,6 +553,9 @@ model Channel {
   postingScope            ChannelPostingScope   @default(open)
   // Wave 2 #19 — incoming webhooks bound to this channel.
   webhooks                Webhook[]
+  // Federation Phase 3: per-channel override. `inherit` defers to
+  // Server.federationEnabled; `force_on` / `force_off` override it.
+  federationMode          FederationMode        @default(inherit)
 
   @@index([serverId, position])
   @@index([parentId])
@@ -552,6 +564,12 @@ model Channel {
 enum OverwriteTargetType {
   role
   user
+}
+
+enum FederationMode {
+  inherit
+  force_on
+  force_off
 }
 
 model PermissionOverwrite {
@@ -644,6 +662,12 @@ model Message {
   edits         MessageEdit[]
   // Wave 2 #4 — OG-unfurled link previews (populated async by the worker).
   linkPreviews  LinkPreview[]
+  // Federation Phase 3: set on inbound federated messages only.
+  // `signature` is the two-layer ed25519 signature bytes from the origin.
+  // `originInstanceId` ties back to the RemoteInstance that delivered it.
+  signature         Bytes?       // set on inbound federated messages (Phase 3+)
+  originInstanceId  String?      // FK → RemoteInstance, set on inbound only
+  originInstance    RemoteInstance? @relation("MessageOrigin", fields: [originInstanceId], references: [id], onDelete: SetNull)
 
   @@index([channelId, createdAt])
   @@index([channelId, id])
@@ -651,6 +675,7 @@ model Message {
   @@index([authorId])
   @@index([threadId])
   @@index([forwardedFromMessageId])
+  @@index([originInstanceId])
   @@unique([channelId, nonce])
   @@unique([dmChannelId, nonce])
 }
@@ -2353,6 +2378,9 @@ model RemoteInstance {
   updatedAt            DateTime              @updatedAt
   envelopes            FederationEnvelopeLog[]
   remoteUsers          RemoteUser[]
+  // Federation Phase 3 back-refs
+  originatedMessages   Message[] @relation("MessageOrigin")
+  users                User[]    @relation("UserRemoteInstance")
 
   @@index([status])
 }
@@ -2406,3 +2434,12 @@ model RemoteUser {
 
   @@index([remoteInstanceId])
 }
+
+// ============================ FEDERATION (Phase 3) ============================
+// Message-content federation. Adds:
+//   - Message.signature + originInstanceId (set on inbound federated msgs)
+//   - Server.federationEnabled (per-Tavern opt-in)
+//   - Channel.federationMode (per-channel override)
+//   - User.passwordHash nullable + User.remoteUserId + User.remoteInstanceId
+//     so remote users can live as User rows for fan-out targets
+// See docs/federation.md.

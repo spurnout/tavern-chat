@@ -387,6 +387,11 @@ export class AuthService {
       );
     }
 
+    if (!user.passwordHash) {
+      // Remote users (federation Phase 3) have no local password — reject
+      // before the hash comparison to avoid leaking account existence.
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
+    }
     const ok = await verifyPassword(user.passwordHash, req.password);
     if (!ok) {
       // SEC-006: keep the failed-attempt counter monotonically increasing
@@ -710,6 +715,10 @@ export class AuthService {
         400,
       );
     }
+    // Remote users have no local password — they cannot reset via this path.
+    if (!user.passwordHash) {
+      throw new TavernError(ErrorCodes.INVALID_RESET_TOKEN, 'Reset link is invalid or has expired', 400);
+    }
     // Refuse no-op resets so the user gets an explicit signal rather than
     // a misleading success when they reuse their old password.
     const sameAsCurrent = await verifyPassword(user.passwordHash, newPassword);
@@ -764,6 +773,10 @@ export class AuthService {
       select: { passwordHash: true },
     });
     if (!user) throw TavernError.unauthorized();
+    if (!user.passwordHash) {
+      // Remote users (federation Phase 3) have no local password.
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
+    }
     const ok = await verifyPassword(user.passwordHash, currentPassword);
     if (!ok) {
       throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
