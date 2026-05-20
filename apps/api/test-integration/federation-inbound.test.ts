@@ -2872,3 +2872,474 @@ describe.skipIf(!dockerOk)('P4-8 — POST /_federation/event (channel.delete)', 
     }
   });
 });
+
+// ============================================================================
+// P4-11 — inbound member.add + member.remove (mirror membership updates)
+// ============================================================================
+
+/**
+ * For these handlers THIS instance is the B side — we hold a MIRROR of a
+ * Server owned by the peer A. The peer pushes envelopes that announce
+ * membership changes on T:
+ *   - `member.add`: a new remote user joined T on A's side; we materialise
+ *     a synthetic local User row + ServerMember on the mirror.
+ *   - `member.remove`: a remote user was removed from T on A's side; we
+ *     drop the ServerMember row (User row stays — see federation-mirror
+ *     rationale).
+ *
+ * Setup reuses `makeMirrorFixture` from the P4-8 block — that gives us a
+ * mirror Server owned by Alice@b.example with one existing channel. The
+ * "new member" in member.add tests is a SECOND remote user on peer A
+ * (Bob@b.example), seeded via `seedSecondPeerMemberFixture` below.
+ */
+
+/**
+ * Seed a second remote user on the SAME peer that owns the mirror. Used
+ * as the subject of `member.add` and `member.remove` envelopes. The
+ * mirror's owner (Alice) is still the envelope signer — Bob is what's
+ * being added or removed, not who is sending.
+ *
+ * Returns the qualified id + the synthetic local User id (NOT pre-
+ * inserted — `addMirrorMember` is responsible for materialising it).
+ * The RemoteUser cache row IS pre-inserted so the handler doesn't need
+ * a profile fetch.
+ */
+async function seedMirrorSubjectMember(fx: MirrorFixture): Promise<{
+  remoteUserId: string;
+  remoteUserRowId: string;
+  /** Optional: pre-insert the synthetic User + ServerMember (for member.remove tests). */
+  preInsertLocal: () => Promise<string>;
+}> {
+  const kp = generateKeyPair();
+  const remoteUserRowId = ulid();
+  const localpart = `bob-${remoteUserRowId.slice(-6).toLowerCase()}`;
+  const qualifiedId = `${localpart}@${PEER_HOST}`;
+  await prisma.remoteUser.create({
+    data: {
+      id: remoteUserRowId,
+      remoteInstanceId: fx.peerInstanceId,
+      remoteUserId: qualifiedId,
+      displayNameCache: 'Bob from B',
+      avatarUrlCache: null,
+      publicKey: exportPublicKeyRaw(kp.publicKey),
+      lastSeenAt: new Date(0),
+    },
+  });
+  return {
+    remoteUserId: qualifiedId,
+    remoteUserRowId,
+    preInsertLocal: async () => {
+      const localId = ulid();
+      const syntheticUsername = `__rem_${ulid().toLowerCase()}`;
+      await prisma.user.create({
+        data: {
+          id: localId,
+          username: syntheticUsername,
+          usernameLower: syntheticUsername,
+          displayName: 'Bob from B',
+          email: `${qualifiedId}.federated.local`,
+          emailLower: `${qualifiedId}.federated.local`,
+          passwordHash: null,
+          remoteUserId: qualifiedId,
+          remoteInstanceId: fx.peerInstanceId,
+          federationKeyPublic: exportPublicKeyRaw(kp.publicKey),
+        },
+      });
+      await prisma.serverMember.create({
+        data: { serverId: fx.mirrorServerId, userId: localId },
+      });
+      return localId;
+    },
+  };
+}
+
+function buildMemberAddEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    memberRemoteUserId: string;
+    memberDisplayName?: string;
+    joinedAt?: string;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'member.add',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      serverId: input.serverId,
+      memberRemoteUserId: input.memberRemoteUserId,
+      memberDisplayName: input.memberDisplayName ?? 'Bob from B',
+      joinedAt: input.joinedAt ?? new Date().toISOString(),
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function buildMemberRemoveEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    memberRemoteUserId: string;
+    reason?: 'kicked' | 'banned' | 'left';
+    removedAt?: string;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'member.remove',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      serverId: input.serverId,
+      memberRemoteUserId: input.memberRemoteUserId,
+      reason: input.reason ?? 'kicked',
+      removedAt: input.removedAt ?? new Date().toISOString(),
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+describe.skipIf(!dockerOk)('P4-11 — POST /_federation/event (member.add)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: materialises mirror member + broadcasts MEMBER_ADD', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+
+    // Confirm baseline: mirror has exactly one ServerMember (Alice, the owner).
+    const before = await prisma.serverMember.count({
+      where: { serverId: fx.mirrorServerId },
+    });
+    expect(before).toBe(1);
+
+    const envelope = buildMemberAddEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      memberRemoteUserId: subject.remoteUserId,
+      memberDisplayName: 'Bob from B',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.serverId).toBe(fx.mirrorServerId);
+      expect(typeof body.data?.userId).toBe('string');
+
+      // Mirror now has two members.
+      const members = await prisma.serverMember.findMany({
+        where: { serverId: fx.mirrorServerId },
+        include: { user: { select: { remoteUserId: true } } },
+      });
+      expect(members).toHaveLength(2);
+      const remoteIds = members.map((m) => m.user.remoteUserId).sort();
+      expect(remoteIds).toContain(subject.remoteUserId);
+
+      // Envelope log row recorded.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'member.add' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('idempotent: same envelope payload (different nonce) → ServerMember created once', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      // Two envelopes with the same payload — distinct nonces because
+      // buildTwoLayerMessageEnvelope generates a fresh one per call. The
+      // FIRST adds the member; the SECOND must short-circuit at the
+      // mirror-helper P2002 catch and NOT raise.
+      const first = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: buildMemberAddEnvelope({
+          fx,
+          serverId: fx.mirrorServerId,
+          memberRemoteUserId: subject.remoteUserId,
+        }),
+      });
+      expect(first.statusCode).toBe(200);
+
+      const second = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: buildMemberAddEnvelope({
+          fx,
+          serverId: fx.mirrorServerId,
+          memberRemoteUserId: subject.remoteUserId,
+        }),
+      });
+      expect(second.statusCode).toBe(200);
+      const body = second.json();
+      expect(body.ok).toBe(true);
+
+      // Still exactly one new member on the mirror (plus the owner = 2 total).
+      const count = await prisma.serverMember.count({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(count).toBe(2);
+
+      // Two envelope log entries (one per nonce) — both accepted.
+      const logs = await prisma.federationEnvelopeLog.findMany({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'member.add' },
+      });
+      expect(logs).toHaveLength(2);
+      for (const l of logs) expect(l.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'member.add',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: {
+        serverId: fx.mirrorServerId,
+        memberRemoteUserId: subject.remoteUserId,
+        memberDisplayName: 'hijacked',
+        joinedAt: new Date().toISOString(),
+      },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      // Mirror still has only the owner.
+      const count = await prisma.serverMember.count({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(count).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    const envelope = buildMemberAddEnvelope({
+      fx,
+      serverId: ulid(), // no mirror with this id
+      memberRemoteUserId: subject.remoteUserId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-11 — POST /_federation/event (member.remove)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: drops mirror ServerMember + broadcasts MEMBER_REMOVE', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    const subjectLocalId = await subject.preInsertLocal();
+
+    // Baseline: mirror has owner + Bob.
+    const before = await prisma.serverMember.count({
+      where: { serverId: fx.mirrorServerId },
+    });
+    expect(before).toBe(2);
+
+    const envelope = buildMemberRemoveEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      memberRemoteUserId: subject.remoteUserId,
+      reason: 'kicked',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.serverId).toBe(fx.mirrorServerId);
+      expect(body.data?.userId).toBe(subjectLocalId);
+
+      // Bob's ServerMember row is gone; owner remains.
+      const remaining = await prisma.serverMember.findMany({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.userId).toBe(fx.localUserId);
+
+      // Synthetic User row is intentionally PRESERVED (see federation-mirror
+      // teardown rationale — orphan synthetic Users are cheap + preserve
+      // idempotency on re-add).
+      const orphanUser = await prisma.user.findUnique({
+        where: { id: subjectLocalId },
+      });
+      expect(orphanUser).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('removing the last remote member does NOT tear down the mirror Server', async () => {
+    // Setup: only the owner (Alice, who is also remote — synthesised in
+    // makeFixture as a mirror user with `remoteUserId` set) plus Bob.
+    // Removing Bob leaves Alice — the OWNER, who is the local user
+    // representing the federation joiner from B's perspective. The mirror
+    // must survive.
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    await subject.preInsertLocal();
+
+    const envelope = buildMemberRemoveEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      memberRemoteUserId: subject.remoteUserId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // The mirror Server is STILL present (with originInstanceId set).
+      const server = await prisma.server.findUnique({
+        where: { id: fx.mirrorServerId },
+      });
+      expect(server).not.toBeNull();
+      expect(server!.originInstanceId).toBe(fx.peerInstanceId);
+
+      // The owner ServerMember row is intact.
+      const owner = await prisma.serverMember.findUnique({
+        where: {
+          serverId_userId: {
+            serverId: fx.mirrorServerId,
+            userId: fx.localUserId,
+          },
+        },
+      });
+      expect(owner).not.toBeNull();
+
+      // Mirror channel is intact.
+      const ch = await prisma.channel.findUnique({
+        where: { id: fx.mirrorChannelId },
+      });
+      expect(ch).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    await subject.preInsertLocal();
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'member.remove',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: {
+        serverId: fx.mirrorServerId,
+        memberRemoteUserId: subject.remoteUserId,
+        reason: 'kicked',
+        removedAt: new Date().toISOString(),
+      },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      // Bob's ServerMember row is STILL present.
+      const count = await prisma.serverMember.count({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(count).toBe(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const subject = await seedMirrorSubjectMember(fx);
+    await subject.preInsertLocal();
+    const envelope = buildMemberRemoveEnvelope({
+      fx,
+      serverId: ulid(),
+      memberRemoteUserId: subject.remoteUserId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});

@@ -63,8 +63,10 @@ import {
   channelUpdatePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
+  memberAddPayloadSchema,
   memberJoinRequestPayloadSchema,
   memberJoinedPayloadSchema,
+  memberRemovePayloadSchema,
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
@@ -74,8 +76,10 @@ import {
   type ChannelCreatePayload,
   type ChannelDeletePayload,
   type ChannelUpdatePayload,
+  type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
+  type MemberRemovePayload,
   type MessageCreatePayload,
   type MessageDeletePayload,
   type MessageUpdatePayload,
@@ -100,6 +104,7 @@ import {
 import { deriveServerIconUrl } from './federation-invite-preview.js';
 import { FederationMirrorService } from './federation-mirror.js';
 import { FederationProfileService } from './federation-profile.js';
+import { makeProfileBackedRemoteUserResolver } from './mirror-remote-user-resolver.js';
 import { gatewayBroker } from './gateway-broker.js';
 import {
   serializeChannel,
@@ -421,6 +426,7 @@ export class FederationInboundService {
           queues: this.queues,
           federationEnabledOnInstance: this.federationEnabledOnInstance,
           log: this.log,
+          profile: this.profile,
         });
       });
       result = txOutput.result;
@@ -597,6 +603,14 @@ interface InboundHandler<TSchema extends z.ZodTypeAny> {
      * without one.
      */
     log: FastifyBaseLogger;
+    /**
+     * Profile service — used by the P4-11 `member.add` handler to build a
+     * production `ResolveRemoteUserFn` for `addMirrorMember`. The mirror
+     * helper needs to materialise (or look up) the joiner's RemoteUser row;
+     * on cache miss it falls back to `fetchRemoteProfile`. Other handlers
+     * ignore it.
+     */
+    profile: FederationProfileService;
   }) => Promise<HandlerOutput>;
 }
 
@@ -692,6 +706,22 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
     payloadSchema: channelDeletePayloadSchema,
     resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
     handle: handleChannelDelete as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P4-11 — mirror membership updates. Same author resolver pattern as
+  // the P4-8 lifecycle handlers: the signer is implicitly the mirror
+  // Server's owner on the origin peer (the home authority delivering the
+  // membership change), so each uses `resolveMirrorOwner`. The payload's
+  // `memberRemoteUserId` is the SUBJECT of the change (the joining /
+  // leaving member), not the author of the envelope.
+  'member.add': {
+    payloadSchema: memberAddPayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleMemberAdd as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'member.remove': {
+    payloadSchema: memberRemovePayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleMemberRemove as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -2155,6 +2185,153 @@ async function handleChannelDelete(input: {
         serverId: payload.serverId,
         channelId: payload.channelId,
         data: { id: payload.channelId },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- mirror membership handlers (P4-11) -------------------------------------
+
+/**
+ * Inbound `member.add` (P4-11).
+ *
+ * Peer A — the origin of a mirror Server T held on this instance — is
+ * telling us a new member has joined T. The envelope's `resolveMirrorOwner`
+ * resolver already verified:
+ *   - the target mirror exists (`unknown_mirror_server` otherwise),
+ *   - the sending peer is the mirror's origin (`not_origin` otherwise),
+ *   - and the user-layer signer is the mirror Server's owner on A.
+ *
+ * The handler itself:
+ *   1. Materialises the new member's RemoteUser via the production
+ *      profile-backed resolver (cache hit returns the existing row;
+ *      cache miss does a `fetchRemoteProfile` + upsert).
+ *   2. Calls `addMirrorMember`, which synthesises a local User row if
+ *      needed and inserts a `ServerMember`. Idempotent — a duplicate
+ *      envelope hits the P2002 short-circuit inside the mirror helper
+ *      and returns the existing local user id.
+ *   3. Post-commit broadcasts `MEMBER_ADD` to any local clients viewing
+ *      the mirror, and touches `RemoteUser.lastSeenAt` for the envelope
+ *      author (the mirror owner — the one who signed the announcement).
+ *
+ * Critically: we do NOT fan out `member.add` to other peers from here.
+ * Mirrors never originate membership envelopes — the home is the only
+ * authority and has already done its own fan-out to every peer of T.
+ */
+async function handleMemberAdd(input: {
+  envelope: TwoLayerSignedEnvelope<MemberAddPayload>;
+  payload: MemberAddPayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+  profile: FederationProfileService;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx, profile } = input;
+
+  // Build a production mirror service for this handler — `addMirrorMember`
+  // genuinely needs to resolve the joiner's RemoteUser (cache hit or
+  // profile fetch). The throwing stub used by the other lifecycle
+  // handlers wouldn't work here.
+  const mirror = new FederationMirrorService({
+    resolveRemoteUser: makeProfileBackedRemoteUserResolver(profile),
+  });
+  const localUserId = await mirror.addMirrorMember(
+    tx,
+    payload.serverId,
+    payload.memberRemoteUserId,
+    payload.memberDisplayName,
+  );
+
+  return {
+    result: {
+      status: 200,
+      body: { ok: true, data: { serverId: payload.serverId, userId: localUserId } },
+    },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'MEMBER_ADD',
+        serverId: payload.serverId,
+        data: { serverId: payload.serverId, userId: localUserId },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+/**
+ * Inbound `member.remove` (P4-11).
+ *
+ * Peer A is telling us a member has left T (kicked / banned / left). The
+ * `resolveMirrorOwner` resolver verified mirror existence + origin + signer
+ * identity. The handler:
+ *   1. Resolves the local mirror User id BEFORE deletion so the gateway
+ *      broadcast can name them — `removeMirrorMember` itself doesn't
+ *      return the id, and post-deletion the row is gone.
+ *   2. Calls `removeMirrorMember` (idempotent — no-op on missing row).
+ *   3. Post-commit broadcasts `MEMBER_REMOVE` to local viewers and
+ *      touches `RemoteUser.lastSeenAt` for the envelope author.
+ *
+ * Critically: we do NOT call `tearDownMirrorServerIfEmpty` here. This
+ * envelope only removes ONE member; teardown is gated on the LOCAL user
+ * leaving the mirror themselves (the P4-12 voluntary-leave flow). Even
+ * if the removed member was the last remote-mirror user, the local user
+ * who originally accepted the federated invite is still a member and the
+ * mirror must stay reachable for them.
+ *
+ * The post-broadcast id is the local synthetic User row (or `null` if no
+ * such row exists — the member was already gone before the envelope
+ * arrived, e.g. concurrent removal). The broadcast still fires with a
+ * `null` userId in that case so any optimistic UI state on the client
+ * settles; downstream selectors are tolerant of unknown ids.
+ */
+async function handleMemberRemove(input: {
+  envelope: TwoLayerSignedEnvelope<MemberRemovePayload>;
+  payload: MemberRemovePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  // Look up the local user id BEFORE we delete the ServerMember row —
+  // `removeMirrorMember` doesn't return it, and after the delete the
+  // synthetic User row is still there (we keep mirror Users around for
+  // idempotency) but we need the id at broadcast time. Use the qualified
+  // `User.remoteUserId` index which `addMirrorMember` populates.
+  const localUser = await tx.user.findUnique({
+    where: { remoteUserId: payload.memberRemoteUserId },
+    select: { id: true },
+  });
+  const localUserId = localUser?.id ?? null;
+
+  // Reuse the throwing-stub mirror service — `removeMirrorMember` does
+  // NOT call `resolveRemoteUser` (it looks up the local user via
+  // `User.remoteUserId` directly), so the stub is fine here. Matches the
+  // P4-8 lifecycle handlers.
+  const mirror = makeMirrorServiceForLifecycle();
+  await mirror.removeMirrorMember(tx, payload.serverId, payload.memberRemoteUserId);
+
+  return {
+    result: {
+      status: 200,
+      body: { ok: true, data: { serverId: payload.serverId, userId: localUserId } },
+    },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'MEMBER_REMOVE',
+        serverId: payload.serverId,
+        data: { serverId: payload.serverId, userId: localUserId },
       });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
