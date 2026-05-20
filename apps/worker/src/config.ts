@@ -48,6 +48,30 @@ const envSchema = z.object({
    * doesn't permanently block legitimate retries. Default 24 hours. (DB-010)
    */
   NONCE_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
+
+  /**
+   * P3-5: federation outbox. When FEDERATION_ENABLED=true the worker spins
+   * up the outbox consumer for the `tavern.federation.outbox` queue. Same
+   * env-var name as the api so a self-host runs them off one .env.
+   */
+  FEDERATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /**
+   * Required when FEDERATION_ENABLED=true — must be the same key the api
+   * uses to encrypt the FederationKey.privateKey + User.federationKeyPrivate
+   * columns. The worker decrypts both to build the two-layer envelope on
+   * dispatch. Same 32-byte-base64 format as the api's TAVERN_DATA_KEY.
+   */
+  TAVERN_DATA_KEY: optionalString,
+  /**
+   * Public hostname the api advertises to peers (e.g. tavern.example.com).
+   * Used as `fromInstance` on every outbound envelope. Defaults to whatever
+   * the api's PUBLIC_BASE_URL points at — same env var so operators don't
+   * configure it twice.
+   */
+  PUBLIC_BASE_URL: z.string().default('http://localhost:3001'),
 });
 
 export type WorkerConfig = z.infer<typeof envSchema>;
@@ -72,6 +96,13 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
         `STORAGE_BACKEND=s3 but the following are missing: ${missing.join(', ')}.`,
       );
     }
+  }
+  // P3-5: federation outbox needs the data key to decrypt user + instance
+  // private keys. Same posture as the api: required in production.
+  if (cfg.FEDERATION_ENABLED && cfg.NODE_ENV === 'production' && !cfg.TAVERN_DATA_KEY) {
+    throw new Error(
+      'FEDERATION_ENABLED=true requires TAVERN_DATA_KEY in production (worker).',
+    );
   }
   return cfg;
 }

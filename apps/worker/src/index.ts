@@ -14,6 +14,7 @@ import {
 } from '@tavern/media';
 import { prisma } from '@tavern/db';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
+import { startFederationOutboxWorker } from './federation-outbox-worker.js';
 
 const SCAN_QUEUE = 'tavern.upload.scan';
 const MAINTENANCE_QUEUE = 'tavern.maintenance';
@@ -181,6 +182,13 @@ async function main(): Promise<void> {
     log.error({ jobId: job?.id, kind: job?.data.kind, err: err.message }, 'maintenance job failed');
   });
 
+  // P3-5: federation outbox consumer — only spins up when FEDERATION_ENABLED.
+  const federationOutboxHandle = await startFederationOutboxWorker({
+    connection,
+    cfg,
+    logger: log,
+  });
+
   // Daily at 03:00 UTC for both. The retention sweep is the heavier of the
   // two; staggering would matter if there were more jobs, but for two cheap
   // queries it doesn't.
@@ -217,7 +225,12 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, 'shutting down worker');
-    await Promise.all([worker.close(), maintenanceWorker.close(), maintenanceQueue.close()]);
+    await Promise.all([
+      worker.close(),
+      maintenanceWorker.close(),
+      maintenanceQueue.close(),
+      federationOutboxHandle?.close() ?? Promise.resolve(),
+    ]);
     // worker.close() above settles all in-flight jobs; only then is it safe
     // to drop the Redis connections. `quit` waits for pending commands to be
     // acked rather than `disconnect`'s fire-and-forget.

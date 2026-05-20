@@ -17,7 +17,7 @@ import { AuthService } from './services/auth-service.js';
 import { MailService } from './services/mail-service.js';
 import { WebAuthnService } from './services/webauthn-service.js';
 import { createStorage } from './services/storage.js';
-import { createQueueClient } from './services/queues.js';
+import { createQueueClient, type FederationDispatcherSlot } from './services/queues.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerServerRoutes } from './routes/servers.js';
 import { registerChannelRoutes } from './routes/channels.js';
@@ -278,10 +278,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
           port: opts.config.CLAMAV_PORT,
         })
       : null;
+    // P3-5: the queue client needs the federation key + user-key stores to
+    // sign outbound envelopes, but those are constructed inside the
+    // FEDERATION_ENABLED block below. Wire them through a getter so the
+    // queue client picks them up lazily after federation bootstrap.
+    let federationDispatcherSlot: FederationDispatcherSlot | null = null;
     const queues = createQueueClient(opts.config, {
       storage,
       scanner,
       logger: app.log,
+      getFederationDispatcher: () => federationDispatcherSlot,
     });
 
     let federationKeys: FederationKeyStore | null = null;
@@ -305,13 +311,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // Provision the per-user key store so new users get a signing keypair
       // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
       userKeys = new UserKeyStore({ dataKey });
+      const selfHost = new URL(opts.config.PUBLIC_BASE_URL).host;
       federationProfile = new FederationProfileService({
         keys: federationKeys!,
         userKeys: userKeys!,
-        selfHost: new URL(opts.config.PUBLIC_BASE_URL).host,
+        selfHost,
       });
       registerFederationProfileRoutes(app, { service: federationProfile });
       registerUsersFederatedRoutes(app, { service: federationProfile });
+      // P3-5: now that all three pieces exist, populate the slot the queue
+      // client closure reads on every outbox enqueue.
+      federationDispatcherSlot = {
+        keys: federationKeys!,
+        userKeys: userKeys!,
+        selfHost,
+      };
     }
 
     await registerServerRoutes(app);
