@@ -892,7 +892,10 @@ async function validateInboundReaction(input: {
 }> {
   const { messageId, emoji, remoteUser, tx } = input;
 
-  if (emoji.startsWith('custom:')) {
+  // reactionAddPayloadSchema validates emoji as a free-form string (z.string()),
+  // so an attacker could send 'CUSTOM:abc' to slip past a case-sensitive check.
+  // Defence-in-depth: lowercase before comparing.
+  if (emoji.toLowerCase().startsWith('custom:')) {
     // Custom emojis are server-scoped and the id only resolves on the home
     // instance. Reject loudly so peers know to stick to unicode for now.
     throw new FederationInboundError(

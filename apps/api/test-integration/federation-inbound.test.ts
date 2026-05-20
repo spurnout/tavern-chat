@@ -1391,6 +1391,39 @@ describe.skipIf(!dockerOk)('P3-9 — POST /_federation/event (reaction.add)', ()
     }
   });
 
+  it('reaction with an UPPERCASE CUSTOM: emoji reference → 403 (case-insensitive gate)', async () => {
+    // The upstream Zod schema validates emoji as a free-form string, so a
+    // case-sensitive `custom:` check could be bypassed with `CUSTOM:abc`.
+    // The inbound handler MUST lowercase before comparing.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+
+    const envelope = buildReactionAddEnvelope({
+      fx,
+      messageId,
+      emoji: 'CUSTOM:abc123',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/custom emojis do not cross federation/i);
+
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('reaction on a soft-deleted message → 404 (no reacting to tombstones)', async () => {
     const fx = await makeFixture();
     const messageId = ulid();
