@@ -57,6 +57,9 @@ import {
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
 import {
+  channelCreatePayloadSchema,
+  channelDeletePayloadSchema,
+  channelUpdatePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   memberJoinRequestPayloadSchema,
@@ -66,6 +69,10 @@ import {
   messageUpdatePayloadSchema,
   reactionAddPayloadSchema,
   reactionRemovePayloadSchema,
+  serverUpdatePayloadSchema,
+  type ChannelCreatePayload,
+  type ChannelDeletePayload,
+  type ChannelUpdatePayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
   type MessageCreatePayload,
@@ -74,6 +81,7 @@ import {
   type ReactionAddPayload,
   type ReactionRemovePayload,
   type ServerSnapshot,
+  type ServerUpdatePayload,
   ulid,
 } from '@tavern/shared';
 import { z } from 'zod';
@@ -87,9 +95,14 @@ import {
   type SignedEnvelope,
 } from './federation-envelopes.js';
 import { deriveServerIconUrl } from './federation-invite-preview.js';
+import { FederationMirrorService } from './federation-mirror.js';
 import { FederationProfileService } from './federation-profile.js';
 import { gatewayBroker } from './gateway-broker.js';
-import { serializeMessage } from '../lib/serializers.js';
+import {
+  serializeChannel,
+  serializeMessage,
+  serializeServer,
+} from '../lib/serializers.js';
 
 /**
  * Why this is a class+exception instead of a tagged union: the route layer
@@ -106,9 +119,11 @@ export type InboundErrorCode =
   | 'unknown_channel' // 404 — payload references a channelId we don't have
   | 'unknown_message' // 404 — payload references a messageId we don't have
   | 'unknown_invite' // 404 — payload.inviteCode not found / not federated
+  | 'unknown_mirror_server' // 404 — payload.serverId not present as a mirror locally
   | 'invite_no_longer_valid' // 410 — invite is revoked / expired / exhausted
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
+  | 'not_origin' // 403 — sending peer is not the origin instance of the mirror
   | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
   | 'not_implemented'; // 501 — event type recognised by schema, handler is TBD
 
@@ -200,7 +215,29 @@ export class FederationInboundService {
     // envelope-prelude shape check — it isn't signature-verified yet, but
     // pulling a `string` field out of it for the cache lookup is safe (the
     // worst case is a cache miss + a profile fetch from the peer).
-    const authorRemoteUserId = handler.extractAuthorRemoteUserId(preCheck.payload);
+    //
+    // Two extraction strategies: synchronous (the actor is named in the
+    // payload — every message/reaction handler) and async DB-backed (the
+    // actor is the mirror Server's owner — the four P4-8 mirror handlers).
+    // The async resolver runs BEFORE crypto and is allowed to throw
+    // `FederationInboundError` for early-fail conditions like
+    // `unknown_mirror_server` / `not_origin` — those naturally belong here
+    // because they don't depend on signature verification.
+    let authorRemoteUserId: string | null;
+    if (handler.resolveAuthorRemoteUserId) {
+      authorRemoteUserId = await handler.resolveAuthorRemoteUserId({
+        payload: preCheck.payload,
+        peer: { id: peer.id, host: peer.host },
+        prisma: this.prisma,
+      });
+    } else if (handler.extractAuthorRemoteUserId) {
+      authorRemoteUserId = handler.extractAuthorRemoteUserId(preCheck.payload);
+    } else {
+      // Defence-in-depth: a handler that registers neither is a wiring bug.
+      throw new Error(
+        `handler for ${preCheck.eventType} declares neither extractAuthorRemoteUserId nor resolveAuthorRemoteUserId`,
+      );
+    }
     if (!authorRemoteUserId) {
       throw new FederationInboundError(
         'bad_envelope',
@@ -436,7 +473,37 @@ export interface HandlerOutput {
  */
 interface InboundHandler<TSchema extends z.ZodTypeAny> {
   payloadSchema: TSchema;
-  extractAuthorRemoteUserId: (payload: unknown) => string | null;
+  /**
+   * Cheap structural extractor — pulls the author's qualified remote user id
+   * directly out of the payload. Used when the payload itself names the
+   * actor (every message/reaction envelope; `member.join_request`'s
+   * `joinerRemoteUserId`).
+   *
+   * Mutually exclusive with `resolveAuthorRemoteUserId` — set exactly one.
+   * Both null/undefined → bad_envelope.
+   */
+  extractAuthorRemoteUserId?: (payload: unknown) => string | null;
+  /**
+   * Async DB-backed resolver — used when the payload does NOT name an
+   * actor and the implicit signer is derived from local state (the four
+   * P4-8 mirror handlers: the implicit signer is the mirror Server's
+   * owner remote user). Runs BEFORE signature verification, so failing
+   * fast here also gates the user-key cache lookup.
+   *
+   * The resolver MAY throw `FederationInboundError` (e.g. for
+   * `unknown_mirror_server` or `not_origin`); the dispatcher will
+   * propagate the error code to the route as-is, which is the natural
+   * place to surface "no such mirror" before any crypto work.
+   *
+   * Returning `null` from a resolver is bad_envelope (same as
+   * `extractAuthorRemoteUserId`); throw an `InboundError` with a more
+   * specific code when one is appropriate.
+   */
+  resolveAuthorRemoteUserId?: (input: {
+    payload: unknown;
+    peer: { id: string; host: string };
+    prisma: PrismaClient;
+  }) => Promise<string | null>;
   handle: (input: {
     envelope: TwoLayerSignedEnvelope<z.infer<TSchema>>;
     payload: z.infer<TSchema>;
@@ -520,6 +587,33 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleMemberJoinRequest as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P4-8 — mirror Server/Channel lifecycle. The user-layer signer is
+  // implicit (the mirror Server's owner on the origin peer), so each of
+  // these uses `resolveAuthorRemoteUserId` to look up the owner via the
+  // mirror row instead of a payload field. Sender check (`fromInstance`
+  // == mirror.originInstance.host) and mirror existence check live in
+  // the resolver too — failing fast there avoids any crypto work for an
+  // unknown / non-origin envelope.
+  'server.update': {
+    payloadSchema: serverUpdatePayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleServerUpdate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'channel.create': {
+    payloadSchema: channelCreatePayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleChannelCreate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'channel.update': {
+    payloadSchema: channelUpdatePayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleChannelUpdate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'channel.delete': {
+    payloadSchema: channelDeletePayloadSchema,
+    resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
+    handle: handleChannelDelete as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -1540,6 +1634,379 @@ async function handleMemberJoinRequest(input: {
       // in `federation-outbox.ts`. Until P4-10 lands, peers other than
       // the joiner's home don't learn about the new member until they
       // happen to receive a different envelope from them.
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- mirror lifecycle handlers (P4-8) ---------------------------------------
+
+/**
+ * Shared author resolver for the four mirror-lifecycle envelopes
+ * (server.update + channel.create/update/delete). Used as the handler's
+ * `resolveAuthorRemoteUserId` callback — runs BEFORE crypto.
+ *
+ * Responsibilities, in order:
+ *   1. Pull the target server id from the payload (the key differs only
+ *      structurally; the field is named `serverId` on every mirror payload).
+ *   2. Look up the mirror Server row and verify it actually IS a mirror
+ *      (`originInstanceId != null`) → otherwise 404 `unknown_mirror_server`.
+ *      A LOCAL server matching the id is treated the same as a missing one:
+ *      we never mutate a local server in response to a peer envelope.
+ *   3. Verify the peer that sent the envelope is the mirror's origin
+ *      (`originInstanceId === peer.id`) → otherwise 403 `not_origin`. This
+ *      is the core security check for these handlers: only the home peer
+ *      can push mutations for a Server it owns.
+ *   4. Resolve the mirror Server's owner User row and return their
+ *      `remoteUserId` (the qualified `<localpart>@<peerHost>` id). The
+ *      owner is by definition a synthetic mirror user — `User.remoteUserId`
+ *      is populated — so this lookup is just a field read.
+ *
+ * Throwing `FederationInboundError` here is the canonical place to surface
+ * the early-fail conditions: the dispatcher catches them and routes to the
+ * appropriate HTTP status without performing any signature verification.
+ */
+async function resolveMirrorOwner(
+  input: {
+    payload: unknown;
+    peer: { id: string; host: string };
+    prisma: PrismaClient;
+  },
+  serverIdField: 'serverId',
+): Promise<string> {
+  const v = (input.payload as Record<string, unknown> | null)?.[serverIdField];
+  if (typeof v !== 'string' || v.length === 0) {
+    throw new FederationInboundError(
+      'bad_envelope',
+      'payload missing serverId',
+    );
+  }
+  const serverId = v;
+
+  const server = await input.prisma.server.findUnique({
+    where: { id: serverId },
+    select: {
+      id: true,
+      originInstanceId: true,
+      ownerUserId: true,
+    },
+  });
+  // Local servers and missing rows produce the same code on purpose — a
+  // peer cannot probe for the existence of a local server by trying to
+  // mutate it as if it were a mirror.
+  if (!server || server.originInstanceId === null) {
+    throw new FederationInboundError(
+      'unknown_mirror_server',
+      `mirror server ${serverId} not found on this instance`,
+    );
+  }
+  if (server.originInstanceId !== input.peer.id) {
+    throw new FederationInboundError(
+      'not_origin',
+      `peer ${input.peer.host} is not the origin of mirror server ${serverId}`,
+    );
+  }
+
+  const owner = await input.prisma.user.findUnique({
+    where: { id: server.ownerUserId },
+    select: { remoteUserId: true },
+  });
+  if (!owner?.remoteUserId) {
+    // Invariant: a mirror Server's owner row is always a synthetic remote
+    // user with `remoteUserId` populated. If we got here, the mirror was
+    // created via a non-standard path — surface as bad_envelope so the
+    // peer (eventually) sees a 4xx rather than a 500.
+    throw new FederationInboundError(
+      'bad_envelope',
+      `mirror server ${serverId} owner has no remoteUserId`,
+    );
+  }
+  return owner.remoteUserId;
+}
+
+/**
+ * Build a `FederationMirrorService` bound to this handler's transaction.
+ * The mirror service's `resolveRemoteUser` callback is set to a throwing
+ * stub because the four P4-8 envelopes never call into the create-server
+ * / add-member paths — those are the only ones that need a real resolver.
+ * Defence-in-depth: if a future handler accidentally calls
+ * `createMirrorServer`/`addMirrorMember` from this code path, the stub
+ * raises loudly instead of hitting the network.
+ */
+function makeMirrorServiceForLifecycle(): FederationMirrorService {
+  return new FederationMirrorService({
+    resolveRemoteUser: () => {
+      throw new Error(
+        'mirror-lifecycle handlers must not resolve RemoteUser rows',
+      );
+    },
+  });
+}
+
+async function handleServerUpdate(input: {
+  envelope: TwoLayerSignedEnvelope<ServerUpdatePayload>;
+  payload: ServerUpdatePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  // `resolveMirrorOwner` already verified mirror existence + sender + owner;
+  // this handler only mutates the surface fields and broadcasts.
+  const mirror = makeMirrorServiceForLifecycle();
+  await mirror.updateMirrorServer(tx, {
+    serverId: payload.serverId,
+    name: payload.name,
+    description: payload.description,
+    iconUrl: payload.iconUrl,
+  });
+
+  // Reload the row in the shape `serializeServer` expects. The mirror
+  // helper is keyed on update fields only, so we always re-read post-mutate.
+  const updated = await tx.server.findUniqueOrThrow({
+    where: { id: payload.serverId },
+    select: {
+      id: true,
+      ownerUserId: true,
+      name: true,
+      description: true,
+      iconAttachmentId: true,
+      defaultRoleId: true,
+      federationEnabled: true,
+      createdAt: true,
+    },
+  });
+  const dto = serializeServer(updated);
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: updated.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'SERVER_UPDATE',
+        serverId: updated.id,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+async function handleChannelCreate(input: {
+  envelope: TwoLayerSignedEnvelope<ChannelCreatePayload>;
+  payload: ChannelCreatePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx } = input;
+
+  const mirror = makeMirrorServiceForLifecycle();
+  await mirror.upsertMirrorChannel({
+    tx,
+    serverId: payload.serverId,
+    originInstanceId: peer.id,
+    channelId: payload.channel.id,
+    name: payload.channel.name,
+    type: payload.channel.type,
+    topic: payload.channel.topic,
+    position: payload.channel.position,
+    // The wire schema has `.default('inherit')` / `.default(false)` on these
+    // two fields; Zod inference still surfaces them as optional, so coalesce
+    // for the mirror helper which wants concrete values.
+    federationMode: payload.channel.federationMode ?? 'inherit',
+    nsfw: payload.channel.nsfw ?? false,
+  });
+
+  const row = await tx.channel.findUniqueOrThrow({
+    where: { id: payload.channel.id },
+    select: {
+      id: true,
+      serverId: true,
+      parentId: true,
+      campaignId: true,
+      gameNightId: true,
+      type: true,
+      name: true,
+      topic: true,
+      position: true,
+      nsfw: true,
+      videoEnabled: true,
+      federationMode: true,
+      createdAt: true,
+    },
+  });
+  const dto = serializeChannel(row);
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: row.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'CHANNEL_CREATE',
+        serverId: row.serverId,
+        channelId: row.id,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+async function handleChannelUpdate(input: {
+  envelope: TwoLayerSignedEnvelope<ChannelUpdatePayload>;
+  payload: ChannelUpdatePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  // Confirm the channel is in fact on the mirror Server we already
+  // validated. `upsertMirrorChannel` requires the full shape (type, etc.),
+  // so for an UPDATE we read the existing row first and merge.
+  const existing = await tx.channel.findUnique({
+    where: { id: payload.channelId },
+    select: {
+      id: true,
+      serverId: true,
+      type: true,
+      name: true,
+      topic: true,
+      position: true,
+      federationMode: true,
+      nsfw: true,
+    },
+  });
+  if (!existing || existing.serverId !== payload.serverId) {
+    // Same shape as the message handlers' `unknown_message` guard: the
+    // channel either doesn't exist locally or has been moved to a
+    // different server. The latter shouldn't happen for federated
+    // channels but is a cheap defence against a buggy peer.
+    throw new FederationInboundError(
+      'unknown_channel',
+      `channel ${payload.channelId} not found on server ${payload.serverId}`,
+    );
+  }
+  if (existing.type !== 'text' && existing.type !== 'forum') {
+    // Mirror channels must be text/forum (createMirrorServer enforces it).
+    // If we ever hit this it's a data-integrity issue, not a peer bug.
+    throw new FederationInboundError(
+      'unknown_channel',
+      `channel ${payload.channelId} is not a mirror-supported type`,
+    );
+  }
+
+  const mirror = makeMirrorServiceForLifecycle();
+  await mirror.upsertMirrorChannel({
+    tx,
+    serverId: payload.serverId,
+    // originInstanceId is intentionally NOT changed by upsertMirrorChannel
+    // (see the helper's `update:` clause). We pass the existing id through
+    // for the create branch's invariant — it shouldn't be reached for an
+    // UPDATE because we already proved the row exists.
+    originInstanceId: input.peer.id,
+    channelId: payload.channelId,
+    // Coalesce against existing row values for fields the wire schema
+    // marks optional. Each undefined field is preserved.
+    name: payload.name ?? existing.name,
+    type: existing.type as 'text' | 'forum',
+    topic: payload.topic !== undefined ? payload.topic : existing.topic,
+    position: payload.position ?? existing.position,
+    federationMode:
+      payload.federationMode ??
+      (existing.federationMode as 'inherit' | 'force_on' | 'force_off'),
+    nsfw: payload.nsfw ?? existing.nsfw,
+  });
+
+  const updated = await tx.channel.findUniqueOrThrow({
+    where: { id: payload.channelId },
+    select: {
+      id: true,
+      serverId: true,
+      parentId: true,
+      campaignId: true,
+      gameNightId: true,
+      type: true,
+      name: true,
+      topic: true,
+      position: true,
+      nsfw: true,
+      videoEnabled: true,
+      federationMode: true,
+      createdAt: true,
+    },
+  });
+  const dto = serializeChannel(updated);
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: updated.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'CHANNEL_UPDATE',
+        serverId: updated.serverId,
+        channelId: updated.id,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+async function handleChannelDelete(input: {
+  envelope: TwoLayerSignedEnvelope<ChannelDeletePayload>;
+  payload: ChannelDeletePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  // The mirror helper is idempotent (no-op when the channel is already
+  // gone). It also enforces `channel.serverId === payload.serverId` and
+  // throws otherwise — that's stricter than `deleteMirrorChannel`'s
+  // own comment but matches the guard already there.
+  const mirror = makeMirrorServiceForLifecycle();
+  await mirror.deleteMirrorChannel(tx, payload.serverId, payload.channelId);
+
+  // Critically: do NOT tear down the mirror Server here even if this was
+  // the last channel. The mirror can survive with zero channels — the
+  // Server row, owner User, and any ServerMember rows remain so that a
+  // subsequent `channel.create` from the same home repopulates an
+  // already-discoverable mirror. Teardown happens only when the LOCAL
+  // member list empties out (see `tearDownMirrorServerIfEmpty`).
+
+  return {
+    result: {
+      status: 200,
+      body: { ok: true, data: { id: payload.channelId } },
+    },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'CHANNEL_DELETE',
+        serverId: payload.serverId,
+        channelId: payload.channelId,
+        data: { id: payload.channelId },
+      });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
         data: { lastSeenAt: new Date() },

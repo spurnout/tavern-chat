@@ -2138,3 +2138,737 @@ describe.skipIf(!dockerOk)('P4-7 — POST /_federation/event (member.join_reques
     }
   });
 });
+
+// ============================================================================
+// P4-8 — inbound server.update + channel.create/update/delete (mirror lifecycle)
+// ============================================================================
+
+/**
+ * For these handlers THIS instance is the B side — we hold a MIRROR of a
+ * Server owned by the peer A. The peer pushes envelopes to mutate the
+ * mirror; our handlers must:
+ *   1. Reject envelopes from non-origin peers (403 `not_origin`).
+ *   2. Reject envelopes targeting a serverId we don't have a mirror for
+ *      (404 `unknown_mirror_server`).
+ *   3. Mirror the mutation idempotently and broadcast the local gateway
+ *      event so any client viewing the mirror sees the change.
+ *
+ * Setup differs from `makeFixture` (which builds a LOCAL server) — these
+ * tests need a mirror Server (originInstanceId set) owned by the peer's
+ * RemoteUser via a synthetic local User row.
+ */
+interface MirrorFixture extends PeerFixture {
+  /** The mirror Server's row — owner is the synthetic Alice user */
+  mirrorServerId: string;
+  /** The single channel that exists on the mirror at setup time */
+  mirrorChannelId: string;
+}
+
+async function makeMirrorFixture(opts?: {
+  /** Optional override for the channel federationMode */
+  channelFederationMode?: 'inherit' | 'force_on' | 'force_off';
+}): Promise<MirrorFixture> {
+  // Reuse the underlying peer + remote user fixture; we won't use its
+  // serverId (which is a LOCAL server). The mirror Server's owner is
+  // the synthetic local user (`fx.localUserId`) so the
+  // `User.remoteUserId` field populates `resolveMirrorOwner`.
+  const fx = await makeFixture();
+
+  const mirrorServerId = ulid();
+  const everyoneRoleId = ulid();
+  const mirrorChannelId = ulid();
+
+  await prisma.server.create({
+    data: {
+      id: mirrorServerId,
+      ownerUserId: fx.localUserId, // synthetic mirror user (has remoteUserId)
+      name: 'Mirror of A',
+      description: 'A peer-owned mirror',
+      iconAttachmentId: null,
+      federationEnabled: true,
+      originInstanceId: fx.peerInstanceId, // <- this is what makes it a mirror
+    },
+  });
+  await prisma.role.create({
+    data: {
+      id: everyoneRoleId,
+      serverId: mirrorServerId,
+      name: '@everyone',
+      isEveryone: true,
+      permissions: new Prisma.Decimal(
+        serializePermissions(PERMISSION_DEFAULT_EVERYONE),
+      ),
+    },
+  });
+  await prisma.server.update({
+    where: { id: mirrorServerId },
+    data: { defaultRoleId: everyoneRoleId },
+  });
+  await prisma.channel.create({
+    data: {
+      id: mirrorChannelId,
+      serverId: mirrorServerId,
+      type: 'text',
+      name: 'mirrored-general',
+      federationMode: opts?.channelFederationMode ?? 'inherit',
+      originInstanceId: fx.peerInstanceId,
+    },
+  });
+  // Owner is also a member on the mirror — that's the pattern createMirrorServer
+  // produces. We don't need additional members for these tests.
+  await prisma.serverMember.create({
+    data: { serverId: mirrorServerId, userId: fx.localUserId },
+  });
+
+  return { ...fx, mirrorServerId, mirrorChannelId };
+}
+
+interface BuildMirrorEnvelopeBase {
+  fx: MirrorFixture;
+  /** Override fromInstance — used for the non-origin peer 403 tests. */
+  fromInstance?: string;
+  /** Override the user-key used to sign the payload. */
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  /** Override the instance-key used to sign the envelope. */
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}
+
+function buildServerUpdateEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    name?: string;
+    description?: string | null;
+    iconUrl?: string | null;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  const payload: Record<string, unknown> = { serverId: input.serverId };
+  if (input.name !== undefined) payload['name'] = input.name;
+  if (input.description !== undefined) payload['description'] = input.description;
+  if (input.iconUrl !== undefined) payload['iconUrl'] = input.iconUrl;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'server.update',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload,
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function buildChannelCreateEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    channelId?: string;
+    name?: string;
+    type?: 'text' | 'forum';
+    topic?: string | null;
+    position?: number;
+    federationMode?: 'inherit' | 'force_on' | 'force_off';
+    nsfw?: boolean;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'channel.create',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      serverId: input.serverId,
+      channel: {
+        id: input.channelId ?? ulid(),
+        name: input.name ?? 'new-channel',
+        type: input.type ?? 'text',
+        topic: input.topic ?? null,
+        position: input.position ?? 0,
+        federationMode: input.federationMode ?? 'inherit',
+        nsfw: input.nsfw ?? false,
+      },
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function buildChannelUpdateEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    channelId: string;
+    name?: string;
+    topic?: string | null;
+    position?: number;
+    federationMode?: 'inherit' | 'force_on' | 'force_off';
+    nsfw?: boolean;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  const payload: Record<string, unknown> = {
+    serverId: input.serverId,
+    channelId: input.channelId,
+  };
+  if (input.name !== undefined) payload['name'] = input.name;
+  if (input.topic !== undefined) payload['topic'] = input.topic;
+  if (input.position !== undefined) payload['position'] = input.position;
+  if (input.federationMode !== undefined)
+    payload['federationMode'] = input.federationMode;
+  if (input.nsfw !== undefined) payload['nsfw'] = input.nsfw;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'channel.update',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload,
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function buildChannelDeleteEnvelope(
+  input: BuildMirrorEnvelopeBase & {
+    serverId: string;
+    channelId: string;
+  },
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'channel.delete',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      serverId: input.serverId,
+      channelId: input.channelId,
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+/**
+ * Seed a second peered RemoteInstance — used by the `not_origin` tests where
+ * we send an envelope from a DIFFERENT peer than the one that owns the mirror.
+ * The second peer must be `peered` (else the dispatcher would 403 with
+ * `peer_not_peered` first) and have a RemoteUser whose key signs the envelope.
+ */
+async function seedSecondPeer(): Promise<{
+  peerInstanceId: string;
+  peerHost: string;
+  peerKp: ReturnType<typeof generateKeyPair>;
+  authorKp: ReturnType<typeof generateKeyPair>;
+  authorRemoteUserId: string;
+}> {
+  const peerHost = 'c.example';
+  const peerInstanceId = ulid();
+  const peerKp = generateKeyPair();
+  const authorKp = generateKeyPair();
+  const localpart = `mallory-${peerInstanceId.slice(-6).toLowerCase()}`;
+  const authorRemoteUserId = `${localpart}@${peerHost}`;
+
+  await prisma.remoteInstance.create({
+    data: {
+      id: peerInstanceId,
+      host: peerHost,
+      instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+      status: 'peered',
+      capabilities: ['messages'],
+      peeredAt: new Date(),
+    },
+  });
+  await prisma.remoteUser.create({
+    data: {
+      id: ulid(),
+      remoteInstanceId: peerInstanceId,
+      remoteUserId: authorRemoteUserId,
+      displayNameCache: 'Mallory from C',
+      avatarUrlCache: null,
+      publicKey: exportPublicKeyRaw(authorKp.publicKey),
+      lastSeenAt: new Date(0),
+    },
+  });
+  return { peerInstanceId, peerHost, peerKp, authorKp, authorRemoteUserId };
+}
+
+describe.skipIf(!dockerOk)('P4-8 — POST /_federation/event (server.update)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: updates mirror surface fields + broadcasts SERVER_UPDATE', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildServerUpdateEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      name: 'Renamed Mirror',
+      description: 'updated description',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.id).toBe(fx.mirrorServerId);
+
+      const row = await prisma.server.findUniqueOrThrow({
+        where: { id: fx.mirrorServerId },
+      });
+      expect(row.name).toBe('Renamed Mirror');
+      expect(row.description).toBe('updated description');
+      expect(row.originInstanceId).toBe(fx.peerInstanceId);
+
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'server.update' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'server.update',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: { serverId: fx.mirrorServerId, name: 'hijacked' },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      // The mirror row must NOT have been mutated.
+      const row = await prisma.server.findUniqueOrThrow({
+        where: { id: fx.mirrorServerId },
+      });
+      expect(row.name).toBe('Mirror of A');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildServerUpdateEnvelope({
+      fx,
+      serverId: ulid(), // no mirror with this id
+      name: 'irrelevant',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-8 — POST /_federation/event (channel.create)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: creates mirror Channel + broadcasts CHANNEL_CREATE', async () => {
+    const fx = await makeMirrorFixture();
+    const newChannelId = ulid();
+    const envelope = buildChannelCreateEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      channelId: newChannelId,
+      name: 'announcements',
+      type: 'text',
+      topic: 'broadcasts from the home peer',
+      position: 5,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.id).toBe(newChannelId);
+
+      const row = await prisma.channel.findUniqueOrThrow({
+        where: { id: newChannelId },
+      });
+      expect(row.serverId).toBe(fx.mirrorServerId);
+      expect(row.name).toBe('announcements');
+      expect(row.type).toBe('text');
+      expect(row.topic).toBe('broadcasts from the home peer');
+      expect(row.originInstanceId).toBe(fx.peerInstanceId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'channel.create',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: {
+        serverId: fx.mirrorServerId,
+        channel: {
+          id: ulid(),
+          name: 'hijacked',
+          type: 'text',
+          topic: null,
+          position: 0,
+          federationMode: 'inherit',
+          nsfw: false,
+        },
+      },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      // No new channel created.
+      const channels = await prisma.channel.count({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(channels).toBe(1); // only the seed channel
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildChannelCreateEnvelope({
+      fx,
+      serverId: ulid(),
+      name: 'orphan',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-8 — POST /_federation/event (channel.update)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: patches mirror Channel + broadcasts CHANNEL_UPDATE', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildChannelUpdateEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      channelId: fx.mirrorChannelId,
+      name: 'renamed-general',
+      topic: 'new topic',
+      position: 7,
+      nsfw: true,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data?.id).toBe(fx.mirrorChannelId);
+
+      const row = await prisma.channel.findUniqueOrThrow({
+        where: { id: fx.mirrorChannelId },
+      });
+      expect(row.name).toBe('renamed-general');
+      expect(row.topic).toBe('new topic');
+      expect(row.position).toBe(7);
+      expect(row.nsfw).toBe(true);
+      // Type and origin stay pinned.
+      expect(row.type).toBe('text');
+      expect(row.originInstanceId).toBe(fx.peerInstanceId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'channel.update',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: {
+        serverId: fx.mirrorServerId,
+        channelId: fx.mirrorChannelId,
+        name: 'hijacked',
+      },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      const row = await prisma.channel.findUniqueOrThrow({
+        where: { id: fx.mirrorChannelId },
+      });
+      expect(row.name).toBe('mirrored-general');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildChannelUpdateEnvelope({
+      fx,
+      serverId: ulid(),
+      channelId: fx.mirrorChannelId,
+      name: 'irrelevant',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-8 — POST /_federation/event (channel.delete)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: removes mirror Channel + broadcasts CHANNEL_DELETE', async () => {
+    const fx = await makeMirrorFixture();
+    // Add a SECOND channel so the LAST-channel test below stays separate.
+    const secondChannelId = ulid();
+    await prisma.channel.create({
+      data: {
+        id: secondChannelId,
+        serverId: fx.mirrorServerId,
+        type: 'text',
+        name: 'second',
+        federationMode: 'inherit',
+        originInstanceId: fx.peerInstanceId,
+      },
+    });
+
+    const envelope = buildChannelDeleteEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      channelId: secondChannelId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data?.id).toBe(secondChannelId);
+
+      const row = await prisma.channel.findUnique({
+        where: { id: secondChannelId },
+      });
+      expect(row).toBeNull();
+
+      // Mirror Server + the other channel are still present.
+      const server = await prisma.server.findUnique({
+        where: { id: fx.mirrorServerId },
+      });
+      expect(server).not.toBeNull();
+      const remaining = await prisma.channel.findMany({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.id).toBe(fx.mirrorChannelId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-origin peer → 403 not_origin', async () => {
+    const fx = await makeMirrorFixture();
+    const other = await seedSecondPeer();
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'channel.delete',
+      fromInstance: other.peerHost,
+      toInstance: SELF_HOST,
+      payload: {
+        serverId: fx.mirrorServerId,
+        channelId: fx.mirrorChannelId,
+      },
+      signUser: (b: Buffer) => edSign(b, other.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, other.peerKp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/is not the origin/i);
+
+      // Channel is still present.
+      const row = await prisma.channel.findUnique({
+        where: { id: fx.mirrorChannelId },
+      });
+      expect(row).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown mirror server → 404 unknown_mirror_server', async () => {
+    const fx = await makeMirrorFixture();
+    const envelope = buildChannelDeleteEnvelope({
+      fx,
+      serverId: ulid(),
+      channelId: fx.mirrorChannelId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('deleting the LAST channel does NOT tear down the mirror Server', async () => {
+    // The seed fixture has exactly one channel; delete it and confirm the
+    // mirror Server (and its owner + everyone role) survives. This is the
+    // explicit P4-8 invariant: mirror server with zero channels is still
+    // valid — teardown is gated on LOCAL members emptying out, not on the
+    // channel list.
+    const fx = await makeMirrorFixture();
+    const envelope = buildChannelDeleteEnvelope({
+      fx,
+      serverId: fx.mirrorServerId,
+      channelId: fx.mirrorChannelId,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Channel is gone.
+      const ch = await prisma.channel.findUnique({
+        where: { id: fx.mirrorChannelId },
+      });
+      expect(ch).toBeNull();
+
+      // Mirror Server still present (with originInstanceId still set).
+      const srv = await prisma.server.findUnique({
+        where: { id: fx.mirrorServerId },
+      });
+      expect(srv).not.toBeNull();
+      expect(srv!.originInstanceId).toBe(fx.peerInstanceId);
+
+      // No channels remain on the mirror.
+      const remaining = await prisma.channel.count({
+        where: { serverId: fx.mirrorServerId },
+      });
+      expect(remaining).toBe(0);
+
+      // The owner ServerMember is still attached — teardown didn't run.
+      const owner = await prisma.serverMember.findUnique({
+        where: {
+          serverId_userId: {
+            serverId: fx.mirrorServerId,
+            userId: fx.localUserId,
+          },
+        },
+      });
+      expect(owner).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+});
