@@ -34,6 +34,9 @@ const ModerationPage = lazy(() =>
 const ServerSettingsPage = lazy(() =>
   import('./routes/server-settings-page.js').then((m) => ({ default: m.ServerSettingsPage })),
 );
+const AdminFederationPage = lazy(() =>
+  import('./routes/admin-federation-page.js').then((m) => ({ default: m.AdminFederationPage })),
+);
 import { SearchPage } from './routes/search-page.js';
 import { AccountSettingsPage } from './routes/account-settings-page.js';
 import { AuthGate } from './components/AuthGate.js';
@@ -186,6 +189,16 @@ const dmThreadRoute = createRoute({
   component: DmsPage,
 });
 
+const adminFederationRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/app/admin/federation',
+  component: () => (
+    <Suspense fallback={<PageFallback />}>
+      <AdminFederationPage />
+    </Suspense>
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   bootstrapRoute,
@@ -206,6 +219,7 @@ const routeTree = rootRoute.addChildren([
     dmsHomeRoute,
     dmThreadRoute,
     accountSettingsRoute,
+    adminFederationRoute,
   ]),
 ]);
 

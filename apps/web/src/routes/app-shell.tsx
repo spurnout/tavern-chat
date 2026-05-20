@@ -8,6 +8,7 @@ import {
   MessageCircle,
   Menu,
   Monitor,
+  Network,
   Plus,
   Search,
   Settings,
@@ -322,7 +323,7 @@ interface ChannelSidebarProps {
   channels: Channel[];
   activeChannelId: string | undefined;
   activeServerId: string | null;
-  me: { displayName: string; username: string } | null;
+  me: { displayName: string; username: string; isInstanceAdmin?: boolean } | null;
   onLogout: () => void;
   onCreateChannel: () => void;
   onOpenSettings: () => void;
@@ -338,6 +339,7 @@ function ChannelSidebar({
   onCreateChannel,
   onOpenSettings,
 }: ChannelSidebarProps): JSX.Element {
+  const isAdmin = me?.isInstanceAdmin === true;
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">
       <div className="flex items-center justify-between gap-2 border-b border-subtle p-3">
@@ -392,6 +394,17 @@ function ChannelSidebar({
               </span>
               <span className="truncate">Moderation</span>
             </Link>
+            {isAdmin ? (
+              <Link
+                to="/app/admin/federation"
+                className="flex items-center gap-2 rounded px-2 py-1.5 text-fg hover:bg-raised"
+              >
+                <span className="text-fg-muted">
+                  <Network size={16} />
+                </span>
+                <span className="truncate">Federation</span>
+              </Link>
+            ) : null}
             <Link
               to="/app/servers/$serverId/settings"
               params={{ serverId: activeServerId }}
