@@ -8,12 +8,21 @@ import {
   TavernError,
   TOKEN_TTL,
   ulid,
+  type RemoteInviteScope,
 } from '@tavern/shared';
 import { generateInviteCode } from '../lib/invite-codes.js';
 import { ok } from '../lib/responses.js';
 import { requireServerPermission } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+
+// Federation Phase 4 — remote-user identity is `localpart@host`. The regex is
+// intentionally duplicated from packages/shared/src/federation/{messages,
+// membership}.ts where the federated wire schemas live; introducing a shared
+// export touches the federation envelope surface and is deferred until a
+// follow-up cleanup task. Keep the pattern identical to the federation copy
+// so behaviour matches across the boundary.
+const REMOTE_USER_ID_RE = /^[a-z0-9_.-]+@[a-z0-9.-]+\.[a-z0-9.-]+$/i;
 
 function serializeInvite(i: {
   id: string;
@@ -27,6 +36,9 @@ function serializeInvite(i: {
   expiresAt: Date | null;
   revokedAt: Date | null;
   createdAt: Date;
+  remoteScope: string | null;
+  remoteInstanceHost: string | null;
+  remoteUserId: string | null;
 }) {
   return {
     id: i.id,
@@ -40,6 +52,9 @@ function serializeInvite(i: {
     expiresAt: i.expiresAt?.toISOString() ?? null,
     revokedAt: i.revokedAt?.toISOString() ?? null,
     createdAt: i.createdAt.toISOString(),
+    remoteScope: i.remoteScope as RemoteInviteScope | null,
+    remoteInstanceHost: i.remoteInstanceHost,
+    remoteUserId: i.remoteUserId,
   };
 }
 
@@ -60,6 +75,82 @@ export async function registerInviteRoutes(app: FastifyInstance): Promise<void> 
       if (!me?.isInstanceAdmin) throw TavernError.forbidden();
     }
 
+    // Federation Phase 4 — federated-invite validation. The checks below run
+    // ONLY when the caller opted into a remoteScope; local invites (the
+    // dominant path) skip all of this so the existing creation flow is
+    // unchanged.
+    let remoteInstanceHost: string | null = null;
+    let remoteUserId: string | null = null;
+    if (body.remoteScope !== undefined) {
+      // 1. Remote scope is meaningful only on server-scoped invites.
+      if (body.scope !== 'server') {
+        throw TavernError.validation('remote invites must be server-scoped');
+      }
+      // serverId is guaranteed non-null here because the earlier `scope ===
+      // 'server'` branch threw if it was missing, but narrow for the
+      // type-checker.
+      if (!body.serverId) {
+        throw TavernError.validation('remote invites must be server-scoped');
+      }
+      // 2. The target Tavern must have federation switched on. (Instance-level
+      //    FEDERATION_ENABLED is already a precondition for setting this flag
+      //    in the first place — P3-10 — so checking the Server row is enough.)
+      const server = await prisma.server.findUnique({
+        where: { id: body.serverId },
+        select: { federationEnabled: true },
+      });
+      if (!server || server.federationEnabled === false) {
+        throw TavernError.validation('server is not federation-enabled');
+      }
+
+      // 3. any_peer — the other two fields must be null/absent.
+      if (body.remoteScope === 'any_peer') {
+        if (body.remoteInstanceHost !== undefined || body.remoteUserId !== undefined) {
+          throw TavernError.validation(
+            'any_peer scope does not accept remoteInstanceHost or remoteUserId',
+          );
+        }
+      }
+
+      // 4–5. specific_instance — host required AND must be a peered instance.
+      if (body.remoteScope === 'specific_instance') {
+        if (!body.remoteInstanceHost) {
+          throw TavernError.validation('specific_instance scope requires remoteInstanceHost');
+        }
+        const peer = await prisma.remoteInstance.findUnique({
+          where: { host: body.remoteInstanceHost },
+          select: { status: true },
+        });
+        if (!peer || peer.status !== 'peered') {
+          throw TavernError.validation('remoteInstanceHost is not a peered instance');
+        }
+        remoteInstanceHost = body.remoteInstanceHost;
+      }
+
+      // 6–8. specific_user — remoteUserId required, well-formed, and the host
+      //      portion must be a peered instance.
+      if (body.remoteScope === 'specific_user') {
+        if (!body.remoteUserId) {
+          throw TavernError.validation('specific_user scope requires remoteUserId');
+        }
+        if (!REMOTE_USER_ID_RE.test(body.remoteUserId)) {
+          throw TavernError.validation('remoteUserId is malformed (expected localpart@host)');
+        }
+        const host = body.remoteUserId.split('@')[1] ?? '';
+        const peer = await prisma.remoteInstance.findUnique({
+          where: { host },
+          select: { status: true },
+        });
+        if (!peer || peer.status !== 'peered') {
+          throw TavernError.validation("remoteUserId's host is not a peered instance");
+        }
+        // Pin BOTH the host and the user so a later identity rename on the
+        // peer can't quietly widen the invite's audience.
+        remoteInstanceHost = host;
+        remoteUserId = body.remoteUserId;
+      }
+    }
+
     const invite = await prisma.invite.create({
       data: {
         id: ulid(),
@@ -72,6 +163,9 @@ export async function registerInviteRoutes(app: FastifyInstance): Promise<void> 
         expiresAt: body.expiresInSeconds
           ? new Date(Date.now() + body.expiresInSeconds * 1000)
           : new Date(Date.now() + TOKEN_TTL.INVITE_SECONDS * 1000),
+        remoteScope: body.remoteScope ?? null,
+        remoteInstanceHost,
+        remoteUserId,
       },
     });
 
@@ -81,7 +175,12 @@ export async function registerInviteRoutes(app: FastifyInstance): Promise<void> 
       action: 'invite.created',
       targetType: 'invite',
       targetId: invite.id,
-      metadata: { scope: invite.scope },
+      metadata: {
+        scope: invite.scope,
+        remoteScope: invite.remoteScope,
+        remoteInstanceHost: invite.remoteInstanceHost,
+        remoteUserId: invite.remoteUserId,
+      },
     });
     if (invite.serverId) {
       gatewayBroker.publish({
