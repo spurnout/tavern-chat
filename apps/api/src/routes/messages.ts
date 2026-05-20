@@ -25,8 +25,10 @@ import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import {
   resolveMentionRecipients,
+  resolveQualifiedMentionsAsync,
   writeMentionRecords,
 } from '../services/mentions-service.js';
+import type { FederationProfileService } from '../services/federation-profile.js';
 import { enqueueLinkPreviews } from '../services/link-preview-service.js';
 import { evaluateAutomod } from '../services/automod-service.js';
 
@@ -41,7 +43,11 @@ function sanitizeContent(content: string): string {
   return sanitizeHtml(content, { allowedTags: [], allowedAttributes: {} });
 }
 
-export async function registerMessageRoutes(app: FastifyInstance): Promise<void> {
+interface MessageRouteDeps {
+  federationProfile?: FederationProfileService | null;
+}
+
+export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {
   // List messages in a channel ---------------------------------------------
   app.get('/api/channels/:id/messages', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
@@ -439,6 +445,11 @@ export async function registerMessageRoutes(app: FastifyInstance): Promise<void>
       channelId,
       content: cleanContent,
     });
+
+    // P2-9 — kick off best-effort remote profile lookups for any qualified
+    // mentions (e.g. @alice@b.example) so the RemoteUser row is warm by the
+    // time the web client renders the message. Fire-and-forget.
+    resolveQualifiedMentionsAsync(cleanContent, deps?.federationProfile ?? null, app.log);
 
     // Phase 1.3: fan out MENTION_CREATE per recipient so each user's bell
     // updates without waiting for a full inbox refetch. The event payload

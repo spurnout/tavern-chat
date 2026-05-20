@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { hasGroupMention, nameMentions, type ParsedMention, ulid } from '@tavern/shared';
+import { hasGroupMention, nameMentions, qualifiedMentions, type ParsedMention, ulid } from '@tavern/shared';
+import type { FederationProfileService } from './federation-profile.js';
 
 /**
  * Resolve a list of parsed mentions to the concrete recipient userIds.
@@ -166,3 +167,30 @@ export async function writeMentionRecords({
 }
 
 export { hasGroupMention };
+
+/**
+ * Kick off best-effort profile lookups for any qualified mentions
+ * (e.g. `@alice@b.example`) found in the message text.
+ *
+ * This is fire-and-forget: the function returns immediately and any
+ * individual fetch failure is caught and logged rather than propagated.
+ * Message creation is NOT blocked by federation round-trips.
+ *
+ * When `federationProfile` is absent (federation disabled) this is a no-op.
+ */
+export function resolveQualifiedMentionsAsync(
+  text: string,
+  federationProfile: FederationProfileService | null | undefined,
+  logger?: { warn: (obj: object, msg: string) => void },
+): void {
+  if (!federationProfile) return;
+  const targets = qualifiedMentions(text);
+  if (targets.length === 0) return;
+
+  const unique = new Set(targets.map((t) => `${t.localpart}@${t.host}`));
+  for (const remoteUserId of unique) {
+    federationProfile.fetchRemoteProfile(remoteUserId).catch((err: unknown) => {
+      logger?.warn({ err, remoteUserId }, 'failed to resolve qualified mention');
+    });
+  }
+}

@@ -285,6 +285,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     });
 
     let federationKeys: FederationKeyStore | null = null;
+    let federationProfile: FederationProfileService | null = null;
     if (opts.config.FEDERATION_ENABLED) {
       const dataKey = loadDataKey(opts.config.TAVERN_DATA_KEY);
       federationKeys = new FederationKeyStore({ dataKey });
@@ -304,18 +305,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // Provision the per-user key store so new users get a signing keypair
       // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
       userKeys = new UserKeyStore({ dataKey });
-      const profile = new FederationProfileService({
+      federationProfile = new FederationProfileService({
         keys: federationKeys!,
         userKeys: userKeys!,
         selfHost: new URL(opts.config.PUBLIC_BASE_URL).host,
       });
-      registerFederationProfileRoutes(app, { service: profile });
-      registerUsersFederatedRoutes(app, { service: profile });
+      registerFederationProfileRoutes(app, { service: federationProfile });
+      registerUsersFederatedRoutes(app, { service: federationProfile });
     }
 
     await registerServerRoutes(app);
     await registerChannelRoutes(app);
-    await registerMessageRoutes(app);
+    await registerMessageRoutes(app, { federationProfile });
     await registerRoleRoutes(app);
     await registerOverwriteRoutes(app);
     await registerInviteRoutes(app);
