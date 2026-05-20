@@ -1,11 +1,16 @@
-import { ulid, peeringRequestPayloadSchema, type PeeringRequestPayload } from '@tavern/shared';
+import {
+  ulid,
+  peeringRequestPayloadSchema,
+  type PeeringRequestPayload,
+  type Capability,
+} from '@tavern/shared';
 import { prisma as defaultPrisma } from '@tavern/db';
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { canonicalize } from '../lib/canonical-json.js';
-import { verifyEnvelopeShape, type SignedEnvelope } from './federation-envelopes.js';
-import { discoverInstance } from './federation-client.js';
+import { verifyEnvelopeShape, buildSignedEnvelope, type SignedEnvelope } from './federation-envelopes.js';
+import { discoverInstance, postPeeringEnvelope } from './federation-client.js';
 
 export interface FederationPeeringServiceOptions {
   prisma?: PrismaClient;
@@ -115,4 +120,152 @@ export class FederationPeeringService {
 
     return { logId, remoteInstanceId: remoteId };
   }
+
+  async listPeers() {
+    return this.prisma.remoteInstance.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        host: true,
+        status: true,
+        capabilities: true,
+        peeredAt: true,
+        revokedAt: true,
+        revokedReason: true,
+        contactEmail: true,
+        createdAt: true,
+      },
+    });
+  }
+
+  async initiatePeering(input: InitiatePeeringInput): Promise<{ remoteInstanceId: string }> {
+    const discovery = await discoverInstance(input.host);
+    const pubRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
+
+    const existing = await this.prisma.remoteInstance.findUnique({ where: { host: input.host } });
+    let remoteInstanceId: string;
+    if (!existing) {
+      remoteInstanceId = ulid();
+      await this.prisma.remoteInstance.create({
+        data: {
+          id: remoteInstanceId,
+          host: input.host,
+          instanceKey: pubRaw,
+          status: 'pending_outbound',
+          capabilities: input.requestedCapabilities,
+          note: input.note,
+          peeredByUserId: input.adminUserId,
+        },
+      });
+    } else {
+      remoteInstanceId = existing.id;
+      await this.prisma.remoteInstance.update({
+        where: { id: existing.id },
+        data: {
+          instanceKey: pubRaw,
+          status: 'pending_outbound',
+          capabilities: input.requestedCapabilities,
+          note: input.note,
+          peeredByUserId: input.adminUserId,
+        },
+      });
+    }
+
+    const envelope = buildSignedEnvelope({
+      eventType: 'peering.request',
+      fromInstance: input.selfHost,
+      toInstance: input.host,
+      payload: {
+        requestedCapabilities: input.requestedCapabilities,
+        note: input.note,
+      },
+      sign: input.sign,
+    });
+
+    await postPeeringEnvelope(discovery.endpoints.peering, envelope);
+
+    return { remoteInstanceId };
+  }
+
+  async approvePeer(input: {
+    id: string;
+    adminUserId: string;
+    selfHost: string;
+    sign: (bytes: Buffer) => Buffer;
+  }): Promise<void> {
+    const peer = await this.prisma.remoteInstance.findUnique({ where: { id: input.id } });
+    if (!peer) throw new PeeringError('bad_envelope', `peer ${input.id} not found`);
+    if (peer.status !== 'pending_inbound' && peer.status !== 'pending_outbound') {
+      throw new PeeringError('bad_envelope', `peer is in status ${peer.status}, cannot approve`);
+    }
+
+    await this.prisma.remoteInstance.update({
+      where: { id: input.id },
+      data: {
+        status: 'peered',
+        peeredAt: new Date(),
+        peeredByUserId: input.adminUserId,
+      },
+    });
+
+    // Best-effort dispatch — local state change is authoritative
+    try {
+      const discovery = await discoverInstance(peer.host);
+      const envelope = buildSignedEnvelope({
+        eventType: 'peering.accept',
+        fromInstance: input.selfHost,
+        toInstance: peer.host,
+        payload: {
+          acceptedCapabilities: (peer.capabilities as Capability[]) ?? [],
+        },
+        sign: input.sign,
+      });
+      await postPeeringEnvelope(discovery.endpoints.peering, envelope);
+    } catch {
+      // swallow — unreachable peer is a known gap; local state is already updated
+    }
+  }
+
+  async revokePeer(input: {
+    id: string;
+    reason?: string;
+    selfHost: string;
+    sign: (bytes: Buffer) => Buffer;
+  }): Promise<void> {
+    const peer = await this.prisma.remoteInstance.findUnique({ where: { id: input.id } });
+    if (!peer) throw new PeeringError('bad_envelope', `peer ${input.id} not found`);
+
+    await this.prisma.remoteInstance.update({
+      where: { id: input.id },
+      data: {
+        status: 'revoked',
+        revokedAt: new Date(),
+        revokedReason: input.reason,
+      },
+    });
+
+    // Best-effort dispatch — swallow errors
+    try {
+      const discovery = await discoverInstance(peer.host);
+      const envelope = buildSignedEnvelope({
+        eventType: 'peering.revoke',
+        fromInstance: input.selfHost,
+        toInstance: peer.host,
+        payload: { reason: input.reason },
+        sign: input.sign,
+      });
+      await postPeeringEnvelope(discovery.endpoints.peering, envelope);
+    } catch {
+      // swallow — unreachable peer is a known gap
+    }
+  }
+}
+
+export interface InitiatePeeringInput {
+  host: string;
+  adminUserId: string;
+  requestedCapabilities: Capability[];
+  note?: string;
+  sign: (bytes: Buffer) => Buffer;
+  selfHost: string;
 }

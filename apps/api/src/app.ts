@@ -102,6 +102,7 @@ import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
 import { registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
+import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
 import { loadDataKey } from './lib/data-key.js';
@@ -278,6 +279,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       });
       const peering = new FederationPeeringService();
       registerFederationPeeringRoutes(app, { service: peering });
+      registerAdminFederationRoutes(app, {
+        service: peering,
+        keys: federationKeys!,
+        config: opts.config,
+      });
     }
 
     await registerServerRoutes(app);
