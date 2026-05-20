@@ -100,6 +100,12 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 - **Trigger:** when moderation propagation lands (Phase 7)
 - **What:** P3 follow-up: `MessageEdit.editedBy` for a federated edit currently uses the local mirror of the remote author's User row. This will be wrong if Phase 7 introduces moderator edits. Revisit when moderation propagation lands.
 
+### 15. Custom-emoji reactions across federation
+
+- **Phase:** 3 (P3-9)
+- **Trigger:** Phase 4+ (when cross-instance emoji sharing is on the menu)
+- **What:** Inbound `reaction.add` / `reaction.remove` with a `custom:<id>` payload is rejected with 403 in Phase 3 (`federation-inbound.ts::validateInboundReaction`). The custom-emoji id only resolves on the home instance, and we don't yet have a story for transporting or rendering the underlying bytes on the receiver. Unicode reactions only for now. Phase 4+ candidate fixes: bundle the emoji's bytes in the envelope, or define a `custom-emoji:request` lookup analogous to `profile.request`. Outbound side currently still emits whatever the local PUT route accepted — the gate is enforced on the receiver. Revisit when cross-instance custom emoji becomes a roadmap item.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up

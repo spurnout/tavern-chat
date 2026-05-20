@@ -23,6 +23,8 @@ import {
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
+  reactionAddPayloadSchema,
+  reactionRemovePayloadSchema,
 } from '@tavern/shared';
 import type { QueueClient } from './queues.js';
 
@@ -227,6 +229,115 @@ export async function fanOutMessageDelete(input: FanOutMessageDeleteInput): Prom
   });
 
   const eventType: EnvelopeEventType = 'message.delete';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.messageId,
+        peerInstanceId,
+        eventType,
+        authorUserId: input.actorUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, messageId: input.messageId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutReactionAddInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  messageId: string;
+  /**
+   * The User.id of the actor who added the reaction. Sign + envelope-author
+   * routing both flow from this id; the helper itself does not validate that
+   * the user is the local author of the message (a reaction's actor IS the
+   * reactor, not the original message author).
+   */
+  actorUserId: string;
+  actorUsername: string;
+  emoji: string;
+  log: FastifyBaseLogger;
+}
+
+/**
+ * Fan out a `reaction.add` envelope to every peered instance that has a
+ * remote member in this server. Same gating contract as the message helpers:
+ *   - caller verified effective federation,
+ *   - caller verified this is a server message (not a DM — DMs are Phase 5),
+ *   - caller verified the underlying message is locally-originated
+ *     (`originInstanceId IS NULL`) — Phase 3 has no relay, so a reaction on
+ *     an inbound federated message is NOT re-broadcast (each peer hears the
+ *     reaction directly from the reactor's home instance, which is THIS
+ *     instance for a local reactor).
+ *
+ * The actor identity is `<localpart>@<selfHost>` — the reactor's qualified id.
+ * This differs from message edits/deletes, where the actor is always the
+ * original author. A reaction's actor is whoever clicked the emoji.
+ */
+export async function fanOutReactionAdd(input: FanOutReactionAddInput): Promise<void> {
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = reactionAddPayloadSchema.parse({
+    actorRemoteUserId: `${input.actorUsername}@${input.selfHost}`,
+    messageId: input.messageId,
+    emoji: input.emoji,
+  });
+
+  const eventType: EnvelopeEventType = 'reaction.add';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.messageId,
+        peerInstanceId,
+        eventType,
+        authorUserId: input.actorUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, messageId: input.messageId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutReactionRemoveInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  messageId: string;
+  actorUserId: string;
+  actorUsername: string;
+  emoji: string;
+  log: FastifyBaseLogger;
+}
+
+/**
+ * Fan out a `reaction.remove` envelope. Same shape and gating contract as
+ * `fanOutReactionAdd`. The receiving handler treats the remove as idempotent
+ * (matches the local DELETE pattern in `routes/reactions.ts`) so a missing
+ * row on the peer is not an error.
+ */
+export async function fanOutReactionRemove(input: FanOutReactionRemoveInput): Promise<void> {
+  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  if (peerIds.length === 0) return;
+
+  const payload = reactionRemovePayloadSchema.parse({
+    actorRemoteUserId: `${input.actorUsername}@${input.selfHost}`,
+    messageId: input.messageId,
+    emoji: input.emoji,
+  });
+
+  const eventType: EnvelopeEventType = 'reaction.remove';
   for (const peerInstanceId of peerIds) {
     try {
       await input.queues.enqueueFederationOutbox({

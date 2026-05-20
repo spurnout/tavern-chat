@@ -365,7 +365,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     });
     await registerAttachmentRoutes(app, storage);
     await registerUploadRoutes(app, { config: opts.config, storage, queues });
-    await registerReactionRoutes(app);
+    await registerReactionRoutes(app, { queues, selfHost });
     await registerEmojiRoutes(app);
     await registerVoiceRoutes(app, opts.config);
     await registerCampaignRoutes(app);

@@ -284,6 +284,50 @@ function buildMsgUpdateEnvelope(input: BuildUpdateEnvelopeInput): TwoLayerSigned
   });
 }
 
+interface BuildReactionEnvelopeInput {
+  fx: PeerFixture;
+  messageId: string;
+  emoji?: string;
+  /** Override actor id placed in the payload. */
+  actorRemoteUserIdOverride?: string;
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}
+
+function buildReactionAddEnvelope(input: BuildReactionEnvelopeInput): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'reaction.add',
+    fromInstance: PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      actorRemoteUserId: input.actorRemoteUserIdOverride ?? fx.authorRemoteUserId,
+      messageId: input.messageId,
+      emoji: input.emoji ?? '👍',
+    },
+    signUser: input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function buildReactionRemoveEnvelope(input: BuildReactionEnvelopeInput): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'reaction.remove',
+    fromInstance: PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      actorRemoteUserId: input.actorRemoteUserIdOverride ?? fx.authorRemoteUserId,
+      messageId: input.messageId,
+      emoji: input.emoji ?? '👍',
+    },
+    signUser: input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
 interface BuildDeleteEnvelopeInput {
   fx: PeerFixture;
   messageId: string;
@@ -1139,6 +1183,342 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', 
       // deletedAt unchanged — the original delete time is preserved.
       const row = await prisma.message.findUnique({ where: { id: messageId } });
       expect(row!.deletedAt?.getTime()).toBe(deletedAt.getTime());
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P3-9 — POST /_federation/event (reaction.add)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: creates a MessageReaction row with the actor mapped to local user', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId, content: 'reactable' });
+
+    const envelope = buildReactionAddEnvelope({ fx, messageId, emoji: '👍' });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(1);
+      // Actor's LOCAL User id, not the remote-user-id string.
+      expect(rows[0]!.userId).toBe(fx.localUserId);
+      expect(rows[0]!.emoji).toBe('👍');
+
+      // Envelope log row recorded.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'reaction.add' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+
+      // RemoteUser.lastSeenAt must have moved forward.
+      const updatedRemoteUser = await prisma.remoteUser.findUnique({
+        where: { id: fx.remoteUserId },
+      });
+      expect(updatedRemoteUser!.lastSeenAt.getTime()).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('idempotent: receiving the same reaction twice does not duplicate the row', async () => {
+    // Two envelopes from the same peer carry different nonces, so the
+    // envelope-log replay filter does NOT catch them — the handler itself
+    // must short-circuit via the unique composite key (messageId, userId,
+    // emoji).
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const e1 = buildReactionAddEnvelope({ fx, messageId, emoji: '👍' });
+      const r1 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: e1,
+      });
+      expect(r1.statusCode).toBe(200);
+
+      const e2 = buildReactionAddEnvelope({ fx, messageId, emoji: '👍' });
+      const r2 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: e2,
+      });
+      expect(r2.statusCode).toBe(200);
+
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reaction on non-existent message → 404', async () => {
+    const fx = await makeFixture();
+    const envelope = buildReactionAddEnvelope({ fx, messageId: ulid() });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reaction on a force_off channel → 403', async () => {
+    const fx = await makeFixture({ channelFederationMode: 'force_off' });
+    const messageId = ulid();
+    // Seed the row directly — the local table is still queryable even though
+    // the channel forbids federation.
+    await prisma.message.create({
+      data: {
+        id: messageId,
+        serverId: fx.serverId,
+        channelId: fx.channelId,
+        authorId: fx.localUserId,
+        type: 'default',
+        content: 'in a force-off room',
+        originInstanceId: fx.peerInstanceId,
+        signature: Buffer.alloc(64, 7),
+      },
+    });
+    const envelope = buildReactionAddEnvelope({ fx, messageId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/federation is disabled/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reaction from a non-server-member → 403', async () => {
+    // The reactor (the actor) MUST be a ServerMember of the channel's server.
+    // Remove the membership we set up in `makeFixture` and the handler must
+    // bail out before writing the MessageReaction row.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    await prisma.serverMember.delete({
+      where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+    });
+
+    const envelope = buildReactionAddEnvelope({ fx, messageId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not a member/i);
+
+      // No reaction written.
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reaction with a custom: emoji reference → 403 (Phase 4+ deferral)', async () => {
+    // Custom emojis don't cross federation in Phase 3. The id only resolves
+    // on the home instance, and we have no story for transporting the bytes.
+    // The inbound handler MUST reject any `custom:` payload regardless of
+    // signature.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+
+    const envelope = buildReactionAddEnvelope({
+      fx,
+      messageId,
+      emoji: 'custom:01HXEXAMPLEXAMPLEXAMPLEAA',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/custom emojis do not cross federation/i);
+
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reaction on a soft-deleted message → 404 (no reacting to tombstones)', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), content: '' },
+    });
+
+    const envelope = buildReactionAddEnvelope({ fx, messageId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P3-9 — POST /_federation/event (reaction.remove)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: removes an existing MessageReaction row', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    await prisma.messageReaction.create({
+      data: { messageId, userId: fx.localUserId, emoji: '👍' },
+    });
+
+    const envelope = buildReactionRemoveEnvelope({ fx, messageId, emoji: '👍' });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(0);
+
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'reaction.remove' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('idempotent: removing a non-existent reaction is a no-op (200)', async () => {
+    // Mirrors the local DELETE route, which swallows P2025. A peer that
+    // retries a remove after the row is already gone should not see a
+    // hard error.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    // Do NOT pre-create a reaction.
+
+    const envelope = buildReactionRemoveEnvelope({ fx, messageId, emoji: '👍' });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // No reaction was created as a side-effect of the no-op remove.
+      const rows = await prisma.messageReaction.findMany({
+        where: { messageId },
+      });
+      expect(rows).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('remove on non-existent message → 404', async () => {
+    const fx = await makeFixture();
+    const envelope = buildReactionRemoveEnvelope({ fx, messageId: ulid() });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('remove with a custom: emoji reference → 403', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+
+    const envelope = buildReactionRemoveEnvelope({
+      fx,
+      messageId,
+      emoji: 'custom:01HXEXAMPLEXAMPLEXAMPLEAA',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/custom emojis do not cross federation/i);
     } finally {
       await app.close();
     }

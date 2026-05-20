@@ -11,6 +11,12 @@ import { ok } from '../lib/responses.js';
 import { requireChannelPermission } from '../services/permissions-service.js';
 import { requireDmChannelMembership } from '../services/dm-service.js';
 import { gatewayBroker, type GatewayEvent } from '../services/gateway-broker.js';
+import {
+  computeEffectiveFederation,
+  fanOutReactionAdd,
+  fanOutReactionRemove,
+} from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 
 interface MessageRouting {
   serverId: string | null;
@@ -47,7 +53,21 @@ function reactionEvent(
   };
 }
 
-export async function registerReactionRoutes(app: FastifyInstance): Promise<void> {
+export interface ReactionRouteDeps {
+  /**
+   * Queue client used to enqueue outbound federation envelopes. Optional —
+   * when omitted (or when `selfHost` is missing), the federation fan-out hook
+   * short-circuits. The local reaction publish path is unaffected.
+   */
+  queues?: QueueClient;
+  /** The local instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
+}
+
+export async function registerReactionRoutes(
+  app: FastifyInstance,
+  deps?: ReactionRouteDeps,
+): Promise<void> {
   // Wave 3 #4 — Top emoji used in this server over the last 30 days,
   // surfaced as one-tap "quick reaction" buttons on hover.
   app.get('/api/servers/:id/quick-reactions', async (req, reply) => {
@@ -86,9 +106,25 @@ export async function registerReactionRoutes(app: FastifyInstance): Promise<void
       const { id, emoji } = z
         .object({ id: idSchema, emoji: reactionEmojiSchema })
         .parse(req.params);
+      // P3-9 — pull `originInstanceId` + the channel's federation knobs in the
+      // same round-trip so the post-write fan-out gate doesn't need a second
+      // query on the hot path. Mirrors the create / edit / delete pattern in
+      // `routes/messages.ts`.
       const message = await prisma.message.findUnique({
         where: { id },
-        select: { channelId: true, dmChannelId: true, deletedAt: true, serverId: true },
+        select: {
+          channelId: true,
+          dmChannelId: true,
+          deletedAt: true,
+          serverId: true,
+          originInstanceId: true,
+          channel: {
+            select: {
+              federationMode: true,
+              server: { select: { federationEnabled: true } },
+            },
+          },
+        },
       });
       if (!message || message.deletedAt) throw TavernError.notFound();
       await authorizeReaction(message, ctx.userId);
@@ -111,6 +147,58 @@ export async function registerReactionRoutes(app: FastifyInstance): Promise<void
       gatewayBroker.publish(
         reactionEvent('REACTION_ADD', message, { messageId: id, userId: ctx.userId, emoji }),
       );
+      // P3-9 — fan out the reaction to every peered instance with a member in
+      // this server. Identical gating to message create / edit / delete:
+      //   1. deps wired in (FEDERATION_ENABLED on),
+      //   2. server message, not a DM (DMs are Phase 5),
+      //   3. locally-originated row — Phase 3 has no relay; reactions on
+      //      inbound federated messages are NOT re-broadcast (each peer hears
+      //      the reaction directly from the reactor's home instance),
+      //   4. effective federation evaluates to ON for this channel.
+      // Errors are best-effort; the local upsert + broadcast are already done.
+      if (
+        deps?.queues &&
+        deps.selfHost &&
+        message.serverId &&
+        message.channelId &&
+        !message.dmChannelId &&
+        !message.originInstanceId &&
+        message.channel
+      ) {
+        try {
+          const effective = computeEffectiveFederation(
+            message.channel.server?.federationEnabled ?? false,
+            message.channel.federationMode,
+          );
+          if (effective) {
+            // Reactor's username is needed for the qualified `<localpart>@<selfHost>`
+            // actor id in the envelope. A small extra read on the federation
+            // hot path is fine — we already wrote the reaction row above.
+            const reactor = await prisma.user.findUnique({
+              where: { id: ctx.userId },
+              select: { username: true },
+            });
+            if (reactor) {
+              await fanOutReactionAdd({
+                queues: deps.queues,
+                selfHost: deps.selfHost,
+                serverId: message.serverId,
+                messageId: id,
+                actorUserId: ctx.userId,
+                actorUsername: reactor.username,
+                emoji,
+                log: app.log,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          app.log.warn(
+            { err: errObj, messageId: id, channelId: message.channelId, serverId: message.serverId },
+            'federation fan-out failed for reaction.add',
+          );
+        }
+      }
       reply.send(ok({ ok: true }));
     },
   });
@@ -122,7 +210,19 @@ export async function registerReactionRoutes(app: FastifyInstance): Promise<void
       .parse(req.params);
     const message = await prisma.message.findUnique({
       where: { id },
-      select: { channelId: true, dmChannelId: true, deletedAt: true, serverId: true },
+      select: {
+        channelId: true,
+        dmChannelId: true,
+        deletedAt: true,
+        serverId: true,
+        originInstanceId: true,
+        channel: {
+          select: {
+            federationMode: true,
+            server: { select: { federationEnabled: true } },
+          },
+        },
+      },
     });
     if (!message || message.deletedAt) throw TavernError.notFound();
     try {
@@ -135,6 +235,48 @@ export async function registerReactionRoutes(app: FastifyInstance): Promise<void
     gatewayBroker.publish(
       reactionEvent('REACTION_REMOVE', message, { messageId: id, userId: ctx.userId, emoji }),
     );
+    // P3-9 — same gating + best-effort contract as reaction.add. See PUT
+    // handler above for the rationale on each branch of the gate.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.serverId &&
+      message.channelId &&
+      !message.dmChannelId &&
+      !message.originInstanceId &&
+      message.channel
+    ) {
+      try {
+        const effective = computeEffectiveFederation(
+          message.channel.server?.federationEnabled ?? false,
+          message.channel.federationMode,
+        );
+        if (effective) {
+          const reactor = await prisma.user.findUnique({
+            where: { id: ctx.userId },
+            select: { username: true },
+          });
+          if (reactor) {
+            await fanOutReactionRemove({
+              queues: deps.queues,
+              selfHost: deps.selfHost,
+              serverId: message.serverId,
+              messageId: id,
+              actorUserId: ctx.userId,
+              actorUsername: reactor.username,
+              emoji,
+              log: app.log,
+            });
+          }
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: id, channelId: message.channelId, serverId: message.serverId },
+          'federation fan-out failed for reaction.remove',
+        );
+      }
+    }
     reply.send(ok({ ok: true }));
   });
 }

@@ -61,9 +61,13 @@ import {
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
+  reactionAddPayloadSchema,
+  reactionRemovePayloadSchema,
   type MessageCreatePayload,
   type MessageDeletePayload,
   type MessageUpdatePayload,
+  type ReactionAddPayload,
+  type ReactionRemovePayload,
   ulid,
 } from '@tavern/shared';
 import { z } from 'zod';
@@ -405,7 +409,26 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
     },
     handle: handleMessageDelete as InboundHandler<z.ZodTypeAny>['handle'],
   },
-  // P3-9 — 'reaction.add', 'reaction.remove'
+  'reaction.add': {
+    payloadSchema: reactionAddPayloadSchema,
+    // Both reaction payloads carry the actor under `actorRemoteUserId` — the
+    // reactor isn't necessarily the message author (anyone can react).
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleReactionAdd as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'reaction.remove': {
+    payloadSchema: reactionRemovePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleReactionRemove as InboundHandler<z.ZodTypeAny>['handle'],
+  },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
   // omitted; an attacker reusing those event types here gets a 501.
@@ -831,6 +854,259 @@ async function handleMessageDelete(input: {
         serverId: serverId ?? undefined,
         channelId,
         data: { id: existing.id, channelId, deletedAt: deletedAt.toISOString() },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- reaction.add / reaction.remove handlers --------------------------------
+
+/**
+ * Common front-end work for inbound reactions: look up the target message,
+ * verify it lives in a federation-enabled channel, confirm the actor is a
+ * member of the channel's server, and reject custom-emoji references.
+ *
+ * Custom emojis don't cross federation in Phase 3. A `custom:<id>` payload
+ * would reference a CustomEmoji row that exists only on the home instance,
+ * which the receiver can't resolve. Cross-instance custom emoji is a Phase 4+
+ * problem — see `docs/federation-followups.md`. Unicode reactions only.
+ */
+async function validateInboundReaction(input: {
+  messageId: string;
+  emoji: string;
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<{
+  messageRow: {
+    id: string;
+    serverId: string | null;
+    channelId: string;
+  };
+  localUserId: string;
+}> {
+  const { messageId, emoji, remoteUser, tx } = input;
+
+  if (emoji.startsWith('custom:')) {
+    // Custom emojis are server-scoped and the id only resolves on the home
+    // instance. Reject loudly so peers know to stick to unicode for now.
+    throw new FederationInboundError(
+      'forbidden',
+      'custom emojis do not cross federation yet (unicode only)',
+    );
+  }
+
+  const existing = await tx.message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true,
+      serverId: true,
+      channelId: true,
+      deletedAt: true,
+      channel: {
+        select: {
+          federationMode: true,
+          server: { select: { federationEnabled: true } },
+        },
+      },
+    },
+  });
+  if (!existing || existing.deletedAt) {
+    // Soft-deleted messages are tombstones — reacting to them makes no sense,
+    // same as the local PUT/DELETE route's `!message.deletedAt` gate.
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${messageId} not found on this instance`,
+    );
+  }
+  if (!existing.channelId) {
+    // Defence in depth — federation reactions only flow through server
+    // channels in Phase 3. A federated reaction targeting a DM would be a
+    // protocol violation by the peer.
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${messageId} is not in a server channel`,
+    );
+  }
+
+  // Effective federation check — mirrors the outbound gate so a peer can't
+  // sneak content into a channel that has federation force_off (or whose
+  // server has federationEnabled=false + mode=inherit).
+  const effective = computeEffectiveFederation(
+    existing.channel?.server?.federationEnabled ?? false,
+    (existing.channel?.federationMode ?? 'inherit') as FederationMode,
+  );
+  if (!effective) {
+    throw new FederationInboundError(
+      'federation_off',
+      `federation is disabled for channel ${existing.channelId}`,
+    );
+  }
+
+  // The actor (the reactor) MUST already be a member of the channel's server.
+  // The outbound side only fans out to peers that have a member in the server;
+  // the inbound side enforces the symmetric invariant — "we don't accept
+  // reactions from a remote user we haven't already invited into this room."
+  //
+  // `ensureUserForRemoteUser` is typed as `PrismaClient`, but Prisma's
+  // runtime accepts a TransactionClient anywhere a Client is expected; cast
+  // through unknown so the call participates in this transaction.
+  const localUser = await ensureUserForRemoteUser(
+    remoteUser,
+    tx as unknown as PrismaClient,
+  );
+  if (!existing.serverId) {
+    // Shouldn't be reachable because we already required channelId above,
+    // and server channels carry a serverId — but be explicit.
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${messageId} has no server`,
+    );
+  }
+  const member = await tx.serverMember.findUnique({
+    where: { serverId_userId: { serverId: existing.serverId, userId: localUser.id } },
+    select: { userId: true },
+  });
+  if (!member) {
+    throw new FederationInboundError(
+      'not_a_member',
+      `actor ${remoteUser.remoteUserId} is not a member of server ${existing.serverId}`,
+    );
+  }
+
+  return {
+    messageRow: {
+      id: existing.id,
+      serverId: existing.serverId,
+      channelId: existing.channelId,
+    },
+    localUserId: localUser.id,
+  };
+}
+
+async function handleReactionAdd(input: {
+  envelope: TwoLayerSignedEnvelope<ReactionAddPayload>;
+  payload: ReactionAddPayload;
+  peer: { id: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  const { messageRow, localUserId } = await validateInboundReaction({
+    messageId: payload.messageId,
+    emoji: payload.emoji,
+    remoteUser,
+    tx,
+  });
+
+  // Idempotent upsert — same shape as the local PUT route. A duplicate
+  // reaction (same messageId+userId+emoji) is a no-op, not an error. The
+  // unique composite key on MessageReaction handles the race naturally.
+  await tx.messageReaction.upsert({
+    where: {
+      messageId_userId_emoji: {
+        messageId: messageRow.id,
+        userId: localUserId,
+        emoji: payload.emoji,
+      },
+    },
+    create: {
+      messageId: messageRow.id,
+      userId: localUserId,
+      emoji: payload.emoji,
+    },
+    update: {},
+  });
+
+  const serverId = messageRow.serverId;
+  const channelId = messageRow.channelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { messageId: messageRow.id } } },
+    postCommit: async (prisma) => {
+      // Broadcast with the actor's LOCAL User id — that's the id local
+      // clients already see attached to MessageReaction rows for this user.
+      gatewayBroker.publish({
+        type: 'REACTION_ADD',
+        serverId: serverId ?? undefined,
+        channelId,
+        data: {
+          messageId: messageRow.id,
+          userId: localUserId,
+          emoji: payload.emoji,
+        },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+async function handleReactionRemove(input: {
+  envelope: TwoLayerSignedEnvelope<ReactionRemovePayload>;
+  payload: ReactionRemovePayload;
+  peer: { id: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  const { messageRow, localUserId } = await validateInboundReaction({
+    messageId: payload.messageId,
+    emoji: payload.emoji,
+    remoteUser,
+    tx,
+  });
+
+  // Idempotent delete — same shape as the local DELETE route. A missing row
+  // is swallowed; the broadcast still fires so any client that has the
+  // (already-removed) reaction in local cache catches up.
+  try {
+    await tx.messageReaction.delete({
+      where: {
+        messageId_userId_emoji: {
+          messageId: messageRow.id,
+          userId: localUserId,
+          emoji: payload.emoji,
+        },
+      },
+    });
+  } catch (err: unknown) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+      // P2025 = "Record to delete does not exist". Idempotent — matches the
+      // local DELETE handler's blanket try/catch.
+    } else {
+      throw err;
+    }
+  }
+
+  const serverId = messageRow.serverId;
+  const channelId = messageRow.channelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { messageId: messageRow.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'REACTION_REMOVE',
+        serverId: serverId ?? undefined,
+        channelId,
+        data: {
+          messageId: messageRow.id,
+          userId: localUserId,
+          emoji: payload.emoji,
+        },
       });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
