@@ -90,7 +90,9 @@ describe('POST /_federation/event — route shell', () => {
     { code: 'peer_not_peered', status: 403 },
     { code: 'federation_off', status: 403 },
     { code: 'not_a_member', status: 403 },
+    { code: 'forbidden', status: 403 },
     { code: 'unknown_channel', status: 404 },
+    { code: 'unknown_message', status: 404 },
     { code: 'replay', status: 409 },
     { code: 'not_implemented', status: 501 },
   ];

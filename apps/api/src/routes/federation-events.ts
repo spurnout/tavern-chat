@@ -50,8 +50,10 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'peer_not_peered':
     case 'federation_off':
     case 'not_a_member':
+    case 'forbidden':
       return 403;
     case 'unknown_channel':
+    case 'unknown_message':
       return 404;
     case 'replay':
       return 409;

@@ -35,7 +35,8 @@
  * (reaction.add + reaction.remove) both register handlers by adding a key to
  * `HANDLERS`. The route shell, signature verification, peer lookup, and
  * envelope-log write all stay in this file — they're not duplicated per
- * event type.
+ * event type. As of P3-8 the map carries `message.create`, `message.update`,
+ * and `message.delete`; reactions land in P3-9.
  *
  * Critical: this module is INBOUND-ONLY. It never calls `fanOutMessageCreate`
  * or any other outbound helper. There is no message relay in Phase 3 — every
@@ -58,7 +59,11 @@ import {
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   messageCreatePayloadSchema,
+  messageDeletePayloadSchema,
+  messageUpdatePayloadSchema,
   type MessageCreatePayload,
+  type MessageDeletePayload,
+  type MessageUpdatePayload,
   ulid,
 } from '@tavern/shared';
 import { z } from 'zod';
@@ -84,8 +89,10 @@ export type InboundErrorCode =
   | 'bad_signature' // 401 — instance OR user signature verify failed
   | 'replay' // 409 — (peerInstanceId, nonce) already logged
   | 'unknown_channel' // 404 — payload references a channelId we don't have
+  | 'unknown_message' // 404 — payload references a messageId we don't have
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
+  | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
   | 'not_implemented'; // 501 — event type recognised by schema, handler is TBD
 
 export class FederationInboundError extends Error {
@@ -376,7 +383,28 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
     },
     handle: handleMessageCreate as InboundHandler<z.ZodTypeAny>['handle'],
   },
-  // P3-8 — 'message.update', 'message.delete'
+  'message.update': {
+    payloadSchema: messageUpdatePayloadSchema,
+    // Both update and delete payloads carry an actor id, but the field
+    // names differ (`authorRemoteUserId` vs `actorRemoteUserId`) because
+    // Phase 7 will introduce moderator deletes — the deleter isn't always
+    // the author. Each handler extracts from its own field.
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { authorRemoteUserId?: unknown } | null)
+        ?.authorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleMessageUpdate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'message.delete': {
+    payloadSchema: messageDeletePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleMessageDelete as InboundHandler<z.ZodTypeAny>['handle'],
+  },
   // P3-9 — 'reaction.add', 'reaction.remove'
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -560,6 +588,249 @@ async function handleMessageCreate(input: {
         serverId: channel.serverId,
         channelId: channel.id,
         data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- message.update handler --------------------------------------------------
+
+async function handleMessageUpdate(input: {
+  envelope: TwoLayerSignedEnvelope<MessageUpdatePayload>;
+  payload: MessageUpdatePayload;
+  peer: { id: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  // Look up the target message. Must exist, must be locally non-deleted —
+  // editing a tombstoned row makes no sense (the local DELETE handler gates
+  // on `!message.deletedAt` for the same reason). Author check happens next.
+  const existing = await tx.message.findUnique({
+    where: { id: payload.messageId },
+    select: {
+      id: true,
+      serverId: true,
+      channelId: true,
+      authorId: true,
+      content: true,
+      deletedAt: true,
+      author: { select: { remoteUserId: true } },
+    },
+  });
+  if (!existing || existing.deletedAt) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} not found on this instance`,
+    );
+  }
+  if (!existing.channelId) {
+    // Defence in depth — federation messages only flow through server
+    // channels in Phase 3. A federated message targeting a DM would be a
+    // protocol violation by the peer.
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} is not in a server channel`,
+    );
+  }
+
+  // The author check: the envelope's actor MUST match the local Message
+  // row's author remote user id. The signature already proved the actor IS
+  // who they claim to be (user-layer sig against author's public key,
+  // verified upstream by verifyTwoLayerMessageEnvelope); this check enforces
+  // "actor must equal author" — i.e. only the original author may edit.
+  // Moderator-driven federated edits are not honored in Phase 3 (Phase 7
+  // deferral — `forbidden` here would be the right code if/when we extend
+  // the spec to accept them).
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
+  // Append a MessageEdit history row BEFORE the content overwrite so a
+  // failure rolls back the edit history along with the content change.
+  // Mirrors the local PATCH handler at routes/messages.ts which records the
+  // previous content before overwriting. The `editedBy` field stores the
+  // local User row id mirroring the remote author — same row that owns the
+  // message, so the history surface reads consistently with locally-authored
+  // edits.
+  if (existing.content !== payload.content) {
+    await tx.messageEdit.create({
+      data: {
+        id: ulid(),
+        messageId: existing.id,
+        content: existing.content,
+        editedBy: existing.authorId,
+      },
+    });
+  }
+
+  // Trust the envelope's editedAt as-is — the home instance signed it and
+  // the envelope replay window keeps it close to now. If a peer ships a
+  // wildly skewed editedAt, the local UI will sort it however the timestamp
+  // says; the audit trail still has the envelope-log row with the receive
+  // time.
+  const editedAt = new Date(payload.editedAt);
+  await tx.message.update({
+    where: { id: existing.id },
+    data: { content: payload.content, editedAt },
+  });
+
+  // Reload the full row for the gateway broadcast — needs the same include
+  // shape `serializeMessage` expects. Done through `tx` so we see our own
+  // write.
+  const fullRow = await tx.message.findUniqueOrThrow({
+    where: { id: existing.id },
+    include: {
+      attachments: { select: { id: true } },
+      reactions: { select: { emoji: true, userId: true } },
+      author: { select: { id: true, displayName: true, username: true } },
+      poll: { select: { id: true } },
+      replyTo: {
+        select: {
+          id: true,
+          content: true,
+          deletedAt: true,
+          author: { select: { displayName: true } },
+        },
+      },
+      forwardedFrom: {
+        select: {
+          id: true,
+          channelId: true,
+          author: { select: { displayName: true } },
+        },
+      },
+    },
+  });
+
+  const dto = serializeMessage(fullRow, '');
+  // Capture the channelId/serverId for the broadcast — non-null asserted
+  // because we narrowed `existing.channelId` above.
+  const channelId = existing.channelId;
+  const serverId = existing.serverId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: existing.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'MESSAGE_UPDATE',
+        serverId: serverId ?? undefined,
+        channelId,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- message.delete handler --------------------------------------------------
+
+async function handleMessageDelete(input: {
+  envelope: TwoLayerSignedEnvelope<MessageDeletePayload>;
+  payload: MessageDeletePayload;
+  peer: { id: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, remoteUser, tx } = input;
+
+  const existing = await tx.message.findUnique({
+    where: { id: payload.messageId },
+    select: {
+      id: true,
+      serverId: true,
+      channelId: true,
+      authorId: true,
+      deletedAt: true,
+      author: { select: { remoteUserId: true } },
+    },
+  });
+  if (!existing) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} not found on this instance`,
+    );
+  }
+  if (!existing.channelId) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} is not in a server channel`,
+    );
+  }
+
+  // Idempotent delete: if the row is already soft-deleted, return 200
+  // without touching anything. This matters when a peer retries a delete
+  // (rare but possible — outbox retries, envelope replay window). The
+  // unique nonce on the envelope log handles same-envelope retries; this
+  // covers the case of a SECOND delete envelope (e.g. different nonce)
+  // arriving after the first one committed.
+  if (existing.deletedAt) {
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { id: existing.id, deduplicated: true } },
+      },
+      postCommit: async (prisma) => {
+        await prisma.remoteUser.update({
+          where: { id: remoteUser.id },
+          data: { lastSeenAt: new Date() },
+        });
+      },
+    };
+  }
+
+  // Author-only check: Phase 3 only accepts deletes signed by the original
+  // author. Moderator-driven federated deletes are a Phase 7 problem —
+  // letting peers' moderators delete content on this instance requires a
+  // separate trust model. For now, treat any actor != original author as
+  // forbidden.
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
+  // Soft-delete + cleanup, identical to the local DELETE handler:
+  //   - tombstone the row (deletedAt + empty content)
+  //   - drop reactions, mentions, pins — soft-delete does NOT cascade
+  // All four writes participate in the inbound transaction; a failure on
+  // any of them rolls back the envelope-log insert too.
+  const deletedAt = new Date(payload.deletedAt);
+  await tx.message.update({
+    where: { id: existing.id },
+    data: { deletedAt, content: '' },
+  });
+  await tx.messageReaction.deleteMany({ where: { messageId: existing.id } });
+  await tx.userMention.deleteMany({ where: { messageId: existing.id } });
+  await tx.pinnedMessage.deleteMany({ where: { messageId: existing.id } });
+
+  const channelId = existing.channelId;
+  const serverId = existing.serverId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: existing.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'MESSAGE_DELETE',
+        serverId: serverId ?? undefined,
+        channelId,
+        data: { id: existing.id, channelId, deletedAt: deletedAt.toISOString() },
       });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },

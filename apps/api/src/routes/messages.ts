@@ -32,6 +32,8 @@ import type { FederationProfileService } from '../services/federation-profile.js
 import {
   computeEffectiveFederation,
   fanOutMessageCreate,
+  fanOutMessageDelete,
+  fanOutMessageUpdate,
 } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
 import { enqueueLinkPreviews } from '../services/link-preview-service.js';
@@ -558,6 +560,11 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         dmChannelId: true,
         serverId: true,
         deletedAt: true,
+        // P3-8 — `originInstanceId` is the marker that this row was delivered
+        // by a federated peer (Phase 3 has no relay; we don't re-broadcast
+        // inbound edits). Pulled in the same select so the fan-out gate
+        // below doesn't need a second round-trip.
+        originInstanceId: true,
       },
     });
     if (!message || message.deletedAt) throw TavernError.notFound('Message not found');
@@ -652,6 +659,55 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         data: dto,
       });
     }
+    // P3-8 — fan out the edit to every peered instance with a member in this
+    // server. Same best-effort contract as create: gate on (federation deps
+    // wired in) AND (server message, not a DM) AND (locally-originated row,
+    // i.e. `originInstanceId IS NULL` — Phase 3 has no relay; each peer
+    // learns inbound edits directly from the origin instance) AND effective
+    // federation. Errors are logged but never fail the HTTP response.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.serverId &&
+      message.channelId &&
+      !message.dmChannelId &&
+      !message.originInstanceId
+    ) {
+      try {
+        const channelMeta = await prisma.channel.findUnique({
+          where: { id: message.channelId },
+          select: {
+            federationMode: true,
+            server: { select: { federationEnabled: true } },
+          },
+        });
+        if (channelMeta) {
+          const effective = computeEffectiveFederation(
+            channelMeta.server?.federationEnabled ?? false,
+            channelMeta.federationMode,
+          );
+          if (effective) {
+            await fanOutMessageUpdate({
+              queues: deps.queues,
+              selfHost: deps.selfHost,
+              serverId: message.serverId,
+              messageId: updated.id,
+              authorUserId: updated.authorId,
+              authorUsername: updated.author.username,
+              content: updated.content,
+              editedAt: updated.editedAt ?? new Date(),
+              log: app.log,
+            });
+          }
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: updated.id, channelId: message.channelId, serverId: message.serverId },
+          'federation fan-out failed for message.update',
+        );
+      }
+    }
     reply.send(ok(dto));
   });
 
@@ -668,6 +724,14 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         dmChannelId: true,
         serverId: true,
         deletedAt: true,
+        // P3-8 — see PATCH handler for the rationale. Pulled in the same
+        // select so the federation fan-out gate below stays a single check.
+        originInstanceId: true,
+        // P3-8 — author username is needed to build the
+        // `<localpart>@<selfHost>` actor identifier for the outbound
+        // `message.delete` envelope. We only federate author-initiated
+        // deletes in Phase 3 (moderator deletes are Phase 7).
+        author: { select: { username: true } },
       },
     });
     if (!message || message.deletedAt) throw TavernError.notFound('Message not found');
@@ -728,6 +792,60 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         channelId: message.channelId ?? undefined,
         data: { id, channelId: message.channelId, deletedAt: deletedAt.toISOString() },
       });
+    }
+    // P3-8 — federate the delete. Identical gating to the PATCH path:
+    //   1. deps wired in (FEDERATION_ENABLED on),
+    //   2. server message, not a DM (DMs are Phase 5),
+    //   3. locally-originated row — Phase 3 has no relay; inbound federated
+    //      messages are NOT re-broadcast on delete (each peer hears it from
+    //      the origin instance directly),
+    //   4. actor is the original author — moderator deletes are NOT federated
+    //      in Phase 3 (Phase 7 deferral). The inbound handler enforces the
+    //      symmetric "actor must equal author" check.
+    //   5. effective federation evaluates to ON for this channel.
+    // Errors are best-effort; the local delete + broadcast are already done.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.serverId &&
+      message.channelId &&
+      !message.dmChannelId &&
+      !message.originInstanceId &&
+      message.authorId === ctx.userId
+    ) {
+      try {
+        const channelMeta = await prisma.channel.findUnique({
+          where: { id: message.channelId },
+          select: {
+            federationMode: true,
+            server: { select: { federationEnabled: true } },
+          },
+        });
+        if (channelMeta) {
+          const effective = computeEffectiveFederation(
+            channelMeta.server?.federationEnabled ?? false,
+            channelMeta.federationMode,
+          );
+          if (effective) {
+            await fanOutMessageDelete({
+              queues: deps.queues,
+              selfHost: deps.selfHost,
+              serverId: message.serverId,
+              messageId: id,
+              actorUserId: message.authorId,
+              actorUsername: message.author.username,
+              deletedAt,
+              log: app.log,
+            });
+          }
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: id, channelId: message.channelId, serverId: message.serverId },
+          'federation fan-out failed for message.delete',
+        );
+      }
     }
     reply.send(ok({ id }));
   });

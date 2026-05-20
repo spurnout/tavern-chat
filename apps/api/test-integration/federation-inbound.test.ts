@@ -253,9 +253,142 @@ function buildMsgCreateEnvelope(input: BuildMessageEnvelopeInput): TwoLayerSigne
   });
 }
 
+interface BuildUpdateEnvelopeInput {
+  fx: PeerFixture;
+  messageId: string;
+  content?: string;
+  editedAt?: string;
+  /** Override author id placed in the payload (NOT the signing key — for forgery tests). */
+  authorRemoteUserIdOverride?: string;
+  /** Override the user-key used to sign the payload. */
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  /** Override the instance-key used to sign the envelope. */
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}
+
+function buildMsgUpdateEnvelope(input: BuildUpdateEnvelopeInput): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'message.update',
+    fromInstance: PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      authorRemoteUserId: input.authorRemoteUserIdOverride ?? fx.authorRemoteUserId,
+      messageId: input.messageId,
+      content: input.content ?? 'edited from peer',
+      editedAt: input.editedAt ?? new Date().toISOString(),
+    },
+    signUser: input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+interface BuildDeleteEnvelopeInput {
+  fx: PeerFixture;
+  messageId: string;
+  deletedAt?: string;
+  /** Override actor id placed in the payload. */
+  actorRemoteUserIdOverride?: string;
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}
+
+function buildMsgDeleteEnvelope(input: BuildDeleteEnvelopeInput): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'message.delete',
+    fromInstance: PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      actorRemoteUserId: input.actorRemoteUserIdOverride ?? fx.authorRemoteUserId,
+      messageId: input.messageId,
+      deletedAt: input.deletedAt ?? new Date().toISOString(),
+    },
+    signUser: input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+/**
+ * Seed a federated Message row for the fixture's author — used as the
+ * target of subsequent update/delete envelopes. Inserts directly via
+ * Prisma so the test doesn't depend on the create-inbound path; the
+ * row mimics what `handleMessageCreate` would have produced (origin
+ * instance set, content + author + channel populated).
+ */
+async function seedFederatedMessage(opts: {
+  fx: PeerFixture;
+  messageId: string;
+  content?: string;
+}): Promise<void> {
+  await prisma.message.create({
+    data: {
+      id: opts.messageId,
+      serverId: opts.fx.serverId,
+      channelId: opts.fx.channelId,
+      authorId: opts.fx.localUserId,
+      type: 'default',
+      content: opts.content ?? 'original federated content',
+      originInstanceId: opts.fx.peerInstanceId,
+      signature: Buffer.alloc(64, 7),
+    },
+  });
+}
+
+/**
+ * Seed a SECOND remote user on the same peer fixture. Used by the
+ * non-author edit/delete rejection tests where the envelope is signed
+ * by a different actor than the original author of the message.
+ */
+async function seedSecondRemoteUser(fx: PeerFixture): Promise<{
+  kp: ReturnType<typeof generateKeyPair>;
+  remoteUserId: string;
+  localUserId: string;
+}> {
+  const kp = generateKeyPair();
+  const remoteUserId = ulid();
+  const localpart = `bob-${remoteUserId.slice(-6).toLowerCase()}`;
+  const qualifiedId = `${localpart}@${PEER_HOST}`;
+  await prisma.remoteUser.create({
+    data: {
+      id: remoteUserId,
+      remoteInstanceId: fx.peerInstanceId,
+      remoteUserId: qualifiedId,
+      displayNameCache: 'Bob from B',
+      avatarUrlCache: null,
+      publicKey: exportPublicKeyRaw(kp.publicKey),
+      lastSeenAt: new Date(0),
+    },
+  });
+  const localUserId = ulid();
+  const syntheticUsername = `__rem_${ulid().toLowerCase()}`;
+  await prisma.user.create({
+    data: {
+      id: localUserId,
+      username: syntheticUsername,
+      usernameLower: syntheticUsername,
+      displayName: 'Bob from B',
+      email: `${qualifiedId}.federated.local`,
+      emailLower: `${qualifiedId}.federated.local`,
+      passwordHash: null,
+      remoteUserId: qualifiedId,
+      remoteInstanceId: fx.peerInstanceId,
+      federationKeyPublic: exportPublicKeyRaw(kp.publicKey),
+    },
+  });
+  await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: localUserId } });
+  return { kp, remoteUserId: qualifiedId, localUserId };
+}
+
 async function cleanDb(): Promise<void> {
   // Order matters — children before parents.
   await prisma.federationEnvelopeLog.deleteMany({});
+  await prisma.messageEdit.deleteMany({});
+  await prisma.messageReaction.deleteMany({});
+  await prisma.userMention.deleteMany({});
+  await prisma.pinnedMessage.deleteMany({});
   await prisma.message.deleteMany({});
   await prisma.serverMember.deleteMany({});
   await prisma.permissionOverwrite.deleteMany({});
@@ -533,11 +666,12 @@ describe.skipIf(!dockerOk)('P3-7 — POST /_federation/event (message.create)', 
     }
   });
 
-  it('unimplemented event type (message.update) → 501', async () => {
+  it('unimplemented event type (reaction.add) → 501', async () => {
     const fx = await makeFixture();
-    // A 'message.update' envelope. Payload shape doesn't matter — the handler
+    // A 'reaction.add' envelope. Payload shape doesn't matter — the handler
     // map rejects the event type before signature/payload checks.
-    const envelope = buildMsgCreateEnvelope({ fx, eventType: 'message.update' });
+    // (P3-8 added message.update + message.delete; reactions land in P3-9.)
+    const envelope = buildMsgCreateEnvelope({ fx, eventType: 'reaction.add' });
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
     try {
       const res = await app.inject({
@@ -697,6 +831,314 @@ describe.skipIf(!dockerOk)('P3-7 — POST /_federation/event (message.create)', 
         where: { channelId: fx.channelId },
       });
       expect(msg).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.update)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: updates content + editedAt and appends MessageEdit history', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId, content: 'before edit' });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const editedAt = new Date('2026-05-19T13:00:00.000Z').toISOString();
+    const envelope = buildMsgUpdateEnvelope({
+      fx,
+      messageId,
+      content: 'after edit',
+      editedAt,
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.id).toBe(messageId);
+
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.content).toBe('after edit');
+      expect(row!.editedAt?.toISOString()).toBe(editedAt);
+
+      // History row preserves the pre-edit content.
+      const edits = await prisma.messageEdit.findMany({ where: { messageId } });
+      expect(edits).toHaveLength(1);
+      expect(edits[0]!.content).toBe('before edit');
+      expect(edits[0]!.editedBy).toBe(fx.localUserId);
+
+      // RemoteUser.lastSeenAt should have moved forward.
+      const updatedRemoteUser = await prisma.remoteUser.findUnique({
+        where: { id: fx.remoteUserId },
+      });
+      expect(updatedRemoteUser!.lastSeenAt.getTime()).toBeGreaterThan(0);
+
+      // Envelope log row exists for this peer + event type.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'message.update' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-author edit → 403 forbidden', async () => {
+    // Seed a federated message for the author (alice), then send a
+    // message.update envelope signed by a DIFFERENT remote user (bob) on
+    // the same peer. The author check on the inbound handler must reject
+    // the edit with 403 regardless of the valid two-layer signature.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId, content: 'alice wrote this' });
+    const bob = await seedSecondRemoteUser(fx);
+
+    const envelope = buildMsgUpdateEnvelope({
+      fx,
+      messageId,
+      content: 'bob tries to edit',
+      authorRemoteUserIdOverride: bob.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, bob.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      // Confirm the row was NOT modified.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.content).toBe('alice wrote this');
+      expect(row!.editedAt).toBeNull();
+      const edits = await prisma.messageEdit.findMany({ where: { messageId } });
+      expect(edits).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('edit of non-existent message → 404', async () => {
+    const fx = await makeFixture();
+    const envelope = buildMsgUpdateEnvelope({
+      fx,
+      messageId: ulid(), // never persisted
+      content: 'edits a ghost',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('edit of already-deleted message → 404', async () => {
+    // Phase 3 invariant: editing a tombstoned row makes no sense. The local
+    // PATCH handler gates on `!message.deletedAt`; the inbound handler mirrors
+    // that with an `unknown_message` (404) response.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), content: '' },
+    });
+    const envelope = buildMsgUpdateEnvelope({
+      fx,
+      messageId,
+      content: 'edit after delete',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: soft-deletes message and cleans reactions/mentions/pins', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId, content: 'about to be deleted' });
+
+    // Sprinkle some collateral that the soft-delete must clean up: a
+    // reaction, a mention, and a pin against the target message.
+    await prisma.messageReaction.create({
+      data: { messageId, userId: fx.localUserId, emoji: ':thumbsup:' },
+    });
+    await prisma.userMention.create({
+      data: {
+        id: ulid(),
+        userId: fx.localUserId,
+        messageId,
+        channelId: fx.channelId,
+        kind: 'user',
+      },
+    });
+    await prisma.pinnedMessage.create({
+      data: {
+        messageId,
+        channelId: fx.channelId,
+        pinnedBy: fx.localUserId,
+      },
+    });
+
+    const deletedAt = new Date('2026-05-19T14:00:00.000Z').toISOString();
+    const envelope = buildMsgDeleteEnvelope({ fx, messageId, deletedAt });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt).not.toBeNull();
+      expect(row!.deletedAt?.toISOString()).toBe(deletedAt);
+      expect(row!.content).toBe('');
+
+      // Collateral cleaned: no reactions, no mentions, no pins.
+      const reactionCount = await prisma.messageReaction.count({ where: { messageId } });
+      expect(reactionCount).toBe(0);
+      const mentionCount = await prisma.userMention.count({ where: { messageId } });
+      expect(mentionCount).toBe(0);
+      const pinCount = await prisma.pinnedMessage.count({ where: { messageId } });
+      expect(pinCount).toBe(0);
+
+      // Envelope log row exists for this peer + event type.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'message.delete' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-author delete → 403 forbidden', async () => {
+    // Phase 3: only the original author can delete. Even a validly-signed
+    // envelope from a different remote user on the same peer (e.g. a
+    // moderator) is rejected — moderator-driven federated deletes are a
+    // Phase 7 problem and out of scope here.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    const bob = await seedSecondRemoteUser(fx);
+
+    const envelope = buildMsgDeleteEnvelope({
+      fx,
+      messageId,
+      actorRemoteUserIdOverride: bob.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, bob.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      // Confirm the row is unchanged.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('delete of non-existent message → 404', async () => {
+    const fx = await makeFixture();
+    const envelope = buildMsgDeleteEnvelope({ fx, messageId: ulid() });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('delete of already-deleted message → 200 idempotent', async () => {
+    // A second delete envelope (different nonce, e.g. peer outbox retried
+    // after the first one committed) is a no-op rather than a 404 / 409.
+    // The replay log keys on `(peerInstanceId, nonce)`, so a DIFFERENT
+    // envelope can still arrive — the handler is idempotent for that case.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    const deletedAt = new Date();
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt, content: '' },
+    });
+
+    const envelope = buildMsgDeleteEnvelope({ fx, messageId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.deduplicated).toBe(true);
+
+      // deletedAt unchanged — the original delete time is preserved.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt?.getTime()).toBe(deletedAt.getTime());
     } finally {
       await app.close();
     }
