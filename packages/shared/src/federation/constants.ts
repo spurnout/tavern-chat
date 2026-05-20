@@ -21,6 +21,16 @@ export const ENVELOPE_EVENT_TYPES = [
   'message.delete',
   'reaction.add',
   'reaction.remove',
+  'member.join_request',
+  'member.joined',
+  'member.add',
+  'member.remove',
+  'member.leave',
+  'member.removed',
+  'server.update',
+  'channel.create',
+  'channel.update',
+  'channel.delete',
 ] as const;
 export type EnvelopeEventType = (typeof ENVELOPE_EVENT_TYPES)[number];
 
