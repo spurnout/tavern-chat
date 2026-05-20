@@ -352,7 +352,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       };
     }
 
-    await registerServerRoutes(app);
+    await registerServerRoutes(app, {
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerChannelRoutes(app);
     await registerMessageRoutes(app, { federationProfile, queues, selfHost });
     await registerRoleRoutes(app);

@@ -35,6 +35,8 @@ interface ServerRow {
   description: string | null;
   iconAttachmentId: string | null;
   defaultRoleId: string | null;
+  /** P3-1 — per-Tavern federation opt-in. */
+  federationEnabled: boolean;
   createdAt: Date;
 }
 
@@ -46,6 +48,7 @@ export function serializeServer(row: ServerRow): ServerDto {
     description: row.description,
     iconAttachmentId: row.iconAttachmentId,
     defaultRoleId: row.defaultRoleId ?? '',
+    federationEnabled: row.federationEnabled,
     createdAt: row.createdAt.toISOString(),
   };
 }

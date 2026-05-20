@@ -28,7 +28,21 @@ import {
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 
-export async function registerServerRoutes(app: FastifyInstance): Promise<void> {
+interface ServerRouteDeps {
+  /**
+   * Whether this instance has federation enabled at the config level. P3-10
+   * gates the per-Tavern `federationEnabled` toggle on this: an admin can't
+   * set it to true unless the operator has also enabled federation on the
+   * instance. Without this, the flag would be stored but have no effect
+   * (the fan-out helper checks both layers).
+   */
+  federationEnabledOnInstance: boolean;
+}
+
+export async function registerServerRoutes(
+  app: FastifyInstance,
+  deps: ServerRouteDeps = { federationEnabledOnInstance: false },
+): Promise<void> {
   // List my servers --------------------------------------------------------
   app.get('/api/servers', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
@@ -124,12 +138,29 @@ export async function registerServerRoutes(app: FastifyInstance): Promise<void> 
     const body = updateServerRequestSchema.parse(req.body);
     await requireServerPermission(id, ctx.userId, Permission.MANAGE_SERVER);
 
+    // P3-10 — instance-level gate. Setting `federationEnabled=true` on a
+    // tavern hosted by a non-federated instance is rejected up front (rather
+    // than silently stored) so the UI / API surface never accumulates flags
+    // that would do nothing today and would suddenly take effect if the
+    // operator later flipped FEDERATION_ENABLED on. Turning it back off is
+    // always allowed, regardless of the instance setting, so an operator
+    // downgrading from federated → not-federated can still let admins clean
+    // up their tavern flags.
+    if (body.federationEnabled === true && !deps.federationEnabledOnInstance) {
+      throw TavernError.validation(
+        'Federation is not enabled on this instance. Ask the operator to set FEDERATION_ENABLED=true in the .env.',
+      );
+    }
+
     const updated = await prisma.server.update({
       where: { id },
       data: {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined ? { description: body.description } : {}),
         ...(body.iconAttachmentId !== undefined ? { iconAttachmentId: body.iconAttachmentId } : {}),
+        ...(body.federationEnabled !== undefined
+          ? { federationEnabled: body.federationEnabled }
+          : {}),
       },
     });
 

@@ -555,6 +555,9 @@ async function buildReadyPayload(userId: string): Promise<unknown> {
         ownerUserId: m.server.ownerUserId,
         iconAttachmentId: m.server.iconAttachmentId,
         defaultRoleId: m.server.defaultRoleId,
+        // P3-10 — clients gate the federation settings UI on this so the
+        // toggle state survives a page reload without an extra round-trip.
+        federationEnabled: m.server.federationEnabled,
         roles: m.roles.map((r) => r.roleId),
       })),
   };

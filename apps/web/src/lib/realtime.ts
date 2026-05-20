@@ -40,7 +40,22 @@ let stopPresence: (() => void) | null = null;
 
 interface ReadyPayload {
   user: { id: string };
-  servers: Array<Server & { roles: string[] }>;
+  /**
+   * READY-shaped server: a subset of the full `Server` DTO. Only the columns
+   * the client needs to bootstrap the sidebar — there's no description /
+   * createdAt because READY is not the canonical CRUD response.
+   * `federationEnabled` is optional for forwards-compatibility with API
+   * builds that predate P3-10.
+   */
+  servers: Array<{
+    id: string;
+    name: string;
+    ownerUserId: string;
+    iconAttachmentId: string | null;
+    defaultRoleId: string | null;
+    federationEnabled?: boolean;
+    roles: string[];
+  }>;
 }
 
 export function startRealtime(): GatewayClient {
@@ -80,6 +95,10 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
           description: null,
           iconAttachmentId: s.iconAttachmentId,
           defaultRoleId: s.defaultRoleId ?? '',
+          // READY currently sends a partial Server; default any missing flag
+          // to false so the wire shape is forwards-compatible with older
+          // backends that haven't been redeployed yet.
+          federationEnabled: s.federationEnabled ?? false,
           createdAt: new Date().toISOString(),
         });
       }

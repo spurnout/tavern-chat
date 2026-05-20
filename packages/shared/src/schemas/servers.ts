@@ -10,6 +10,12 @@ export const serverSchema = z.object({
   description: z.string().max(NAME_LIMITS.MAX_DESCRIPTION).nullable(),
   iconAttachmentId: idSchema.nullable(),
   defaultRoleId: idSchema,
+  /**
+   * Federation Phase 3 — per-Tavern opt-in. When false, no messages are
+   * fanned out to peers even if a channel's `federationMode` would allow it.
+   * Defaults to false on every fresh server (see Prisma schema).
+   */
+  federationEnabled: z.boolean(),
   createdAt: z.string().datetime(),
 });
 
@@ -20,6 +26,13 @@ export const createServerRequestSchema = z.object({
 
 export const updateServerRequestSchema = createServerRequestSchema.partial().extend({
   iconAttachmentId: idSchema.nullable().optional(),
+  /**
+   * P3-10 — per-Tavern federation toggle. Sent by den-settings UI. The PATCH
+   * handler rejects `true` when the instance has `FEDERATION_ENABLED=false`,
+   * so flipping it on a non-federated instance is a clean 400 rather than a
+   * silently-stored flag that does nothing.
+   */
+  federationEnabled: z.boolean().optional(),
 });
 
 export const memberUserSchema = z.object({
