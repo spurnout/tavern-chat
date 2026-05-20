@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from '@tanstack/react-router';
+import * as Popover from '@radix-ui/react-popover';
 import { parseMarkdownBlocks, type Block, type Segment } from '../lib/markdown.js';
 import { useRealtime } from '../lib/store.js';
 import {
@@ -8,6 +9,8 @@ import {
   type HastElementNode,
   type HastNode,
 } from '../lib/highlight.js';
+import { api, ApiError } from '../lib/api-client.js';
+import { RemoteUserCard, type RemoteUserCardData } from './RemoteUserCard.js';
 
 interface Props {
   content: string;
@@ -111,6 +114,14 @@ function InlineSegment({ segment }: { segment: Segment }): JSX.Element {
       );
     case 'channel-mention':
       return <ChannelMentionPill name={segment.name} raw={segment.raw} />;
+    case 'qualifiedMention':
+      return (
+        <QualifiedMentionPill
+          localpart={segment.localpart}
+          host={segment.host}
+          raw={segment.raw}
+        />
+      );
     case 'wikilink':
       // The note renderer in NotesTab assigns `id="note-<slug>"` for each
       // note title; clicking the wikilink scrolls that element into view.
@@ -151,6 +162,61 @@ function slugifyWikiTarget(input: string): string {
 }
 
 export { slugifyWikiTarget };
+
+function QualifiedMentionPill({
+  localpart,
+  host,
+}: {
+  localpart: string;
+  host: string;
+  raw: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<RemoteUserCardData | null>(null);
+
+  async function load(): Promise<void> {
+    if (data || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await api<RemoteUserCardData>(
+        `/federation/users/${encodeURIComponent(`${localpart}@${host}`)}/profile`,
+      );
+      setData(resp);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not load profile');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) void load();
+      }}
+    >
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="rounded bg-tint-ember px-1 font-medium text-mead hover:bg-tint-good"
+        >
+          @{localpart}
+          <span className="ml-1 text-xs opacity-60">@{host}</span>
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content sideOffset={4} className="z-50">
+          <RemoteUserCard loading={loading} error={error} data={data} />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
 
 function ChannelMentionPill({ name, raw }: { name: string; raw: string }): JSX.Element {
   // Resolve the channel by name across all visible servers. First match wins.

@@ -32,7 +32,9 @@ export type Segment =
   | { kind: 'mention'; raw: string }
   | { kind: 'channel-mention'; raw: string; name: string }
   /** Wave 3 #21 — `[[Page Name]]` or `[[Page Name|display label]]`. */
-  | { kind: 'wikilink'; target: string; label: string };
+  | { kind: 'wikilink'; target: string; label: string }
+  /** IR20 Phase 2 — `@localpart@host.example` federated mention. */
+  | { kind: 'qualifiedMention'; raw: string; localpart: string; host: string };
 
 export type Block =
   | { kind: 'paragraph'; segments: Segment[] }
@@ -42,8 +44,13 @@ export type Block =
 /** URL detector. Conservative — won't match bare domains, only `http(s)://...`. */
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]]+/g;
 
-/** Mention regex — same triggers as packages/shared parseMentions. */
-const MENTION_RE = /(^|[\s(\[{])@([A-Za-z0-9_\-.]+)/g;
+/**
+ * Mention regex — captures an optional `@host` suffix so that qualified
+ * federated mentions (`@alice@b.example.com`) are emitted as a distinct
+ * `qualifiedMention` segment. The host group is only non-null when it
+ * contains at least one dot, matching the shared-parser convention.
+ */
+const MENTION_RE = /(^|[\s(\[{])@([A-Za-z0-9_\-.]+)(?:@([A-Za-z0-9.-]+))?/g;
 
 /** Channel mention regex — `#room-name` after whitespace/bracket/start. */
 const CHANNEL_RE = /(^|[\s(\[{])#([A-Za-z0-9_\-.]+)/g;
@@ -223,8 +230,16 @@ function splitOnUrlsAndMentions(input: string): Segment[] {
     const lead = m[1] ?? '';
     const start = m.index + lead.length;
     const end = m.index + m[0].length;
-    const raw = `@${m[2]}`;
-    hits.push({ start, end, build: () => ({ kind: 'mention', raw }) });
+    const localpart = m[2] ?? '';
+    const host = m[3] ?? '';
+    // Emit a qualifiedMention when there's a host part containing a dot.
+    if (host && host.includes('.')) {
+      const raw = `@${localpart}@${host}`;
+      hits.push({ start, end, build: () => ({ kind: 'qualifiedMention', raw, localpart, host }) });
+    } else {
+      const raw = `@${localpart}`;
+      hits.push({ start, end, build: () => ({ kind: 'mention', raw }) });
+    }
   }
   CHANNEL_RE.lastIndex = 0;
   while ((m = CHANNEL_RE.exec(input)) !== null) {
