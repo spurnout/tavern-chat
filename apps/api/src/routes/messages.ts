@@ -29,6 +29,11 @@ import {
   writeMentionRecords,
 } from '../services/mentions-service.js';
 import type { FederationProfileService } from '../services/federation-profile.js';
+import {
+  computeEffectiveFederation,
+  fanOutMessageCreate,
+} from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 import { enqueueLinkPreviews } from '../services/link-preview-service.js';
 import { evaluateAutomod } from '../services/automod-service.js';
 
@@ -45,6 +50,14 @@ function sanitizeContent(content: string): string {
 
 interface MessageRouteDeps {
   federationProfile?: FederationProfileService | null;
+  /**
+   * Queue client used to enqueue outbound federation envelopes. Optional —
+   * when omitted (or when `selfHost` is missing), the federation fan-out hook
+   * short-circuits. The local message create / broadcast path is unaffected.
+   */
+  queues?: QueueClient;
+  /** The local instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {
@@ -142,7 +155,14 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     // when this message is the root of a new forum post.
     const channelMeta = await prisma.channel.findUnique({
       where: { id: channelId },
-      select: { slowmodeSeconds: true, postingScope: true, type: true },
+      select: {
+        slowmodeSeconds: true,
+        postingScope: true,
+        type: true,
+        // Federation Phase 3: per-channel override (`inherit | force_on |
+        // force_off`). Combined with Server.federationEnabled at fan-out time.
+        federationMode: true,
+      },
     });
     if (channelMeta) {
       if (channelMeta.postingScope === 'mods_only' && !isAdminOrModForChannel) {
@@ -438,6 +458,46 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
       channelId,
       data: dto,
     });
+    // P3-6 — fan out the message to every peered instance with a member in
+    // this server. Best-effort: local clients have already received the
+    // broadcast above, federation delivery is async and must never block or
+    // fail the HTTP response. Gated on:
+    //   1. Deps (queues + selfHost) wired in — i.e. FEDERATION_ENABLED is on
+    //   2. This is a server message (not a DM — DMs are Phase 5)
+    //   3. Effective federation: combines server flag with channel override
+    if (deps?.queues && deps.selfHost && result.serverId && channelMeta) {
+      try {
+        const server = await prisma.server.findUnique({
+          where: { id: result.serverId },
+          select: { federationEnabled: true },
+        });
+        const effective = computeEffectiveFederation(
+          server?.federationEnabled ?? false,
+          channelMeta.federationMode,
+        );
+        if (effective) {
+          await fanOutMessageCreate({
+            queues: deps.queues,
+            selfHost: deps.selfHost,
+            serverId: result.serverId,
+            channelId,
+            messageId: fullRow.id,
+            authorUserId: fullRow.authorId,
+            authorUsername: fullRow.author.username,
+            content: fullRow.content,
+            createdAt: fullRow.createdAt,
+            replyToMessageId: fullRow.replyToMessageId,
+            log: app.log,
+          });
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        app.log.warn(
+          { err: msg, messageId: fullRow.id, channelId, serverId: result.serverId },
+          'federation fan-out failed for message.create',
+        );
+      }
+    }
     // Wave 2 #4 — kick off OG link-preview generation. Fire-and-forget;
     // results flow back as LINK_PREVIEW_READY gateway events.
     enqueueLinkPreviews({

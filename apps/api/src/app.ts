@@ -115,6 +115,13 @@ export interface BuildAppOptions {
   config: Config;
   /** When true, skip route modules that need infra services (used by auth tests). */
   authOnly?: boolean;
+  /**
+   * Test-only override for the queue client. When set, replaces the queue
+   * factory's output so tests can drop a vi.fn() in for `enqueueFederationOutbox`
+   * without standing up Redis or wiring the in-memory dispatcher. Has no
+   * effect on the storage / scan path beyond what the override implements.
+   */
+  queuesOverride?: import('./services/queues.js').QueueClient;
 }
 
 export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> {
@@ -283,15 +290,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // FEDERATION_ENABLED block below. Wire them through a getter so the
     // queue client picks them up lazily after federation bootstrap.
     let federationDispatcherSlot: FederationDispatcherSlot | null = null;
-    const queues = createQueueClient(opts.config, {
-      storage,
-      scanner,
-      logger: app.log,
-      getFederationDispatcher: () => federationDispatcherSlot,
-    });
+    const queues =
+      opts.queuesOverride ??
+      createQueueClient(opts.config, {
+        storage,
+        scanner,
+        logger: app.log,
+        getFederationDispatcher: () => federationDispatcherSlot,
+      });
 
     let federationKeys: FederationKeyStore | null = null;
     let federationProfile: FederationProfileService | null = null;
+    // P3-6: `selfHost` is hoisted out of the FEDERATION_ENABLED block so
+    // registerMessageRoutes can be passed it as a dep — the outbound fan-out
+    // helper needs `<localpart>@<selfHost>` to build remote-user identifiers.
+    // It stays null when federation is off, which gates the fan-out path
+    // inside the route handler.
+    let selfHost: string | null = null;
     if (opts.config.FEDERATION_ENABLED) {
       const dataKey = loadDataKey(opts.config.TAVERN_DATA_KEY);
       federationKeys = new FederationKeyStore({ dataKey });
@@ -311,7 +326,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // Provision the per-user key store so new users get a signing keypair
       // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
       userKeys = new UserKeyStore({ dataKey });
-      const selfHost = new URL(opts.config.PUBLIC_BASE_URL).host;
+      selfHost = new URL(opts.config.PUBLIC_BASE_URL).host;
       federationProfile = new FederationProfileService({
         keys: federationKeys!,
         userKeys: userKeys!,
@@ -330,7 +345,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
     await registerServerRoutes(app);
     await registerChannelRoutes(app);
-    await registerMessageRoutes(app, { federationProfile });
+    await registerMessageRoutes(app, { federationProfile, queues, selfHost });
     await registerRoleRoutes(app);
     await registerOverwriteRoutes(app);
     await registerInviteRoutes(app);
