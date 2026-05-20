@@ -1,8 +1,10 @@
 # Federation operations guide
 
-Phase 1 of Tavern federation is the **peering handshake only**. No content (messages,
-presence, invites, DMs) crosses the boundary yet. Operators can safely enable peering,
-explore the admin UI, and verify connectivity without any user data leaving the instance.
+Phases 1–3 of Tavern federation are now in place: peering, remote-user identity, and
+channel-message federation (create / edit / delete / reactions). Federated invites, DMs,
+presence, and moderation propagation are still pending. Operators can safely enable peering,
+exchange channel messages with peered instances at the per-Tavern and per-channel opt-in
+level, and verify everything via the admin UI.
 
 See `docs/federation.md` for the full design, protocol spec, and rollout phases.
 
@@ -262,3 +264,103 @@ response envelope.
 The `/_federation/profile` route is public in the sense that any peer with a valid signed
 envelope can call it. It returns only non-sensitive fields: `displayName`, `avatarUrl`
 (best-effort — see follow-up #7), `publicKey`, and `homeInstance`.
+
+---
+
+## Phase 3 — federated channel messages
+
+Phase 3 puts message **content** on the wire. When a local user posts a message
+in a federated room of a federated den, the message is signed and POSTed to
+every peered instance that has at least one remote member of that den. The
+receiving instance verifies the two-layer signature (user + instance key),
+persists the message locally, and broadcasts it to its own clients.
+
+### What flows
+
+- **Message create**: messages posted in a federated room reach peers with a
+  remote member of the den.
+- **Message edits**: only the original author's edits federate. Moderator edits
+  are deferred to Phase 7.
+- **Message deletes**: only the original author's deletes federate. Moderator
+  deletes are local-only until Phase 7's "remove globally" feature.
+- **Reactions add/remove**: unicode reactions federate. Custom emoji do not
+  cross instances yet — see follow-up #15.
+
+### What does NOT yet federate (Phase 4+ work)
+
+- **Invites and Tavern joins** — Phase 4.
+- **Direct messages** — Phase 5.
+- **Presence / custom status** — Phase 6.
+- **Moderation actions (bans, "remove globally" deletes)** — Phase 7.
+- **Voice / video** — Phase 8 (V2).
+- **Custom emoji content** — follow-up #15.
+- **Avatar bytes** — peers fetch via the URL the home instance publishes;
+  there is no avatar mirroring yet (follow-up #7).
+
+### Opt-in surface
+
+Both flags must be on for messages to leave the instance:
+
+1. **`FEDERATION_ENABLED=true`** at the instance level (env var).
+2. **Den-level**: `Server.federationEnabled = true`. Set via the den's settings
+   page → Federation tab (admins only). Defaults to off.
+3. **Per-room override** (optional): `Channel.federationMode` is `inherit`
+   (default — follow the den), `force_on` (override the den's off), or
+   `force_off` (override the den's on). Set via the room's settings popover.
+
+A non-federated den on a federated instance behaves identically to a den on a
+non-federated instance.
+
+### Transport
+
+For Phase 3, federated events use **HTTPS POST** to the peer's
+`/_federation/event` endpoint. The `.well-known/tavern-federation` discovery
+doc advertises a `wss://` endpoints.events URL but it is **not used yet** —
+WSS server-to-server transport is a Phase 5+ optimization. HTTPS POST is
+sufficient for Phase 3 message volume and keeps the dispatch path strictly
+request/response.
+
+### Manual remote-member addition (testing backdoor)
+
+Phase 3 ships before the federated-invite flow (Phase 4), so adding a remote
+user to a den is currently a manual operation:
+
+```
+POST /api/admin/servers/:id/remote-members
+Body: { "remoteUserId": "alice@b.example" }
+Auth: Instance admin
+```
+
+The endpoint resolves the remote user's profile from their home instance,
+creates the local User mirror row (with no password), and creates a
+ServerMember row in the target den with the default role.
+
+This endpoint exists ONLY to exercise Phase 3 end-to-end before Phase 4 ships.
+Once Phase 4 lands, the proper invite flow replaces it. Treat it as an
+admin-only testing tool, not a production user-management surface.
+
+### Reversibility
+
+Phase 3 is the first phase that is not trivially reversible. Once a message
+envelope has been POSTed to a peer, the peer has a copy of the content. A
+local message delete will federate (author-only). To stop federating an
+already-running den:
+
+1. Turn `Server.federationEnabled=false` in den settings. New messages no
+   longer fan out.
+2. Existing messages already on peers cannot be unsent. Phase 7 will add
+   a "remove globally" moderation action.
+3. For a hard cut-off, revoke the peer at the admin UI — that stops all
+   future envelopes in both directions, but does not retroactively delete
+   anything from the peer's database.
+
+### Outbox + retry
+
+Federated events go through a BullMQ-backed outbox queue
+(`tavern.federation.outbox`). The worker process consumes the queue, builds
+the two-layer envelope, and POSTs to the peer. Failures retry 3× with
+exponential backoff (5s base). Permanent failures are logged at error level
+and remain in the BullMQ `failed` ring (default 1000 entries) for
+post-mortem inspection. In single-replica deployments (no `REDIS_URL`), the
+outbox runs in-process via `setImmediate` with no retry — failures log and
+move on.

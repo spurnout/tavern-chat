@@ -106,6 +106,18 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 - **Trigger:** Phase 4+ (when cross-instance emoji sharing is on the menu)
 - **What:** Inbound `reaction.add` / `reaction.remove` with a `custom:<id>` payload is rejected with 403 in Phase 3 (`federation-inbound.ts::validateInboundReaction`). The custom-emoji id only resolves on the home instance, and we don't yet have a story for transporting or rendering the underlying bytes on the receiver. Unicode reactions only for now. Phase 4+ candidate fixes: bundle the emoji's bytes in the envelope, or define a `custom-emoji:request` lookup analogous to `profile.request`. Outbound side currently still emits whatever the local PUT route accepted — the gate is enforced on the receiver. Revisit when cross-instance custom emoji becomes a roadmap item.
 
+### 16. Dead-letter inspection / retry for the federation outbox
+
+- **Phase:** 3 (P3-13)
+- **Trigger:** Phase 4+ (operational visibility)
+- **What:** The federation outbox dispatcher retries 3× with exponential backoff, then drops the job into BullMQ's `failed` ring. There is no admin UI surface for inspecting, retrying, or purging dead-letter jobs. Operators currently have to shell into Redis (or use a separate BullMQ dashboard) to see what failed. Add an admin route + UI for listing failed federation jobs with a "retry" / "discard" action. Folds naturally into Phase 4 when richer outbox semantics arrive (invite envelopes, member-mutation envelopes, etc.).
+
+### 17. Brittle signature-failure-reason regex in `federation-inbound.ts`
+
+- **Phase:** 3 (P3-13)
+- **Trigger:** before adding more inbound envelope kinds (Phase 4+)
+- **What:** `federation-inbound.ts` currently distinguishes "signature failed" (401) from "envelope malformed" (400) by string-matching the `reason` field returned by `verifyTwoLayerMessageEnvelope`. The regex is brittle and silently miscategorises any new failure mode the verifier introduces. Fix: change `verifyTwoLayerMessageEnvelope` to return a discriminated `{ kind: 'sig_failure' | 'envelope_invalid' | 'expired' }` on the failure branch, and dispatch on `kind` in the inbound handler.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up
