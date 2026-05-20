@@ -340,6 +340,15 @@ model Invite {
   expiresAt     DateTime?
   revokedAt     DateTime?
   createdAt     DateTime    @default(now())
+  // Federation Phase 4: cross-instance invites. Null `remoteScope` means
+  // this is a local-only invite (Phase 1-3 behaviour). When set, the redeem
+  // path enforces the scope against the bearer's home instance / identity.
+  //   - any_peer: any peered instance, any user
+  //   - specific_instance: bearer must belong to `remoteInstanceHost`
+  //   - specific_user: bearer must match `remoteUserId` ("alice@b.example")
+  remoteScope          RemoteInviteScope?
+  remoteInstanceHost   String?
+  remoteUserId         String?
 
   server     Server?  @relation(fields: [serverId], references: [id], onDelete: Cascade)
   channel    Channel? @relation(fields: [channelId], references: [id], onDelete: SetNull)
@@ -363,9 +372,16 @@ model Server {
   // Federation Phase 3: per-Tavern opt-in. When false, no messages are
   // fanned out to peers even if the channel mode would allow it.
   federationEnabled   Boolean  @default(false)
+  // Federation Phase 4: mirror provenance. Null = locally owned; non-null
+  // = this Server row is a mirror of a Server on another instance. The
+  // origin RemoteInstance owns the canonical state; we hold a projection.
+  // SetNull on origin delete: keep the mirror row (so messages don't go
+  // dangling) but mark it as orphaned for the operator to reconcile.
+  originInstanceId    String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  originInstance RemoteInstance?     @relation("ServerMirrorOrigin", fields: [originInstanceId], references: [id], onDelete: SetNull)
   owner          User                @relation("ServerOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
   defaultRole    Role?               @relation("ServerEveryoneRole", fields: [defaultRoleId], references: [id], onDelete: SetNull)
   members        ServerMember[]
@@ -397,6 +413,7 @@ model Server {
   cardDecks       CardDeck[]
 
   @@index([ownerUserId])
+  @@index([originInstanceId])
 }
 
 model ServerMember {
@@ -556,9 +573,17 @@ model Channel {
   // Federation Phase 3: per-channel override. `inherit` defers to
   // Server.federationEnabled; `force_on` / `force_off` override it.
   federationMode          FederationMode        @default(inherit)
+  // Federation Phase 4: mirror provenance. Null = locally owned channel;
+  // non-null = this Channel row is a mirror of a channel on another
+  // instance. Matches the parent Server.originInstanceId in practice but
+  // is stored independently so mirror channels can be reasoned about
+  // without joining through Server. SetNull on origin delete.
+  originInstanceId        String?
+  originInstance          RemoteInstance?       @relation("ChannelMirrorOrigin", fields: [originInstanceId], references: [id], onDelete: SetNull)
 
   @@index([serverId, position])
   @@index([parentId])
+  @@index([originInstanceId])
 }
 
 enum OverwriteTargetType {
@@ -2361,6 +2386,16 @@ enum FederationEnvelopeDirection {
   outbound
 }
 
+// Federation Phase 4: who an Invite may be redeemed by. Null on Invite means
+// the invite is local-only (legacy / non-federated). `any_peer` accepts
+// anyone from any peered instance; `specific_instance` pins to a host;
+// `specific_user` pins to a fully-qualified "alice@b.example" identity.
+enum RemoteInviteScope {
+  any_peer
+  specific_instance
+  specific_user
+}
+
 model RemoteInstance {
   id                   String                @id
   host                 String                @unique
@@ -2381,6 +2416,9 @@ model RemoteInstance {
   // Federation Phase 3 back-refs
   originatedMessages   Message[] @relation("MessageOrigin")
   users                User[]    @relation("UserRemoteInstance")
+  // Federation Phase 4 back-refs: mirror provenance for Server / Channel.
+  mirroredServers      Server[]  @relation("ServerMirrorOrigin")
+  mirroredChannels     Channel[] @relation("ChannelMirrorOrigin")
 
   @@index([status])
 }
@@ -2442,4 +2480,12 @@ model RemoteUser {
 //   - Channel.federationMode (per-channel override)
 //   - User.passwordHash nullable + User.remoteUserId + User.remoteInstanceId
 //     so remote users can live as User rows for fan-out targets
+// See docs/federation.md.
+
+// ============================ FEDERATION (Phase 4) ============================
+// Cross-instance invites + mirror provenance for Server / Channel. Adds:
+//   - Invite.remoteScope / remoteInstanceHost / remoteUserId (federated invites)
+//   - RemoteInviteScope enum (any_peer | specific_instance | specific_user)
+//   - Server.originInstanceId (null = local; non-null = mirror)
+//   - Channel.originInstanceId (null = local; non-null = mirror)
 // See docs/federation.md.
