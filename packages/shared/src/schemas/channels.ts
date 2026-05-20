@@ -15,6 +15,11 @@ export const channelTypeSchema = z.enum([
   'forum',
 ]);
 
+/** Federation Phase 3 (P3-11) — per-channel override of the parent
+ * server's federationEnabled flag. `inherit` defers to the den; the
+ * `force_*` values pin the room regardless of the den setting. */
+export const federationModeSchema = z.enum(['inherit', 'force_on', 'force_off']);
+
 export const channelSchema = z.object({
   id: idSchema,
   serverId: idSchema,
@@ -27,6 +32,7 @@ export const channelSchema = z.object({
   position: z.number().int().min(0),
   nsfw: z.boolean(),
   videoEnabled: z.boolean(),
+  federationMode: federationModeSchema,
   createdAt: z.string().datetime(),
 });
 
@@ -48,6 +54,8 @@ export const updateChannelRequestSchema = createChannelRequestSchema
     slowmodeSeconds: z.number().int().min(0).max(6 * 60 * 60).optional(),
     /** Wave 2 #9 — posting scope. */
     postingScope: z.enum(['open', 'mods_only', 'admin_only']).optional(),
+    /** Federation Phase 3 (P3-11) — per-channel federation override. */
+    federationMode: federationModeSchema.optional(),
   });
 
 export const permissionOverwriteTargetTypeSchema = z.enum(['role', 'user']);
@@ -69,6 +77,7 @@ export const upsertPermissionOverwriteRequestSchema = z.object({
 });
 
 export type ChannelType = z.infer<typeof channelTypeSchema>;
+export type FederationMode = z.infer<typeof federationModeSchema>;
 export type Channel = z.infer<typeof channelSchema>;
 export type CreateChannelRequest = z.infer<typeof createChannelRequestSchema>;
 export type UpdateChannelRequest = z.infer<typeof updateChannelRequestSchema>;

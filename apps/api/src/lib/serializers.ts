@@ -65,6 +65,8 @@ interface ChannelRow {
   position: number;
   nsfw: boolean;
   videoEnabled: boolean;
+  /** P3-11 — per-channel federation override. */
+  federationMode: 'inherit' | 'force_on' | 'force_off';
   createdAt: Date;
 }
 
@@ -81,6 +83,7 @@ export function serializeChannel(row: ChannelRow): ChannelDto {
     position: row.position,
     nsfw: row.nsfw,
     videoEnabled: row.videoEnabled,
+    federationMode: row.federationMode,
     createdAt: row.createdAt.toISOString(),
   };
 }

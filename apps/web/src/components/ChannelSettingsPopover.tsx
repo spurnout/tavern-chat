@@ -11,6 +11,7 @@ interface Props {
 }
 
 type PostingScope = 'open' | 'mods_only' | 'admin_only';
+type FederationMode = 'inherit' | 'force_on' | 'force_off';
 
 const SLOWMODE_PRESETS = [0, 5, 10, 30, 60, 300, 900, 3600, 21600];
 
@@ -26,6 +27,9 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
   const [slowmode, setSlowmode] = useState((channel as unknown as { slowmodeSeconds?: number }).slowmodeSeconds ?? 0);
   const [scope, setScope] = useState<PostingScope>(
     (channel as unknown as { postingScope?: PostingScope }).postingScope ?? 'open',
+  );
+  const [federationMode, setFederationMode] = useState<FederationMode>(
+    (channel as unknown as { federationMode?: FederationMode }).federationMode ?? 'inherit',
   );
   const [busy, setBusy] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -46,7 +50,7 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
     try {
       const r = await api<Channel>(`/channels/${channel.id}`, {
         method: 'PATCH',
-        body: { slowmodeSeconds: slowmode, postingScope: scope },
+        body: { slowmodeSeconds: slowmode, postingScope: scope, federationMode },
       });
       upsertChannel(r);
       setOpen(false);
@@ -112,6 +116,22 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
                 <option value="mods_only">Moderators only</option>
                 <option value="admin_only">Admins only</option>
               </select>
+            </label>
+            <label className="block">
+              <span className="text-fg-muted">Federation</span>
+              <select
+                value={federationMode}
+                onChange={(e) => setFederationMode(e.target.value as FederationMode)}
+                disabled={!canManage}
+                className="input mt-1 w-full"
+              >
+                <option value="inherit">Inherit from den</option>
+                <option value="force_on">Always on (override)</option>
+                <option value="force_off">Always off (override)</option>
+              </select>
+              <span className="mt-1 block text-xs text-fg-muted">
+                Inherit picks up the den’s federation setting. Force-on/off overrides it for this room only.
+              </span>
             </label>
             {canManage ? (
               <div className="flex justify-end">

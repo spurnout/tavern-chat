@@ -112,6 +112,8 @@ export async function registerChannelRoutes(app: FastifyInstance): Promise<void>
         // Wave 2 #8 / #9 — slow mode and posting scope.
         ...(body.slowmodeSeconds !== undefined ? { slowmodeSeconds: body.slowmodeSeconds } : {}),
         ...(body.postingScope !== undefined ? { postingScope: body.postingScope } : {}),
+        // Federation Phase 3 (P3-11) — per-channel federation override.
+        ...(body.federationMode !== undefined ? { federationMode: body.federationMode } : {}),
       },
     });
     await writeAuditEntry({
