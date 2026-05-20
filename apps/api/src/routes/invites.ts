@@ -15,6 +15,8 @@ import { ok } from '../lib/responses.js';
 import { requireServerPermission } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+import { fanOutMemberAdd } from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 
 // Federation Phase 4 — remote-user identity is `localpart@host`. The regex is
 // intentionally duplicated from packages/shared/src/federation/{messages,
@@ -58,7 +60,26 @@ function serializeInvite(i: {
   };
 }
 
-export async function registerInviteRoutes(app: FastifyInstance): Promise<void> {
+export interface InviteRouteDeps {
+  /**
+   * Queue client for the P4-10 `member.add` fan-out on the local join
+   * path. Optional — when omitted (or when `selfHost` is missing) the
+   * fan-out hook short-circuits, mirroring the channel/server route deps.
+   */
+  queues?: QueueClient;
+  /** This instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
+  /**
+   * Instance-level FEDERATION_ENABLED flag — threaded through to the
+   * fan-out helper as defence-in-depth.
+   */
+  federationEnabledOnInstance?: boolean;
+}
+
+export async function registerInviteRoutes(
+  app: FastifyInstance,
+  deps?: InviteRouteDeps,
+): Promise<void> {
   app.post('/api/invites', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const body = createInviteRequestSchema.parse(req.body);
@@ -239,7 +260,7 @@ export async function registerInviteRoutes(app: FastifyInstance): Promise<void> 
       where: { serverId_userId: { serverId: invite.serverId, userId: ctx.userId } },
     });
     if (!existing) {
-      await prisma.serverMember.create({
+      const newMember = await prisma.serverMember.create({
         data: { serverId: invite.serverId, userId: ctx.userId },
       });
       await prisma.invite.update({
@@ -251,6 +272,54 @@ export async function registerInviteRoutes(app: FastifyInstance): Promise<void> 
         serverId: invite.serverId,
         data: { serverId: invite.serverId, userId: ctx.userId },
       });
+
+      // P4-10 — fan out `member.add` to peers with members in this server.
+      // Gated on:
+      //   1. Deps wired in (FEDERATION_ENABLED at the instance level)
+      //   2. Server is federated AND not a mirror of someone else's server
+      // The joiner here is always LOCAL (this is the local-invite endpoint,
+      // not federated-invite acceptance — see federation-invites-accept.ts),
+      // so there is no `excludePeerInstanceId` to pass.
+      if (deps?.queues && deps.selfHost) {
+        try {
+          const serverRow = await prisma.server.findUnique({
+            where: { id: invite.serverId },
+            select: {
+              federationEnabled: true,
+              originInstanceId: true,
+            },
+          });
+          if (
+            serverRow &&
+            serverRow.federationEnabled &&
+            serverRow.originInstanceId === null
+          ) {
+            const joiner = await prisma.user.findUnique({
+              where: { id: ctx.userId },
+              select: { username: true, displayName: true },
+            });
+            if (joiner) {
+              await fanOutMemberAdd({
+                queues: deps.queues,
+                selfHost: deps.selfHost,
+                serverId: invite.serverId,
+                memberRemoteUserId: `${joiner.username}@${deps.selfHost}`,
+                memberDisplayName: joiner.displayName,
+                joinedAt: newMember.joinedAt,
+                authorUserId: ctx.userId,
+                log: app.log,
+                federationEnabledOnInstance: deps.federationEnabledOnInstance,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          app.log.warn(
+            { err: errObj, serverId: invite.serverId, userId: ctx.userId },
+            'federation fan-out failed for member.add (local invite join)',
+          );
+        }
+      }
     }
     reply.send(ok({ serverId: invite.serverId }));
   });

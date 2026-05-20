@@ -23,6 +23,8 @@ import {
   channelCreatePayloadSchema,
   channelDeletePayloadSchema,
   channelUpdatePayloadSchema,
+  memberAddPayloadSchema,
+  memberRemovePayloadSchema,
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
   messageUpdatePayloadSchema,
@@ -703,6 +705,226 @@ export async function fanOutChannelDelete(input: FanOutChannelDeleteInput): Prom
       const errObj = err instanceof Error ? err : new Error(String(err));
       input.log.warn(
         { err: errObj, peerInstanceId, channelId: input.channelId, serverId: input.serverId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+// --- P4-10 — membership fan-out (member.add / member.remove) ----------------
+//
+// These helpers mirror the message-fan-out shape but route membership
+// envelopes to peers that hold at least one ServerMember in T. Caller has
+// already gated on:
+//   - `server.federationEnabled` (server-level toggle)
+//   - `server.originInstanceId === null` (this instance owns T; mirrors
+//     don't fan out membership — the home is authoritative)
+//   - FEDERATION_ENABLED at the instance config level (gated again inside
+//     the helper as defence-in-depth, mirroring the other helpers).
+//
+// Author identity for the user-layer signature is the MEMBER themselves
+// for add (the joiner) and the MODERATOR (or removed user, in the case of
+// a future voluntary leave) for remove. P4-10 only ships moderator-driven
+// removes, so the caller passes the actor's local User id + username.
+//
+// `excludePeerInstanceId` (member.add only) — when the inbound P4-7
+// handler runs `member.join_request` from peer B, the joiner is already
+// authoritatively known to B (they're B's own user). Fanning `member.add`
+// back to B would be a no-op at best and confuse audit trails at worst.
+// Set this to peer.id so we skip B; every OTHER peer of T receives the
+// envelope. Local-invite + admin-add call sites pass undefined.
+//
+// `additionalPeerInstanceIds` (member.remove only) — when the removed
+// member was themselves the only remote member on their home peer B,
+// `findPeersWithRemoteMembers` no longer returns B after the delete. We
+// still need B to learn about the removal (so its mirror state is
+// consistent). The caller passes the removed user's home instance id (if
+// remote) and the helper unions it into the peer set, deduping.
+
+export interface FanOutMemberAddInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  /**
+   * Qualified id of the new member: `<localpart>@<host>`. For local
+   * joiners the host is `selfHost`; for federated invite acceptance (P4-7)
+   * the joiner is a remote user, so the host is the joiner's home peer.
+   */
+  memberRemoteUserId: string;
+  /** Display name as it should appear on the remote roster. */
+  memberDisplayName: string;
+  /** Audited join timestamp — the ServerMember.joinedAt of the row we just inserted. */
+  joinedAt: Date;
+  /**
+   * The User.id used to sign the user-layer envelope. The signing user
+   * MUST be the joiner themselves (their key authorises the addition).
+   * For local joiners this is `ctx.userId`; for inbound P4-7 it is the
+   * synthetic local user id materialised from the joiner's RemoteUser row.
+   */
+  authorUserId: string;
+  log: FastifyBaseLogger;
+  /**
+   * Optional peer to skip — used by the inbound P4-7 `member.join_request`
+   * handler to avoid echoing `member.add` back to the joiner's home, which
+   * already knows the join succeeded (it sent the request). Local /
+   * admin-side adds leave this undefined.
+   */
+  excludePeerInstanceId?: string;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `member.add` envelope to every peered instance that has a
+ * ServerMember in this server. Caller has already verified:
+ *   - `server.federationEnabled === true`
+ *   - `server.originInstanceId === null` (T isn't a mirror)
+ *   - the ServerMember.create succeeded (the new member is in the roster)
+ *   - the local MEMBER_ADD gateway broadcast already fired (best-effort,
+ *     this fan-out is post-commit either way).
+ *
+ * The user-layer signer is the joiner. `findPeersWithRemoteMembers` runs
+ * AFTER the insert so if the joiner is themselves a remote user their
+ * home will be in the result — `excludePeerInstanceId` is how the P4-7
+ * inbound handler keeps the envelope from echoing back to that home.
+ */
+export async function fanOutMemberAdd(input: FanOutMemberAddInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, eventType: 'member.add' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const allPeerIds = await findPeersWithRemoteMembers(input.serverId);
+  const peerIds = input.excludePeerInstanceId
+    ? allPeerIds.filter((id) => id !== input.excludePeerInstanceId)
+    : allPeerIds;
+  if (peerIds.length === 0) return;
+
+  const payload = memberAddPayloadSchema.parse({
+    serverId: input.serverId,
+    memberRemoteUserId: input.memberRemoteUserId,
+    memberDisplayName: input.memberDisplayName,
+    joinedAt: input.joinedAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'member.add';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        // No Message row — use the qualified member id as the human-readable
+        // log key so an operator grepping for a join attempt can find it
+        // alongside the audit entry.
+        messageId: input.memberRemoteUserId,
+        peerInstanceId,
+        eventType,
+        // Fresh nonce — repeated adds (e.g. an admin reinvites a user after
+        // they were removed) must not collapse to a single BullMQ job.
+        nonce: ulid(),
+        authorUserId: input.authorUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, serverId: input.serverId, eventType },
+        'federation fan-out enqueue failed for peer',
+      );
+    }
+  }
+}
+
+export interface FanOutMemberRemoveInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  /** Qualified id of the removed member: `<localpart>@<host>`. */
+  memberRemoteUserId: string;
+  /**
+   * Why the member is gone. P4-10 only fires for moderator-driven removes,
+   * so 'kicked' and 'banned' are the in-scope values. 'left' is reserved
+   * for a future voluntary-leave endpoint (not in Phase 4) — the wire
+   * schema accepts it because the spec already covers the eventual
+   * surface, and a peer kicking their own user fans out as 'left' to keep
+   * the audit trail honest.
+   */
+  reason: 'kicked' | 'banned' | 'left';
+  removedAt: Date;
+  /**
+   * The User.id used to sign the user-layer envelope. For moderator-driven
+   * removes this is the moderator (so the receiving peer's audit trail
+   * shows who acted). The matching qualified id on the wire is the
+   * envelope's `authorRemoteUserId`; receivers cross-check the signing key
+   * against `memberRemoteUserId` before applying the delete.
+   */
+  actorUserId: string;
+  log: FastifyBaseLogger;
+  /**
+   * Extra peer ids to include in the fan-out, deduped with the result of
+   * `findPeersWithRemoteMembers`. Used when the removed user was the ONLY
+   * remote member from their home peer — without this, the post-delete
+   * query no longer returns that peer and we would silently drop the
+   * envelope to the one peer that most needs it.
+   */
+  additionalPeerInstanceIds?: string[];
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `member.remove` envelope to every peered instance that had a
+ * member in this server. Caller has already verified:
+ *   - `server.federationEnabled === true`
+ *   - `server.originInstanceId === null`
+ *   - the ServerMember.delete succeeded
+ *   - the local MEMBER_REMOVE gateway broadcast already fired.
+ *
+ * Peer-set composition: `findPeersWithRemoteMembers(serverId)` returns
+ * peers with REMAINING remote members, AFTER the delete. We union that
+ * with `additionalPeerInstanceIds` so the removed user's home (when the
+ * removed user was the last remote member from that peer) still hears
+ * about the removal. Dedup is by Set so callers can over-include safely.
+ */
+export async function fanOutMemberRemove(input: FanOutMemberRemoveInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { serverId: input.serverId, eventType: 'member.remove' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const remainingPeerIds = await findPeersWithRemoteMembers(input.serverId);
+  const seen = new Set<string>(remainingPeerIds);
+  if (input.additionalPeerInstanceIds) {
+    for (const id of input.additionalPeerInstanceIds) {
+      if (id) seen.add(id);
+    }
+  }
+  if (seen.size === 0) return;
+
+  const payload = memberRemovePayloadSchema.parse({
+    serverId: input.serverId,
+    memberRemoteUserId: input.memberRemoteUserId,
+    reason: input.reason,
+    removedAt: input.removedAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'member.remove';
+  for (const peerInstanceId of seen) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.memberRemoteUserId,
+        peerInstanceId,
+        eventType,
+        nonce: ulid(),
+        authorUserId: input.actorUserId,
+        payload,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, serverId: input.serverId, eventType },
         'federation fan-out enqueue failed for peer',
       );
     }

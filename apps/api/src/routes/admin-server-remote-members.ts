@@ -34,9 +34,24 @@ import type { FederationProfileService } from '../services/federation-profile.js
 import { PeeringError } from '../services/federation-peering.js';
 import { ensureUserForRemoteUser } from '../services/remote-user-upsert.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+import { fanOutMemberAdd } from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 
 export interface AdminServerRemoteMembersDeps {
   profile: FederationProfileService;
+  /**
+   * Queue client for the P4-10 `member.add` fan-out when an admin adds a
+   * remote member to a federated server. Optional — when omitted (or when
+   * `selfHost` is missing) the hook short-circuits.
+   */
+  queues?: QueueClient;
+  /** This instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
+  /**
+   * Instance-level FEDERATION_ENABLED flag — threaded through to the
+   * fan-out helper as defence-in-depth.
+   */
+  federationEnabledOnInstance?: boolean;
 }
 
 const paramsSchema = z.object({ id: idSchema });
@@ -60,7 +75,11 @@ export function registerAdminServerRemoteMembersRoutes(
 
     const server = await prisma.server.findUnique({
       where: { id: serverId },
-      select: { id: true },
+      select: {
+        id: true,
+        federationEnabled: true,
+        originInstanceId: true,
+      },
     });
     if (!server) {
       throw TavernError.notFound('Server not found');
@@ -109,7 +128,7 @@ export function registerAdminServerRemoteMembersRoutes(
     const localUser = await ensureUserForRemoteUser(remoteUser, prisma);
 
     try {
-      await prisma.serverMember.create({
+      const newMember = await prisma.serverMember.create({
         data: { serverId, userId: localUser.id },
       });
       gatewayBroker.publish({
@@ -117,6 +136,44 @@ export function registerAdminServerRemoteMembersRoutes(
         serverId,
         data: { serverId, userId: localUser.id },
       });
+
+      // P4-10 — fan out `member.add` to OTHER peers with members in this
+      // server. The newly-added user is themselves remote; their home peer
+      // (remoteUser.remoteInstanceId) is excluded because that peer doesn't
+      // know about T at all (P3-12 is the admin testing backdoor — there
+      // is no mirror on the user's home side). Every other peer of T,
+      // however, needs to see the new member so its mirror stays in sync.
+      if (
+        deps.queues &&
+        deps.selfHost &&
+        server.federationEnabled &&
+        server.originInstanceId === null
+      ) {
+        try {
+          await fanOutMemberAdd({
+            queues: deps.queues,
+            selfHost: deps.selfHost,
+            serverId,
+            memberRemoteUserId: remoteUser.remoteUserId,
+            memberDisplayName: remoteUser.displayNameCache,
+            joinedAt: newMember.joinedAt,
+            // The signing user is the admin acting locally — they are the
+            // only local actor in this flow, and the remote user's own
+            // key is not loadable here (we never hold the private half).
+            authorUserId: ctx.userId,
+            log: app.log,
+            excludePeerInstanceId: remoteUser.remoteInstanceId,
+            federationEnabledOnInstance: deps.federationEnabledOnInstance,
+          });
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          app.log.warn(
+            { err: errObj, serverId, userId: localUser.id, remoteUserId },
+            'federation fan-out failed for member.add (admin remote-member add)',
+          );
+        }
+      }
+
       reply.code(201).send(
         ok({
           member: {

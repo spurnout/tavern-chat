@@ -1,3 +1,4 @@
+import type { FastifyBaseLogger } from 'fastify';
 import { prisma } from '@tavern/db';
 import {
   ErrorCodes,
@@ -6,6 +7,8 @@ import {
 import { requireRoleHierarchy } from './permissions-service.js';
 import { writeAuditEntry } from './audit-service.js';
 import { gatewayBroker } from './gateway-broker.js';
+import { fanOutMemberRemove } from './federation-outbox.js';
+import type { QueueClient } from './queues.js';
 
 /**
  * Server ban service — backs the BAN_MEMBERS permission bit (PERM-002).
@@ -32,18 +35,36 @@ interface BanInput {
    * truthy without an explicit value).
    */
   sweepRecentHours?: number | null;
+  /**
+   * Optional federation deps — when wired, banning a member on a federated
+   * server fans out a `member.remove` envelope (reason='banned') to peers
+   * after the transaction commits. Omitted in tests / routes that don't
+   * propagate bans across the federation surface (P4-10).
+   */
+  federation?: {
+    queues: QueueClient;
+    selfHost: string;
+    federationEnabledOnInstance: boolean;
+    log: FastifyBaseLogger;
+  };
 }
 
 export async function banMember(input: BanInput): Promise<{ messagesDeleted: number }> {
-  const { serverId, targetUserId, actorUserId, reason, expiresAt, sweepRecentHours } = input;
+  const { serverId, targetUserId, actorUserId, reason, expiresAt, sweepRecentHours, federation } = input;
   if (targetUserId === actorUserId) {
     throw TavernError.validation('You cannot ban yourself');
   }
 
-  // Server owners cannot be banned.
+  // Server owners cannot be banned. We also pull the federation flag +
+  // originInstanceId here so the P4-10 post-commit fan-out can gate on
+  // them without a second round-trip.
   const server = await prisma.server.findUnique({
     where: { id: serverId },
-    select: { ownerUserId: true },
+    select: {
+      ownerUserId: true,
+      federationEnabled: true,
+      originInstanceId: true,
+    },
   });
   if (!server) throw TavernError.notFound('Server not found');
   if (server.ownerUserId === targetUserId) {
@@ -53,6 +74,17 @@ export async function banMember(input: BanInput): Promise<{ messagesDeleted: num
       403,
     );
   }
+
+  // Capture the target's identity BEFORE the delete so the fan-out can
+  // build the qualified `localpart@host` id. Loaded once and reused — the
+  // ServerMember row is gone after the transaction commits, but the User
+  // row stays (a ban doesn't remove the user account, only their roster
+  // membership). `remoteInstanceId` lets the fan-out include the user's
+  // home peer when they were the last remote member from that instance.
+  const target = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { username: true, remoteUserId: true, remoteInstanceId: true },
+  });
 
   // Hierarchy: actor must outrank every role the target holds. We model the
   // target's roles as the requirement set so requireRoleHierarchy enforces
@@ -146,6 +178,45 @@ export async function banMember(input: BanInput): Promise<{ messagesDeleted: num
     userId: targetUserId,
     data: { serverId, userId: targetUserId },
   });
+
+  // P4-10 — fan out `member.remove` (reason='banned') to peers. Same
+  // gating rules as the kick path: server must be federated AND not a
+  // mirror, deps must be wired in. The banned user's home peer (if
+  // remote) is unioned into the peer set so it still receives the
+  // envelope even when the ban removed the last remote member from that
+  // peer (otherwise the peer's mirror would be inconsistent until the
+  // next unrelated event came in).
+  if (
+    federation &&
+    server.federationEnabled &&
+    server.originInstanceId === null &&
+    target
+  ) {
+    try {
+      const memberRemoteUserId =
+        target.remoteUserId ?? `${target.username}@${federation.selfHost}`;
+      await fanOutMemberRemove({
+        queues: federation.queues,
+        selfHost: federation.selfHost,
+        serverId,
+        memberRemoteUserId,
+        reason: 'banned',
+        removedAt: new Date(),
+        actorUserId,
+        log: federation.log,
+        additionalPeerInstanceIds: target.remoteInstanceId
+          ? [target.remoteInstanceId]
+          : [],
+        federationEnabledOnInstance: federation.federationEnabledOnInstance,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      federation.log.warn(
+        { err: errObj, serverId, userId: targetUserId },
+        'federation fan-out failed for member.remove (ban)',
+      );
+    }
+  }
 
   return { messagesDeleted };
 }

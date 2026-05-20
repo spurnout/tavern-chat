@@ -9,12 +9,33 @@ import {
 import { ok } from '../lib/responses.js';
 import { requireServerPermission } from '../services/permissions-service.js';
 import { banMember, listBans, unbanMember } from '../services/ban-service.js';
+import type { QueueClient } from '../services/queues.js';
+
+export interface BanRouteDeps {
+  /**
+   * Queue client for the P4-10 `member.remove` fan-out triggered when a
+   * federated server bans a member. Optional — when omitted (or when
+   * `selfHost` is missing) the fan-out hook short-circuits and the ban
+   * still applies locally.
+   */
+  queues?: QueueClient;
+  /** This instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
+  /**
+   * Instance-level FEDERATION_ENABLED flag — threaded through to the
+   * fan-out helper as defence-in-depth.
+   */
+  federationEnabledOnInstance?: boolean;
+}
 
 /**
  * Server ban routes (PERM-002). Gated by the BAN_MEMBERS permission bit; the
  * service itself additionally enforces role hierarchy and protects the owner.
  */
-export async function registerBanRoutes(app: FastifyInstance): Promise<void> {
+export async function registerBanRoutes(
+  app: FastifyInstance,
+  deps?: BanRouteDeps,
+): Promise<void> {
   app.get('/api/servers/:serverId/bans', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { serverId } = z.object({ serverId: idSchema }).parse(req.params);
@@ -55,6 +76,19 @@ export async function registerBanRoutes(app: FastifyInstance): Promise<void> {
         reason: body.reason ?? null,
         expiresAt,
         sweepRecentHours,
+        // P4-10 — propagate `member.remove` (reason='banned') to peers
+        // when the route is wired with queues + selfHost. The service
+        // gates internally on server.federationEnabled / originInstanceId.
+        ...(deps?.queues && deps.selfHost
+          ? {
+              federation: {
+                queues: deps.queues,
+                selfHost: deps.selfHost,
+                federationEnabledOnInstance: deps.federationEnabledOnInstance ?? false,
+                log: app.log,
+              },
+            }
+          : {}),
       });
       reply.status(201).send(ok({ serverId, userId: body.userId, messagesDeleted }));
     },

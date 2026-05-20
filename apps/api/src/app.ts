@@ -354,10 +354,17 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // P4-7 — also passes `keys` + `selfHost` so the `member.join_request`
       // handler can wrap the snapshot it returns in a single-layer signed
       // `member.joined` envelope.
+      //
+      // P4-10 — wires `queues` + `federationEnabledOnInstance` + `log` so the
+      // inbound `member.join_request` post-commit hook can fan out
+      // `member.add` envelopes to peers OTHER than the joiner's home.
       const federationInbound = new FederationInboundService({
         profile: federationProfile,
         keys: federationKeys!,
         selfHost,
+        queues,
+        federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+        log: app.log,
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
@@ -381,7 +388,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // P3-12 — admin testing backdoor: manually add a remote user as a
       // ServerMember on a local server. Lets us exercise Phase 3 fan-out
       // end-to-end before the Phase 4 federated-invite flow lands.
-      registerAdminServerRemoteMembersRoutes(app, { profile: federationProfile });
+      // P4-10: also wired with queues so the admin-add path can fan out
+      // `member.add` to other peers (excluding the new user's own home,
+      // which doesn't know T exists in the backdoor flow).
+      registerAdminServerRemoteMembersRoutes(app, {
+        profile: federationProfile,
+        queues,
+        selfHost,
+        federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+      });
       // P3-5: now that all three pieces exist, populate the slot the queue
       // client closure reads on every outbox enqueue.
       federationDispatcherSlot = {
@@ -409,8 +424,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     });
     await registerRoleRoutes(app);
     await registerOverwriteRoutes(app);
-    await registerInviteRoutes(app);
-    await registerBanRoutes(app);
+    await registerInviteRoutes(app, {
+      queues,
+      selfHost,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
+    await registerBanRoutes(app, {
+      queues,
+      selfHost,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerLocalFileRoutes(app, {
       storage,
       uploadMaxBytes: opts.config.UPLOAD_MAX_BYTES,
@@ -438,7 +461,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerScheduledRoutes(app);
     await registerEncounterRoutes(app);
     await registerLinkPreviewRoutes(app);
-    await registerModerationActionRoutes(app);
+    await registerModerationActionRoutes(app, {
+      queues,
+      selfHost,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerCharacterRoutes(app);
     await registerSoundboardRoutes(app);
     await registerRandomTableRoutes(app);

@@ -9,6 +9,8 @@ import {
 } from '../services/permissions-service.js';
 import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+import { fanOutMemberRemove } from '../services/federation-outbox.js';
+import type { QueueClient } from '../services/queues.js';
 
 const timeoutBodySchema = z.object({
   untilIso: z.string().datetime(),
@@ -19,12 +21,31 @@ const bulkDeleteBodySchema = z.object({
   messageIds: z.array(idSchema).min(1).max(100),
 });
 
+export interface ModerationActionRouteDeps {
+  /**
+   * Queue client for the P4-10 `member.remove` fan-out on the kick path.
+   * Optional — when omitted (or when `selfHost` is missing) the hook
+   * short-circuits.
+   */
+  queues?: QueueClient;
+  /** This instance's federation host (e.g. `a.example`). */
+  selfHost?: string | null;
+  /**
+   * Instance-level FEDERATION_ENABLED flag — threaded through to the
+   * fan-out helper as defence-in-depth.
+   */
+  federationEnabledOnInstance?: boolean;
+}
+
 /**
  * Wave 2 moderation actions: timeout, kick, bulk delete, edit history.
  * Slowmode and read-only enforcement happen in `messages.ts`; this file is
  * for the dedicated operator endpoints.
  */
-export async function registerModerationActionRoutes(app: FastifyInstance): Promise<void> {
+export async function registerModerationActionRoutes(
+  app: FastifyInstance,
+  deps?: ModerationActionRouteDeps,
+): Promise<void> {
   // ---- W2 #6 — Timeout / un-timeout a member ----------------------------
   app.post('/api/servers/:id/members/:userId/timeout', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
@@ -115,18 +136,39 @@ export async function registerModerationActionRoutes(app: FastifyInstance): Prom
     });
     if (!member) throw TavernError.notFound('Member not found');
 
+    // Pre-delete read: we need the parent server's federation state for
+    // the P4-10 fan-out gate, the target user's qualified id for the wire
+    // payload, AND the target's remote-instance id so the fan-out can
+    // ensure the user's home learns about the removal even when they
+    // were the last remote member from that peer. Folded into a single
+    // findUniqueOrThrow so the existing owner-check still runs.
     const server = await prisma.server.findUniqueOrThrow({
       where: { id: serverId },
-      select: { ownerUserId: true },
+      select: {
+        ownerUserId: true,
+        federationEnabled: true,
+        originInstanceId: true,
+      },
     });
     if (server.ownerUserId === userId) {
       throw TavernError.forbidden('The server owner cannot be kicked');
     }
 
+    // Capture the target's identity BEFORE the delete so the fan-out can
+    // build the qualified `localpart@host` id. For local users the host
+    // is `selfHost`; for synthetic remote users the host is the user's
+    // home instance (from RemoteUser.remoteUserId). Reading inline keeps
+    // the delete + read pair simple at the cost of an extra round-trip.
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { username: true, remoteUserId: true, remoteInstanceId: true },
+    });
+
     await prisma.$transaction([
       prisma.serverMemberRole.deleteMany({ where: { serverId, userId } }),
       prisma.serverMember.delete({ where: { serverId_userId: { serverId, userId } } }),
     ]);
+    const removedAt = new Date();
     await writeAuditEntry({
       serverId,
       actorId: ctx.userId,
@@ -140,6 +182,45 @@ export async function registerModerationActionRoutes(app: FastifyInstance): Prom
       serverId,
       data: { serverId, userId },
     });
+
+    // P4-10 — fan out `member.remove` to peers. Same gating as the
+    // member.add fan-out elsewhere: server must be federated AND not a
+    // mirror, deps wired in at the route layer. The removed user's home
+    // peer (if remote) is unioned into the peer set so it learns about
+    // the kick even if it had no other members in T.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      server.federationEnabled &&
+      server.originInstanceId === null &&
+      target
+    ) {
+      try {
+        const memberRemoteUserId =
+          target.remoteUserId ?? `${target.username}@${deps.selfHost}`;
+        await fanOutMemberRemove({
+          queues: deps.queues,
+          selfHost: deps.selfHost,
+          serverId,
+          memberRemoteUserId,
+          reason: 'kicked',
+          removedAt,
+          actorUserId: ctx.userId,
+          log: app.log,
+          additionalPeerInstanceIds: target.remoteInstanceId
+            ? [target.remoteInstanceId]
+            : [],
+          federationEnabledOnInstance: deps.federationEnabledOnInstance,
+        });
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, serverId, userId },
+          'federation fan-out failed for member.remove (kick)',
+        );
+      }
+    }
+
     reply.send(ok({ userId }));
   });
 

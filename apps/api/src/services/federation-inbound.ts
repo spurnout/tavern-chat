@@ -49,6 +49,7 @@
 
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import type { FastifyBaseLogger } from 'fastify';
 import { prisma as defaultPrisma } from '@tavern/db';
 import {
   canonicalize,
@@ -88,8 +89,10 @@ import { z } from 'zod';
 import { ensureUserForRemoteUser } from './remote-user-upsert.js';
 import {
   computeEffectiveFederation,
+  fanOutMemberAdd,
   type FederationMode,
 } from './federation-outbox.js';
+import type { QueueClient } from './queues.js';
 import {
   buildSignedEnvelope,
   type SignedEnvelope,
@@ -148,6 +151,30 @@ export interface FederationInboundServiceOptions {
    */
   keys?: FederationKeyStore;
   /**
+   * Queue client for the P4-10 outbound `member.add` fan-out triggered by
+   * the inbound `member.join_request` handler — A receives the request
+   * from B, accepts it, and needs to tell every OTHER peered instance
+   * (with a member in T) that the joiner is now in. Optional — when
+   * omitted (e.g. tests that don't exercise membership fan-out), the
+   * handler short-circuits the post-commit fan-out call.
+   */
+  queues?: QueueClient;
+  /**
+   * Instance-level FEDERATION_ENABLED flag — defence-in-depth gate
+   * threaded through to the fan-out helper. When `false` the helper logs
+   * a warning and returns without enqueuing.
+   */
+  federationEnabledOnInstance?: boolean;
+  /**
+   * Optional structured logger for handler-side fan-out failures (P4-10).
+   * The dispatcher itself never logs — failures are thrown as
+   * `FederationInboundError` and rendered by the route. The fan-out
+   * helpers, however, are best-effort (one bad peer mustn't strand the
+   * others) and need a place to surface per-peer failures. Falls back to
+   * a no-op when undefined so unit tests don't need to wire a logger.
+   */
+  log?: FastifyBaseLogger;
+  /**
    * This instance's federation host (e.g. `a.example`). Required when
    * handlers produce signed response envelopes (used as `fromInstance`).
    */
@@ -160,17 +187,48 @@ export interface ProcessEnvelopeResult {
   body?: unknown;
 }
 
+/**
+ * No-op fallback logger so handler-internal best-effort code paths (P4-10
+ * fan-out errors) can call `.warn` / `.error` even when the service was
+ * constructed without one. Type-compatible with the subset of
+ * `FastifyBaseLogger` the fan-out helpers consume.
+ */
+const noopLogger: FastifyBaseLogger = {
+  level: 'silent',
+  fatal: () => undefined,
+  error: () => undefined,
+  warn: () => undefined,
+  info: () => undefined,
+  debug: () => undefined,
+  trace: () => undefined,
+  silent: () => undefined,
+  child: () => noopLogger,
+} as unknown as FastifyBaseLogger;
+
 export class FederationInboundService {
   private readonly prisma: PrismaClient;
   private readonly profile: FederationProfileService;
   private readonly keys: FederationKeyStore | null;
   private readonly selfHost: string | null;
+  /**
+   * P4-10 — wired through to the `member.join_request` handler so the
+   * post-commit hook can fan `member.add` to peers OTHER than the
+   * joiner's home. Optional — handlers fall back to a no-op fan-out when
+   * unset (mirrors the route-layer pattern where `queues`/`selfHost` are
+   * gating the fan-out, not the local persist).
+   */
+  private readonly queues: QueueClient | null;
+  private readonly federationEnabledOnInstance: boolean;
+  private readonly log: FastifyBaseLogger;
 
   constructor(opts: FederationInboundServiceOptions) {
     this.prisma = opts.prisma ?? defaultPrisma;
     this.profile = opts.profile;
     this.keys = opts.keys ?? null;
     this.selfHost = opts.selfHost ?? null;
+    this.queues = opts.queues ?? null;
+    this.federationEnabledOnInstance = opts.federationEnabledOnInstance ?? false;
+    this.log = opts.log ?? noopLogger;
   }
 
   /**
@@ -360,6 +418,9 @@ export class FederationInboundService {
           remoteUser: remoteUserRow,
           tx,
           selfHost: this.selfHost,
+          queues: this.queues,
+          federationEnabledOnInstance: this.federationEnabledOnInstance,
+          log: this.log,
         });
       });
       result = txOutput.result;
@@ -519,6 +580,23 @@ interface InboundHandler<TSchema extends z.ZodTypeAny> {
      * roster). Other handlers can ignore it.
      */
     selfHost: string | null;
+    /**
+     * Optional queue client — only the P4-7 / P4-10 `member.join_request`
+     * handler uses it (post-commit `member.add` fan-out to other peers).
+     * Other handlers ignore it.
+     */
+    queues: QueueClient | null;
+    /**
+     * Instance-level FEDERATION_ENABLED gate — same use as `queues`,
+     * threaded to the fan-out helper for defence-in-depth.
+     */
+    federationEnabledOnInstance: boolean;
+    /**
+     * Logger for handler-internal best-effort failures (e.g. P4-10 fan-out
+     * enqueue errors). Defaults to a no-op when the service is constructed
+     * without one.
+     */
+    log: FastifyBaseLogger;
   }) => Promise<HandlerOutput>;
 }
 
@@ -1394,8 +1472,12 @@ async function handleReactionRemove(input: {
  *      Channels + all current ServerMembers.
  *   8. Return `responseEnvelopePayload` so the dispatcher wraps the
  *      snapshot in a signed `member.joined` envelope, broadcast
- *      `MEMBER_ADD` post-commit, and TODO(P4-10) fan out `member.add`
- *      to OTHER peers in T.
+ *      `MEMBER_ADD` post-commit, and (P4-10) fan out `member.add` to
+ *      OTHER peers in T (every peered instance besides the joiner's
+ *      home). The exclusion is `excludePeerInstanceId: peer.id` because
+ *      the joiner's home already knows the join succeeded — it sent us
+ *      the request and receives the snapshot in the signed `member.joined`
+ *      response.
  */
 async function handleMemberJoinRequest(input: {
   envelope: TwoLayerSignedEnvelope<MemberJoinRequestPayload>;
@@ -1406,8 +1488,11 @@ async function handleMemberJoinRequest(input: {
   >;
   tx: Prisma.TransactionClient;
   selfHost: string | null;
+  queues: QueueClient | null;
+  federationEnabledOnInstance: boolean;
+  log: FastifyBaseLogger;
 }): Promise<HandlerOutput> {
-  const { envelope, payload, peer, remoteUser, tx, selfHost } = input;
+  const { envelope, payload, peer, remoteUser, tx, selfHost, queues, federationEnabledOnInstance, log } = input;
 
   if (!selfHost) {
     // Configuration bug — see `processEnvelope` for the matching check.
@@ -1536,10 +1621,16 @@ async function handleMemberJoinRequest(input: {
   // (serverId, userId) means the joiner is already a member; treat that
   // as an idempotent success and skip the uses increment.
   let newMember = true;
+  // The ServerMember.joinedAt is sourced from the Prisma row default and
+  // captured here so the `member.add` fan-out (post-commit) sends the
+  // canonical timestamp on the wire — not "whenever the post-commit hook
+  // happened to run", which could be milliseconds later.
+  let memberJoinedAt: Date | null = null;
   try {
-    await tx.serverMember.create({
+    const created = await tx.serverMember.create({
       data: { serverId: invite.serverId, userId: localJoiner.id },
     });
+    memberJoinedAt = created.joinedAt;
   } catch (err) {
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -1610,6 +1701,16 @@ async function handleMemberJoinRequest(input: {
   // postCommit closure captures the few primitives it needs.
   void envelope;
 
+  // Pre-fetch the home server's federation state so the post-commit
+  // fan-out hook can decide whether to fire. We're inside the
+  // transaction here — reading via `tx` so a concurrent flip of
+  // federationEnabled doesn't sneak past our gate. The values are
+  // captured into the closure below.
+  const serverForFanOut = await tx.server.findUnique({
+    where: { id: invite.serverId },
+    select: { federationEnabled: true, originInstanceId: true },
+  });
+
   return {
     result: { status: 200 },
     responseEnvelopePayload: {
@@ -1628,12 +1729,60 @@ async function handleMemberJoinRequest(input: {
           data: { serverId: serverIdForBroadcast, userId: localJoinerId },
         });
       }
-      // TODO(P4-10): fan out `member.add` to OTHER peers of T (every
-      // peered instance besides the joiner's home). The shape will mirror
-      // the message-fan-out helpers — see `fanOutMemberAdd` placeholder
-      // in `federation-outbox.ts`. Until P4-10 lands, peers other than
-      // the joiner's home don't learn about the new member until they
-      // happen to receive a different envelope from them.
+
+      // P4-10 — fan out `member.add` to OTHER peers of T. Gated on:
+      //   1. We actually inserted a row (idempotent re-accept → no fan-out).
+      //   2. `queues` is wired (FEDERATION_ENABLED at the instance level).
+      //   3. `selfHost` is known (handler asserted this at entry).
+      //   4. Server is federated AND we own it (originInstanceId is null —
+      //      the inbound dispatcher only ever lands on the home of T, so
+      //      this should always be true; defence in depth).
+      //   5. We captured a `joinedAt` from the insert (always true on the
+      //      newMember branch, but the type-narrowing is explicit so a
+      //      future refactor can't accidentally skip it).
+      //
+      // `excludePeerInstanceId: peer.id` is the load-bearing parameter:
+      // the joiner's home (the peer that just sent us this request) is
+      // already authoritatively aware of the new member — that's where
+      // the request originated — and would receive the snapshot in the
+      // signed `member.joined` response a few lines above. Fanning back
+      // to them would be a duplicate (at best) and audit-noise (at
+      // worst).
+      if (
+        newMember &&
+        queues &&
+        selfHost &&
+        memberJoinedAt &&
+        serverForFanOut?.federationEnabled &&
+        serverForFanOut.originInstanceId === null
+      ) {
+        try {
+          await fanOutMemberAdd({
+            queues,
+            selfHost,
+            serverId: serverIdForBroadcast,
+            memberRemoteUserId: remoteUser.remoteUserId,
+            memberDisplayName: remoteUser.displayNameCache,
+            joinedAt: memberJoinedAt,
+            // The signing user is the joiner themselves — same identity
+            // we just verified at the user-signature layer above. Their
+            // synthetic local User row is `localJoiner.id`; the matching
+            // user-key is provisioned alongside it by
+            // `ensureUserForRemoteUser`.
+            authorUserId: localJoinerId,
+            log,
+            excludePeerInstanceId: peer.id,
+            federationEnabledOnInstance,
+          });
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          log.warn(
+            { err: errObj, serverId: serverIdForBroadcast, userId: localJoinerId },
+            'federation fan-out failed for member.add (inbound member.join_request)',
+          );
+        }
+      }
+
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
         data: { lastSeenAt: new Date() },
