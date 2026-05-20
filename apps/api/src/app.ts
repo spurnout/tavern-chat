@@ -104,6 +104,7 @@ import { registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
+import { registerUsersFederatedRoutes } from './routes/users-federated.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
 import { FederationProfileService } from './services/federation-profile.js';
@@ -309,6 +310,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         selfHost: new URL(opts.config.PUBLIC_BASE_URL).host,
       });
       registerFederationProfileRoutes(app, { service: profile });
+      registerUsersFederatedRoutes(app, { service: profile });
     }
 
     await registerServerRoutes(app);
