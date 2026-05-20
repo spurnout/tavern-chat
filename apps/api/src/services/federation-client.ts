@@ -50,3 +50,28 @@ export async function postPeeringEnvelope(
   }
   return (await res.json()) as PeeringPostResult;
 }
+
+export async function postProfileEnvelope(
+  profileUrl: string,
+  envelope: unknown,
+): Promise<unknown> {
+  const attempt = async (): Promise<Response> =>
+    fetchWithTimeout(
+      profileUrl,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(envelope),
+      },
+      DEFAULT_TIMEOUT_MS,
+    );
+  let res = await attempt();
+  if (!res.ok && res.status >= 500) {
+    res = await attempt();
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`profile POST: HTTP ${res.status} ${text.slice(0, 200)}`);
+  }
+  return await res.json();
+}

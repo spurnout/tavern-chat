@@ -1,11 +1,11 @@
-// (Outbound client method will be added in P2-6. Phase 2 task 5 implements only
-// the inbound side — handling profile.request from a peered instance.)
 import type { PrismaClient } from '@prisma/client';
 import { prisma as defaultPrisma } from '@tavern/db';
 import {
   profileRequestPayloadSchema,
   profileResponsePayloadSchema,
   type ProfileRequestPayload,
+  type ProfileResponsePayload,
+  ulid,
 } from '@tavern/shared';
 import {
   verifyEnvelopeShape,
@@ -15,6 +15,7 @@ import {
 import type { FederationKeyStore } from './federation-keys.js';
 import type { UserKeyStore } from './user-keys.js';
 import { PeeringError } from './federation-peering.js';
+import { discoverInstance, postProfileEnvelope } from './federation-client.js';
 
 export interface FederationProfileServiceOptions {
   keys: FederationKeyStore;
@@ -118,6 +119,120 @@ export class FederationProfileService {
   }
 
   /**
+   * Look up a remote user by their qualified id ("alice@b.example").
+   * - Returns cached row if RemoteUser exists and lastSeenAt < 1 hour old.
+   * - Otherwise discovers the peer's .well-known, posts a signed profile.request envelope,
+   *   verifies the signed response, and upserts the RemoteUser row.
+   *
+   * Throws if:
+   *   - remoteUserId is malformed (must contain exactly one '@' with non-empty parts)
+   *   - the host is not a peered RemoteInstance
+   *   - the peer is unreachable (propagates fetch error)
+   *   - the response signature does not verify
+   *   - the response envelope payload does not match profileResponsePayloadSchema
+   */
+  async fetchRemoteProfile(remoteUserId: string): Promise<CachedRemoteUser> {
+    const parsed = parseRemoteUserId(remoteUserId);
+    if (!parsed) {
+      throw new Error(`invalid remoteUserId: ${remoteUserId}`);
+    }
+    const { localpart, host } = parsed;
+
+    // Find peered instance for this host.
+    const peer = await this.prisma.remoteInstance.findUnique({ where: { host } });
+    if (!peer || peer.status !== 'peered') {
+      throw new Error(`host ${host} is not a peered remote instance`);
+    }
+
+    // Cache lookup.
+    const cached = await this.prisma.remoteUser.findUnique({ where: { remoteUserId } });
+    if (cached && Date.now() - cached.lastSeenAt.getTime() < CACHE_TTL_MS) {
+      return {
+        id: cached.id,
+        remoteInstanceId: cached.remoteInstanceId,
+        remoteUserId: cached.remoteUserId,
+        displayNameCache: cached.displayNameCache,
+        avatarUrlCache: cached.avatarUrlCache,
+        publicKey: Buffer.from(cached.publicKey),
+        lastSeenAt: cached.lastSeenAt,
+      };
+    }
+
+    // Cache miss or stale — re-fetch.
+    const discovery = await discoverInstance(host);
+    const requestEnvelope = buildSignedEnvelope({
+      eventType: 'profile.request',
+      fromInstance: this.opts.selfHost,
+      toInstance: host,
+      payload: { localpart },
+      sign: (bytes) => this.opts.keys.sign(bytes),
+    });
+    const rawResponse = await postProfileEnvelope(
+      `https://${host}/_federation/profile`,
+      requestEnvelope,
+    );
+
+    // Verify signed response against the peer's published instance key.
+    const peerPublicKeyRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
+    const verified = verifyEnvelopeShape({
+      envelope: rawResponse,
+      peerPublicKeyRaw,
+      payloadSchema: profileResponsePayloadSchema,
+    });
+    if (!verified.ok) {
+      throw new Error(`profile response signature/shape invalid: ${verified.reason}`);
+    }
+    const env = verified.envelope as SignedEnvelope<ProfileResponsePayload>;
+
+    // Upsert.
+    const publicKey = Buffer.from(env.payload.publicKey.replace(/^ed25519:/, ''), 'base64');
+    const id = cached?.id ?? ulid();
+    await this.prisma.remoteUser.upsert({
+      where: { remoteUserId },
+      create: {
+        id,
+        remoteInstanceId: peer.id,
+        remoteUserId,
+        displayNameCache: env.payload.displayName,
+        avatarUrlCache: env.payload.avatarUrl ?? null,
+        publicKey,
+        lastSeenAt: new Date(),
+      },
+      update: {
+        displayNameCache: env.payload.displayName,
+        avatarUrlCache: env.payload.avatarUrl ?? null,
+        publicKey,
+        lastSeenAt: new Date(),
+      },
+    });
+    const updated = await this.prisma.remoteUser.findUniqueOrThrow({ where: { remoteUserId } });
+    return {
+      id: updated.id,
+      remoteInstanceId: updated.remoteInstanceId,
+      remoteUserId: updated.remoteUserId,
+      displayNameCache: updated.displayNameCache,
+      avatarUrlCache: updated.avatarUrlCache,
+      publicKey: Buffer.from(updated.publicKey),
+      lastSeenAt: updated.lastSeenAt,
+    };
+  }
+
+  /** Cache-only lookup. Returns null if no row exists. Does not check TTL. */
+  async getCachedRemoteProfile(remoteUserId: string): Promise<CachedRemoteUser | null> {
+    const cached = await this.prisma.remoteUser.findUnique({ where: { remoteUserId } });
+    if (!cached) return null;
+    return {
+      id: cached.id,
+      remoteInstanceId: cached.remoteInstanceId,
+      remoteUserId: cached.remoteUserId,
+      displayNameCache: cached.displayNameCache,
+      avatarUrlCache: cached.avatarUrlCache,
+      publicKey: Buffer.from(cached.publicKey),
+      lastSeenAt: cached.lastSeenAt,
+    };
+  }
+
+  /**
    * Derive a public avatar URL from an attachment id. Returns null if no avatar.
    * For Phase 2: simple URL based on PUBLIC_BASE_URL is enough — the peer just
    * caches the URL.
@@ -129,4 +244,29 @@ export class FederationProfileService {
     // serve the right thing; we just construct a URL.
     return `https://${this.opts.selfHost}/api/attachments/${attachmentId}`;
   }
+}
+
+// --- module-level types and helpers ---
+
+interface CachedRemoteUser {
+  id: string;
+  remoteInstanceId: string;
+  remoteUserId: string;
+  displayNameCache: string;
+  avatarUrlCache: string | null;
+  publicKey: Buffer;
+  lastSeenAt: Date;
+}
+
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function parseRemoteUserId(s: string): { localpart: string; host: string } | null {
+  const at = s.indexOf('@');
+  if (at <= 0 || at === s.length - 1) return null;
+  if (s.indexOf('@', at + 1) !== -1) return null; // exactly one '@'
+  const localpart = s.slice(0, at);
+  const host = s.slice(at + 1);
+  if (!host.includes('.')) return null;
+  if (!/^[a-z0-9_.-]+$/i.test(localpart)) return null;
+  return { localpart, host };
 }
