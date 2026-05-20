@@ -104,10 +104,12 @@ import { registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
+import { registerFederationEventsRoutes } from './routes/federation-events.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
 import { FederationProfileService } from './services/federation-profile.js';
+import { FederationInboundService } from './services/federation-inbound.js';
 import { UserKeyStore } from './services/user-keys.js';
 import { loadDataKey } from './lib/data-key.js';
 
@@ -333,6 +335,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         selfHost,
       });
       registerFederationProfileRoutes(app, { service: federationProfile });
+      // P3-7 — inbound message-event endpoint. Re-uses the same profile
+      // service for the on-cache-miss `fetchRemoteProfile` lookup that
+      // resolves an unknown author's public key.
+      const federationInbound = new FederationInboundService({
+        profile: federationProfile,
+      });
+      registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
       // P3-5: now that all three pieces exist, populate the slot the queue
       // client closure reads on every outbox enqueue.
