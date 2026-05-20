@@ -2311,3 +2311,72 @@ model RssSubscription {
   @@index([enabled, lastPolledAt])
   @@unique([channelId, url])
 }
+
+// ============================ FEDERATION (Phase 1) ============================
+// See docs/federation.md. Phase 1 lands the 3 tables that have row writes
+// during the peering handshake: RemoteInstance (peer state), FederationKey
+// (instance signing keypair), FederationEnvelopeLog (replay-window + audit).
+// RemoteUser and FederatedSubscription defer to their respective phases.
+
+enum RemoteInstanceStatus {
+  pending_inbound
+  pending_outbound
+  peered
+  revoked
+  blocked
+}
+
+enum FederationEnvelopeDirection {
+  inbound
+  outbound
+}
+
+model RemoteInstance {
+  id                   String                @id
+  host                 String                @unique
+  instanceKey          Bytes                 // current ed25519 public key (32 raw bytes)
+  previousInstanceKey  Bytes?                // accepted during rotation overlap
+  status               RemoteInstanceStatus
+  capabilities         String[]              // intersected capability set after approval
+  peeredAt             DateTime?
+  peeredByUserId       String?
+  revokedAt            DateTime?
+  revokedReason        String?
+  contactEmail         String?
+  note                 String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  envelopes            FederationEnvelopeLog[]
+
+  @@index([status])
+}
+
+model FederationKey {
+  id          String   @id
+  isCurrent   Boolean  @default(true)
+  publicKey   Bytes    // 32 raw bytes
+  privateKey  Bytes    // AES-256-GCM-encrypted PKCS8, see apps/api/src/lib/at-rest.ts
+  createdAt   DateTime @default(now())
+  rotatedAt   DateTime?
+
+  @@index([isCurrent])
+}
+
+model FederationEnvelopeLog {
+  id              String                      @id
+  direction       FederationEnvelopeDirection
+  peerInstanceId  String
+  peer            RemoteInstance              @relation(fields: [peerInstanceId], references: [id], onDelete: Cascade)
+  eventType       String
+  payloadHash     Bytes                       // SHA-256 of canonical-JSON payload
+  nonce           String
+  notBefore       DateTime
+  notAfter        DateTime
+  receivedAt      DateTime                    @default(now())
+  processedAt     DateTime?
+  status          String                      // 'accepted' | 'rejected' | 'pending'
+  errorMessage    String?
+
+  @@unique([peerInstanceId, nonce])
+  @@index([peerInstanceId, receivedAt])
+}
