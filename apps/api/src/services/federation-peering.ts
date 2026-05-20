@@ -19,7 +19,7 @@ import { discoverInstance, postPeeringEnvelope } from './federation-client.js';
  *
  * Rejects: bare IPs (IPv4/IPv6), localhost, hostnames without a dot.
  */
-function assertValidPeerHost(host: string): void {
+export function assertValidPeerHost(host: string): void {
   if (!host || typeof host !== 'string') {
     throw new PeeringError('bad_envelope', 'peer host is required');
   }

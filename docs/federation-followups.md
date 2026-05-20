@@ -76,6 +76,20 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   drift risk. Not urgent while both implementations are simple, but worth doing before
   the pattern grows more complex.
 
+### 11. Per-route rate limit for `GET /api/federation/users/:remoteUserId/profile`
+
+- **Phase:** 2 (whole-phase review)
+- **Trigger:** same as follow-up #2 (before public-internet deployment)
+- **What:** The authenticated profile-lookup endpoint triggers an outbound fetch on cache miss. The global 300 req/min limit is insufficient — a single authenticated user can enumerate hundreds of unique remoteUserIds and each triggers an external HTTPS call. Cap this route to ~10–20 req/min per authenticated user when the per-route rate-limit infrastructure from #2 lands.
+
+### 12. `img-src` CSP for federated avatar hosts
+
+- **Phase:** 2 (whole-phase review)
+- **Trigger:** when avatar federation is expected to work (coordinate with #7)
+- **What:** `RemoteUserCard` renders `avatarUrl` directly in `<img src>`. The web frontend's CSP `img-src` directive must be extended to allow cross-origin Tavern hosts. No code change needed for Phase 2 since the URLs return 401 anyway (per #7), but both must land together when avatar federation becomes functional.
+
 ## Resolved
 
-(none yet)
+### Phase 2 post-review fix-up
+
+- **SSRF guard on outbound profile fetch.** `assertValidPeerHost` is now exported from `federation-peering.ts` and applied in `FederationProfileService.fetchRemoteProfile` immediately after `parseRemoteUserId`. The inbound `respondToProfileRequest` handler intentionally skips the guard (no outbound fetch on that path) — documented inline.

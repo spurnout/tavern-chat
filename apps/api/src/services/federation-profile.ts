@@ -14,7 +14,7 @@ import {
 } from './federation-envelopes.js';
 import type { FederationKeyStore } from './federation-keys.js';
 import type { UserKeyStore } from './user-keys.js';
-import { PeeringError } from './federation-peering.js';
+import { PeeringError, assertValidPeerHost } from './federation-peering.js';
 import { discoverInstance, postProfileEnvelope } from './federation-client.js';
 
 export interface FederationProfileServiceOptions {
@@ -50,6 +50,10 @@ export class FederationProfileService {
     if (typeof preCheck !== 'string' || preCheck.length === 0) {
       throw new PeeringError('bad_envelope', 'envelope missing fromInstance');
     }
+
+    // Note: assertValidPeerHost is intentionally not called here. This is an inbound-only
+    // handler — no outbound network fetch is triggered, so the SSRF surface is zero.
+    // The downstream peer.status === 'peered' check is sufficient authorization.
 
     // Peer must already be peered — profile lookup is not allowed pre-peering.
     const peer = await this.prisma.remoteInstance.findUnique({ where: { host: preCheck } });
@@ -137,6 +141,7 @@ export class FederationProfileService {
       throw new Error(`invalid remoteUserId: ${remoteUserId}`);
     }
     const { localpart, host } = parsed;
+    assertValidPeerHost(host); // SSRF guard — same check applied to all outbound fetch paths
 
     // Find peered instance for this host.
     const peer = await this.prisma.remoteInstance.findUnique({ where: { host } });

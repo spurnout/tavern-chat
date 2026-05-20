@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TavernError } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
 import type { FederationProfileService } from '../services/federation-profile.js';
+import { PeeringError } from '../services/federation-peering.js';
 
 export interface UsersFederatedDeps {
   service: FederationProfileService;
@@ -36,6 +37,10 @@ export function registerUsersFederatedRoutes(
         }),
       );
     } catch (err) {
+      if (err instanceof PeeringError) {
+        // bad_envelope from assertValidPeerHost (SSRF guard) → 400
+        throw TavernError.validation(err.message);
+      }
       const msg = err instanceof Error ? err.message : 'unknown';
       // Distinguish failure modes for the client.
       if (msg.startsWith('invalid remoteUserId')) {
