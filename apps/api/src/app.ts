@@ -106,6 +106,7 @@ import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { registerAdminServerRemoteMembersRoutes } from './routes/admin-server-remote-members.js';
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
 import { registerFederationEventsRoutes } from './routes/federation-events.js';
+import { registerFederationInvitePreviewRoutes } from './routes/federation-invite-preview.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
@@ -344,6 +345,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
+      // P4-5 — public invite preview. NO authentication; the receiving
+      // instance fetches this on behalf of its user to render a "join X
+      // on Y?" confirmation. Scope checks (specific_instance / specific_user)
+      // run in the service via `X-Tavern-Federation-Caller-Host` / -User
+      // headers. Rate-limited per source IP inside the route.
+      registerFederationInvitePreviewRoutes(app, { selfHost });
       // P3-12 — admin testing backdoor: manually add a remote user as a
       // ServerMember on a local server. Lets us exercise Phase 3 fan-out
       // end-to-end before the Phase 4 federated-invite flow lands.
