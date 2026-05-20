@@ -19,6 +19,8 @@
  *      gets deleted.
  *  12. updateMirrorServer happy path — name + description updated.
  *  13. deleteMirrorChannel happy path — channel row removed.
+ *  14. deleteMirrorChannel cross-server guard — rejects with the
+ *      "belongs to server X, not Y" error and leaves the row intact.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -656,6 +658,79 @@ describe.skipIf(!dockerOk)('FederationMirrorService', () => {
       await expect(
         runTx((tx) => service.deleteMirrorChannel(tx, serverId, ulid())),
       ).resolves.toBeUndefined();
+    });
+
+    it('rejects a cross-server delete and preserves the channel row', async () => {
+      // Defence-in-depth check: the cross-server guard in
+      // deleteMirrorChannel refuses to delete a channel whose serverId
+      // doesn't match the caller-supplied serverId. Without this test, a
+      // future refactor could silently drop the guard and let a buggy
+      // (or malicious) peer instruct us to delete a channel from a
+      // different mirror.
+      const ownerA = await seedPeerAndRemoteUser({
+        host: `peer-${ulid().toLowerCase()}.example`,
+        localpart: 'mira',
+      });
+      const ownerB = await seedPeerAndRemoteUser({
+        host: `peer-${ulid().toLowerCase()}.example`,
+        localpart: 'nico',
+      });
+      const service = buildService();
+      const serverA = ulid();
+      const serverB = ulid();
+      await runTx((tx) =>
+        service.createMirrorServer({
+          tx,
+          serverId: serverA,
+          originInstanceId: ownerA.peerId,
+          ownerRemoteUserId: ownerA.remoteUserId,
+          name: 'Cross-Server Mirror A',
+          description: null,
+          iconUrl: null,
+        }),
+      );
+      await runTx((tx) =>
+        service.createMirrorServer({
+          tx,
+          serverId: serverB,
+          originInstanceId: ownerB.peerId,
+          ownerRemoteUserId: ownerB.remoteUserId,
+          name: 'Cross-Server Mirror B',
+          description: null,
+          iconUrl: null,
+        }),
+      );
+
+      // channelA1 lives on serverA.
+      const channelA1 = ulid();
+      await runTx((tx) =>
+        service.upsertMirrorChannel({
+          tx,
+          serverId: serverA,
+          originInstanceId: ownerA.peerId,
+          channelId: channelA1,
+          name: 'a-general',
+          type: 'text',
+          topic: null,
+          position: 0,
+          federationMode: 'inherit',
+          nsfw: false,
+        }),
+      );
+
+      // Calling deleteMirrorChannel with serverB's id should be refused.
+      await expect(
+        runTx((tx) => service.deleteMirrorChannel(tx, serverB, channelA1)),
+      ).rejects.toThrow(
+        `channel ${channelA1} belongs to server ${serverA}, not ${serverB}`,
+      );
+
+      // The channel must still exist after the rejected call.
+      const channel = await prisma.channel.findUnique({
+        where: { id: channelA1 },
+      });
+      expect(channel).not.toBeNull();
+      expect(channel?.serverId).toBe(serverA);
     });
   });
 });
