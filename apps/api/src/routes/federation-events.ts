@@ -45,6 +45,7 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'bad_envelope':
       return 400;
     case 'bad_signature':
+    case 'unauthorized_leave':
       return 401;
     case 'unknown_peer':
     case 'peer_not_peered':
@@ -57,6 +58,7 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'unknown_message':
     case 'unknown_invite':
     case 'unknown_mirror_server':
+    case 'unknown_member':
       return 404;
     case 'replay':
       return 409;

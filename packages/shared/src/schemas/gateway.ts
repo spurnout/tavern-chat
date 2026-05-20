@@ -70,6 +70,15 @@ export const GatewayDispatchEvent = {
    * scoped broadcast would be wasted fan-out.
    */
   SERVER_ADD: 'SERVER_ADD',
+  /**
+   * Federation Phase 4 — user-targeted complement of `SERVER_ADD`. Fired
+   * when a user voluntarily leaves a federated mirror AND the mirror is
+   * torn down because no other local members remain. The recipient
+   * `userId` is the leaver; their SPA should splice the Server out of the
+   * sidebar. Delivered ONLY to that user — the mirror is gone and there
+   * is no server-scoped audience left to broadcast to.
+   */
+  SERVER_REMOVE: 'SERVER_REMOVE',
   MEMBER_ADD: 'MEMBER_ADD',
   MEMBER_REMOVE: 'MEMBER_REMOVE',
   MEMBER_UPDATE: 'MEMBER_UPDATE',

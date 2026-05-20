@@ -868,6 +868,17 @@ export interface FanOutMemberRemoveInput {
    * envelope to the one peer that most needs it.
    */
   additionalPeerInstanceIds?: string[];
+  /**
+   * Optional peer to drop from the fan-out — used by the inbound P4-12
+   * `member.leave` handler so the envelope doesn't echo back to the
+   * leaver's home, which already received the synchronous
+   * `member.removed` ack and committed the local delete.
+   *
+   * Applied AFTER the union with `additionalPeerInstanceIds`, so callers
+   * cannot accidentally re-add the excluded id by passing it on both
+   * sides.
+   */
+  excludePeerInstanceId?: string;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
 }
@@ -900,6 +911,9 @@ export async function fanOutMemberRemove(input: FanOutMemberRemoveInput): Promis
     for (const id of input.additionalPeerInstanceIds) {
       if (id) seen.add(id);
     }
+  }
+  if (input.excludePeerInstanceId) {
+    seen.delete(input.excludePeerInstanceId);
   }
   if (seen.size === 0) return;
 

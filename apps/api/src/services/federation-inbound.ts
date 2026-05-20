@@ -66,6 +66,7 @@ import {
   memberAddPayloadSchema,
   memberJoinRequestPayloadSchema,
   memberJoinedPayloadSchema,
+  memberLeavePayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
   messageDeletePayloadSchema,
@@ -79,6 +80,8 @@ import {
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
+  type MemberLeavePayload,
+  type MemberRemovedPayload,
   type MemberRemovePayload,
   type MessageCreatePayload,
   type MessageDeletePayload,
@@ -94,6 +97,7 @@ import { ensureUserForRemoteUser } from './remote-user-upsert.js';
 import {
   computeEffectiveFederation,
   fanOutMemberAdd,
+  fanOutMemberRemove,
   type FederationMode,
 } from './federation-outbox.js';
 import type { QueueClient } from './queues.js';
@@ -123,11 +127,13 @@ export type InboundErrorCode =
   | 'unknown_peer' // 403 — no RemoteInstance for fromInstance
   | 'peer_not_peered' // 403 — RemoteInstance exists but status != 'peered'
   | 'bad_signature' // 401 — instance OR user signature verify failed
+  | 'unauthorized_leave' // 401 — member.leave envelope signed by someone other than the leaver
   | 'replay' // 409 — (peerInstanceId, nonce) already logged
   | 'unknown_channel' // 404 — payload references a channelId we don't have
   | 'unknown_message' // 404 — payload references a messageId we don't have
   | 'unknown_invite' // 404 — payload.inviteCode not found / not federated
   | 'unknown_mirror_server' // 404 — payload.serverId not present as a mirror locally
+  | 'unknown_member' // 404 — payload references a leaverRemoteUserId we don't have a User row for
   | 'invite_no_longer_valid' // 410 — invite is revoked / expired / exhausted
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
@@ -722,6 +728,20 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
     payloadSchema: memberRemovePayloadSchema,
     resolveAuthorRemoteUserId: (input) => resolveMirrorOwner(input, 'serverId'),
     handle: handleMemberRemove as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P4-12 — voluntary leave from a remote user. The leaver is the author of
+  // the user-layer signature (only the user themselves can request their own
+  // leave). The dispatcher resolves the public key from
+  // `payload.leaverRemoteUserId`, and the handler enforces that the verified
+  // remoteUser matches that same id.
+  'member.leave': {
+    payloadSchema: memberLeavePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { leaverRemoteUserId?: unknown } | null)
+        ?.leaverRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleMemberLeave as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -2337,6 +2357,199 @@ async function handleMemberRemove(input: {
         where: { id: remoteUser.id },
         data: { lastSeenAt: new Date() },
       });
+    },
+  };
+}
+
+/**
+ * Inbound `member.leave` (P4-12).
+ *
+ * Peer B is telling us — A, the HOME of T — that one of B's users is
+ * voluntarily leaving the Tavern. Distinct from `member.remove` in three ways:
+ *
+ *   1. The user-layer signer is the leaver themselves, not the mirror owner.
+ *      Only the user can request their own leave; we reject envelopes where
+ *      the verified `remoteUser` doesn't match the payload's
+ *      `leaverRemoteUserId` with `unauthorized_leave` (401).
+ *   2. T is owned LOCALLY here (originInstanceId is null). The dispatcher's
+ *      generic peer + signature checks still apply, but the mirror-owner
+ *      resolver doesn't, so `extractAuthorRemoteUserId` returns the
+ *      `leaverRemoteUserId` directly.
+ *   3. The handler returns a single-layer signed `member.removed` ack
+ *      envelope (mirroring the request/response pattern P4-7 introduced for
+ *      `member.join_request`). B uses the ack to commit the local
+ *      ServerMember removal + optional mirror tear-down — see the matching
+ *      route in `routes/federation-leave-mirror.ts`.
+ *
+ * The handler is idempotent — if the ServerMember is already gone (or the
+ * local User row doesn't exist), we still return a signed
+ * `member.removed` ack so a retried envelope settles cleanly on B. The
+ * authorization check still runs first, so a peer can't probe by
+ * impersonating an unrelated user.
+ */
+async function handleMemberLeave(input: {
+  envelope: TwoLayerSignedEnvelope<MemberLeavePayload>;
+  payload: MemberLeavePayload;
+  peer: { id: string; host: string };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+  selfHost: string | null;
+  queues: QueueClient | null;
+  federationEnabledOnInstance: boolean;
+  log: FastifyBaseLogger;
+}): Promise<HandlerOutput> {
+  const {
+    payload,
+    peer,
+    remoteUser,
+    tx,
+    queues,
+    federationEnabledOnInstance,
+    log,
+  } = input;
+
+  // 1) Authorization: the user-layer signature was verified against
+  //    `remoteUser.publicKey`; cross-check that the verified `remoteUser`
+  //    matches the leaver in the payload. The dispatcher's
+  //    `extractAuthorRemoteUserId` already pulls from
+  //    `payload.leaverRemoteUserId`, so the two SHOULD match unless a peer
+  //    forged a payload that names a different user than the one whose key
+  //    they used to sign. Belt-and-suspenders defence: reject explicitly so
+  //    the audit trail captures the attempt.
+  if (payload.leaverRemoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'unauthorized_leave',
+      `leaverRemoteUserId ${payload.leaverRemoteUserId} does not match ` +
+        `verified user ${remoteUser.remoteUserId}`,
+    );
+  }
+
+  // 2) Resolve the leaver's local synthetic User row. A leave for someone we
+  //    never mirrored is a protocol bug — the user couldn't have joined us
+  //    in the first place. 404 with `unknown_member` rather than the
+  //    `unknown_mirror_server` shape since T is local (we own it), not a
+  //    mirror.
+  const localUser = await tx.user.findUnique({
+    where: { remoteUserId: payload.leaverRemoteUserId },
+    select: { id: true },
+  });
+  if (!localUser) {
+    throw new FederationInboundError(
+      'unknown_member',
+      `no local User row for ${payload.leaverRemoteUserId}`,
+    );
+  }
+
+  // 3) Look up the existing ServerMember. Missing → idempotent success: the
+  //    user already left (or was never a member of T from our side). We
+  //    still return the signed ack so the caller commits the no-op cleanly.
+  const existingMember = await tx.serverMember.findUnique({
+    where: {
+      serverId_userId: { serverId: payload.serverId, userId: localUser.id },
+    },
+    select: { userId: true },
+  });
+
+  let memberWasPresent = false;
+  // Capture the server's federation state up front so the post-commit
+  // fan-out gate can use it. We're inside the transaction; the gate sees
+  // the value at this exact moment, not whatever an operator flipped to
+  // afterwards. For a local home of T, originInstanceId is null by
+  // definition; defence in depth checks both.
+  const serverForFanOut = await tx.server.findUnique({
+    where: { id: payload.serverId },
+    select: { federationEnabled: true, originInstanceId: true },
+  });
+
+  if (existingMember) {
+    memberWasPresent = true;
+    await tx.serverMember.delete({
+      where: {
+        serverId_userId: { serverId: payload.serverId, userId: localUser.id },
+      },
+    });
+  }
+
+  // 4) Build the `member.removed` ack payload. The dispatcher will wrap
+  //    this in a single-layer signed envelope.
+  const memberRemovedPayload: MemberRemovedPayload = {
+    serverId: payload.serverId,
+    leaverRemoteUserId: payload.leaverRemoteUserId,
+  };
+
+  const leaverRemoteUserId = payload.leaverRemoteUserId;
+  const serverId = payload.serverId;
+  const localUserId = localUser.id;
+  const leaverHomePeerId = peer.id;
+
+  return {
+    result: { status: 200 },
+    responseEnvelopePayload: {
+      eventType: 'member.removed',
+      payload: memberRemovedPayload,
+    },
+    postCommit: async (prisma) => {
+      // Always touch lastSeenAt — we heard from this peer even on the
+      // idempotent path.
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+
+      // Local broadcast + fan-out only when we actually deleted a row.
+      // Same gate as the inbound `member.join_request` post-commit: an
+      // already-removed envelope is a no-op for downstream observers.
+      if (!memberWasPresent) return;
+
+      gatewayBroker.publish({
+        type: 'MEMBER_REMOVE',
+        serverId,
+        data: { serverId, userId: localUserId },
+      });
+
+      // Fan-out `member.remove` (reason: 'left') to OTHER peers with
+      // remaining members in T. The leaver's home (the peer that just
+      // sent us this envelope) is excluded via `excludePeerInstanceId` —
+      // they already know about the leave, since they're the source and
+      // received the synchronous `member.removed` ack as the HTTP
+      // response. Without the exclude, a home that still has OTHER
+      // members in T would receive a duplicate envelope which, while
+      // idempotent at `removeMirrorMember`, would generate audit-trail
+      // noise.
+      if (
+        queues &&
+        input.selfHost &&
+        serverForFanOut?.federationEnabled &&
+        serverForFanOut.originInstanceId === null
+      ) {
+        try {
+          // The user-layer signer for the OUT-going envelope is the
+          // leaver themselves — same identity we just verified the
+          // INCOMING user signature against. Their synthetic local User
+          // row is `localUserId`; the matching user-key is provisioned
+          // alongside it by `ensureUserForRemoteUser`.
+          await fanOutMemberRemove({
+            queues,
+            selfHost: input.selfHost,
+            serverId,
+            memberRemoteUserId: leaverRemoteUserId,
+            reason: 'left',
+            removedAt: new Date(),
+            actorUserId: localUserId,
+            log,
+            excludePeerInstanceId: leaverHomePeerId,
+            federationEnabledOnInstance,
+          });
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          log.warn(
+            { err: errObj, serverId, leaverRemoteUserId, leaverHomePeerId },
+            'federation fan-out failed for member.remove (inbound member.leave)',
+          );
+        }
+      }
     },
   };
 }

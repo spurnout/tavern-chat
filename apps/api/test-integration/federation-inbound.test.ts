@@ -19,7 +19,7 @@
  *      this confirms the handler itself is idempotent.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import {
@@ -30,6 +30,7 @@ import {
 } from './setup.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
+import { gatewayBroker } from '../src/services/gateway-broker.js';
 import {
   PERMISSION_DEFAULT_EVERYONE,
   serializePermissions,
@@ -43,6 +44,7 @@ import {
   sign as edSign,
   verify as edVerify,
   buildTwoLayerMessageEnvelope,
+  type FederationOutboxJob,
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
 import {
@@ -3338,6 +3340,351 @@ describe.skipIf(!dockerOk)('P4-11 — POST /_federation/event (member.remove)', 
       expect(res.statusCode).toBe(404);
       const body = res.json();
       expect(body.error).toMatch(/mirror server .* not found/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ============================================================================
+// P4-12 — inbound member.leave (voluntary leave from a remote user)
+// ============================================================================
+
+/**
+ * For this handler THIS instance is the A side — we OWN the Tavern, and
+ * a peer (B) tells us one of their users wants to leave. The handler:
+ *   - cross-checks the verified signer matches the leaver in the payload,
+ *   - drops the ServerMember row (idempotent if already gone),
+ *   - returns a single-layer signed `member.removed` ack envelope,
+ *   - fans out `member.remove` (reason='left') to peers OTHER than B,
+ *   - broadcasts `MEMBER_REMOVE` locally.
+ *
+ * The base `makeFixture` already gives us exactly the setup we need: a
+ * LOCAL Server with a remote ServerMember (Alice from B). The leave
+ * envelope is signed by Alice's user key and B's instance key.
+ */
+
+function buildMemberLeaveEnvelope(input: {
+  fx: PeerFixture;
+  serverId: string;
+  leaverRemoteUserId?: string;
+  leftAt?: string;
+  fromInstance?: string;
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'member.leave',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      serverId: input.serverId,
+      leaverRemoteUserId: input.leaverRemoteUserId ?? fx.authorRemoteUserId,
+      leftAt: input.leftAt ?? new Date().toISOString(),
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.authorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+/**
+ * Assert that the response body parses as a single-layer signed
+ * `member.removed` envelope, signed by this instance's federation key.
+ * Returns the typed payload for further assertions.
+ */
+async function assertSignedRemovedReply(body: unknown): Promise<{
+  serverId: string;
+  leaverRemoteUserId: string;
+}> {
+  expect(body).toMatchObject({
+    version: PROTOCOL_VERSION,
+    eventType: 'member.removed',
+    fromInstance: SELF_HOST,
+    toInstance: PEER_HOST,
+  });
+
+  const env = body as {
+    payload: { serverId: string; leaverRemoteUserId: string };
+    signature: string;
+    version: string;
+    eventType: string;
+    nonce: string;
+    notBefore: string;
+    notAfter: string;
+    fromInstance: string;
+    toInstance: string;
+  };
+
+  const keyRow = await prisma.federationKey.findFirstOrThrow({
+    where: { isCurrent: true },
+  });
+  const pub = publicKeyFromRaw(Buffer.from(keyRow.publicKey));
+  const { signature, ...unsigned } = env;
+  const bytes = Buffer.from(canonicalize(unsigned as unknown), 'utf8');
+  expect(edVerify(bytes, Buffer.from(signature, 'base64'), pub)).toBe(true);
+
+  return env.payload;
+}
+
+describe.skipIf(!dockerOk)('P4-12 — POST /_federation/event (member.leave)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  // ─── 1. Happy path: drops member + signed ack + local broadcast ──────────
+
+  it('happy path: deletes ServerMember + returns signed member.removed ack', async () => {
+    const fx = await makeFixture();
+
+    // Baseline: the fixture's ServerMember (Alice from B) is present.
+    const before = await prisma.serverMember.findUnique({
+      where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+    });
+    expect(before).not.toBeNull();
+
+    const envelope = buildMemberLeaveEnvelope({ fx, serverId: fx.serverId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const events: Array<{ type: string; userId?: string; serverId?: string; data: unknown }> = [];
+    const unsubscribe = gatewayBroker.subscribe((e) => events.push(e));
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const replyPayload = await assertSignedRemovedReply(res.json());
+      expect(replyPayload.serverId).toBe(fx.serverId);
+      expect(replyPayload.leaverRemoteUserId).toBe(fx.authorRemoteUserId);
+
+      // ServerMember row is gone.
+      const after = await prisma.serverMember.findUnique({
+        where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+      });
+      expect(after).toBeNull();
+
+      // The synthetic User row is intentionally preserved (see federation-
+      // mirror.ts teardown rationale).
+      const userStill = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+      });
+      expect(userStill).not.toBeNull();
+
+      // MEMBER_REMOVE broadcast scoped to the server.
+      const memberRemoves = events.filter((e) => e.type === 'MEMBER_REMOVE');
+      expect(memberRemoves).toHaveLength(1);
+      expect(memberRemoves[0]!.serverId).toBe(fx.serverId);
+      expect((memberRemoves[0]!.data as { userId: string }).userId).toBe(
+        fx.localUserId,
+      );
+
+      // Envelope log row recorded.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'member.leave' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+    } finally {
+      unsubscribe();
+      await app.close();
+    }
+  });
+
+  // ─── 2. Mismatched leaver: payload claims a user different from the signer ──
+
+  it('rejects with 401 when payload.leaverRemoteUserId differs from the signing user', async () => {
+    const fx = await makeFixture();
+    // Seed Bob — a SECOND remote user on the same peer — with his own
+    // public key cached. The envelope below names Bob as the leaver in
+    // the payload but is SIGNED with Alice's user key. The dispatcher
+    // pulls Bob's public key from the cache and tries to verify Alice's
+    // signature against it; the user-layer signature fails verification,
+    // raising bad_signature (401). The handler's `unauthorized_leave`
+    // check covers the harder case where verification passed but the
+    // payload's leaver still names someone else; both paths surface as
+    // 401 to the peer, which is what we assert here.
+    const bob = await seedSecondRemoteUser(fx);
+
+    const envelope = buildMemberLeaveEnvelope({
+      fx,
+      serverId: fx.serverId,
+      leaverRemoteUserId: bob.remoteUserId,
+      // signUser is the default Alice key — the cross-check between
+      // signer and payload leaver fires either at the crypto layer
+      // (when Bob's cached key differs) or at the handler's
+      // unauthorized_leave guard (when they happen to match).
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(401);
+
+      // ServerMember row is still present — handler bailed before delete.
+      const member = await prisma.serverMember.findUnique({
+        where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+      });
+      expect(member).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 3. Unknown user (no local User row for the leaver) ──────────────────
+
+  it('returns 404 unknown_member when the leaver has no local User row', async () => {
+    const fx = await makeFixture();
+
+    // Drop the synthetic local User mirror of Alice. The RemoteUser cache
+    // row remains (so the dispatcher can still resolve Alice's public key
+    // for signature verification), but the User row keyed on
+    // `remoteUserId = Alice` no longer exists.
+    await prisma.serverMember.deleteMany({ where: { userId: fx.localUserId } });
+    await prisma.user.delete({ where: { id: fx.localUserId } });
+
+    const envelope = buildMemberLeaveEnvelope({ fx, serverId: fx.serverId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error).toMatch(/no local User row/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ─── 4. Idempotent: leave a non-member → 200 + signed ack anyway ────────
+
+  it('returns a signed ack even when the ServerMember row is already gone', async () => {
+    const fx = await makeFixture();
+    // Pre-delete Alice's ServerMember row — a retried leave envelope
+    // should still settle cleanly with the ack.
+    await prisma.serverMember.delete({
+      where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+    });
+
+    const envelope = buildMemberLeaveEnvelope({ fx, serverId: fx.serverId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const events: Array<{ type: string }> = [];
+    const unsubscribe = gatewayBroker.subscribe((e) => events.push(e));
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      // Ack body is signed.
+      const replyPayload = await assertSignedRemovedReply(res.json());
+      expect(replyPayload.serverId).toBe(fx.serverId);
+      expect(replyPayload.leaverRemoteUserId).toBe(fx.authorRemoteUserId);
+
+      // No MEMBER_REMOVE broadcast fired (nothing to remove).
+      const memberRemoves = events.filter((e) => e.type === 'MEMBER_REMOVE');
+      expect(memberRemoves).toHaveLength(0);
+    } finally {
+      unsubscribe();
+      await app.close();
+    }
+  });
+
+  // ─── 5. Fan-out: member.remove to OTHER peers, exclude leaver's home ────
+
+  it('fans out member.remove (reason=left) to OTHER peers, excluding the leaver home', async () => {
+    const fx = await makeFixture();
+    // Seed a second peer (C) with its own remote member of T so the
+    // fan-out has a non-empty audience after Alice's delete. Without
+    // another peer in T, fanOutMemberRemove returns early with no
+    // enqueues, and we can't distinguish "correctly skipped" from
+    // "wrong gate".
+    const otherPeer = await seedSecondPeer();
+    const otherLocalUserId = ulid();
+    const otherLocalpart = `eve-${otherLocalUserId.slice(-6).toLowerCase()}`;
+    const otherRemoteUserId = `${otherLocalpart}@${otherPeer.peerHost}`;
+    await prisma.remoteUser.create({
+      data: {
+        id: ulid(),
+        remoteInstanceId: otherPeer.peerInstanceId,
+        remoteUserId: otherRemoteUserId,
+        displayNameCache: 'Eve',
+        avatarUrlCache: null,
+        publicKey: randomBytes(32),
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: otherLocalUserId,
+        username: `__rem_${otherLocalUserId.toLowerCase()}`,
+        usernameLower: `__rem_${otherLocalUserId.toLowerCase()}`,
+        displayName: 'Eve',
+        email: `${otherRemoteUserId}.federated.local`,
+        emailLower: `${otherRemoteUserId}.federated.local`,
+        passwordHash: null,
+        remoteUserId: otherRemoteUserId,
+        remoteInstanceId: otherPeer.peerInstanceId,
+      },
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.serverId, userId: otherLocalUserId },
+    });
+
+    const envelope = buildMemberLeaveEnvelope({ fx, serverId: fx.serverId });
+
+    const captured: FederationOutboxJob[] = [];
+    const enqueue = vi.fn(async (job: FederationOutboxJob) => {
+      captured.push(job);
+    });
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Exactly one enqueue — for the OTHER peer (C). The leaver's home
+      // (B / fx.peerInstanceId) is excluded because they received the
+      // synchronous `member.removed` ack as the HTTP response.
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      const job = captured[0]!;
+      expect(job.eventType).toBe('member.remove');
+      expect(job.peerInstanceId).toBe(otherPeer.peerInstanceId);
+      expect(job.peerInstanceId).not.toBe(fx.peerInstanceId);
+      // Payload is the leave-flavoured remove (reason='left'); the actor
+      // is the leaver, not a moderator.
+      const payload = job.payload as {
+        serverId: string;
+        memberRemoteUserId: string;
+        reason: string;
+      };
+      expect(payload.serverId).toBe(fx.serverId);
+      expect(payload.memberRemoteUserId).toBe(fx.authorRemoteUserId);
+      expect(payload.reason).toBe('left');
     } finally {
       await app.close();
     }

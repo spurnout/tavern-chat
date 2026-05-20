@@ -108,6 +108,7 @@ import { registerFederationProfileRoutes } from './routes/federation-profile.js'
 import { registerFederationEventsRoutes } from './routes/federation-events.js';
 import { registerFederationInvitePreviewRoutes } from './routes/federation-invite-preview.js';
 import { registerFederationInvitesAcceptRoutes } from './routes/federation-invites-accept.js';
+import { registerFederationLeaveMirrorRoutes } from './routes/federation-leave-mirror.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
@@ -382,6 +383,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         keys: federationKeys!,
         userKeys: userKeys!,
         profile: federationProfile,
+        selfHost,
+        postSyncImpl: opts.federationSyncDispatchOverride,
+      });
+      // P4-12 — authenticated mirror-leave route. The leaver asks B to
+      // voluntarily exit a mirror; we POST a signed `member.leave` to the
+      // home, await the `member.removed` ack, then delete the local
+      // ServerMember (and tear down the mirror if empty).
+      registerFederationLeaveMirrorRoutes(app, {
+        keys: federationKeys!,
+        userKeys: userKeys!,
         selfHost,
         postSyncImpl: opts.federationSyncDispatchOverride,
       });
