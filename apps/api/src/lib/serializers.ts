@@ -35,7 +35,7 @@ interface ServerRow {
   description: string | null;
   iconAttachmentId: string | null;
   defaultRoleId: string | null;
-  /** P3-1 — per-Tavern federation opt-in. */
+  /** P3-10 — per-Tavern federation opt-in. */
   federationEnabled: boolean;
   createdAt: Date;
 }

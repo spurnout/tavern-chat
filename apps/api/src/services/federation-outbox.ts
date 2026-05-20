@@ -84,6 +84,17 @@ export interface FanOutMessageCreateInput {
   createdAt: Date;
   replyToMessageId: string | null;
   log: FastifyBaseLogger;
+  /**
+   * Defence-in-depth: the instance-level FEDERATION_ENABLED flag. The primary
+   * gate lives in the route call sites (they don't even wire `queues` /
+   * `selfHost` when federation is off), but a `force_on` channel could
+   * otherwise leak past `computeEffectiveFederation` if a future code path
+   * threaded `deps` in without re-checking the instance flag. When this is
+   * explicitly `false`, the helper short-circuits with a log and returns.
+   * When omitted (`undefined`), behavior is unchanged — callers that already
+   * gate on the instance flag don't need to thread anything through.
+   */
+  federationEnabledOnInstance?: boolean;
 }
 
 /**
@@ -96,6 +107,13 @@ export interface FanOutMessageCreateInput {
  * the schema fails loudly at the source instance rather than at every peer.
  */
 export async function fanOutMessageCreate(input: FanOutMessageCreateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'message.create' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
   const peerIds = await findPeersWithRemoteMembers(input.serverId);
   if (peerIds.length === 0) return;
 
@@ -145,6 +163,8 @@ export interface FanOutMessageUpdateInput {
   content: string;
   editedAt: Date;
   log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
 }
 
 /**
@@ -161,6 +181,13 @@ export interface FanOutMessageUpdateInput {
  * directly from the origin instance).
  */
 export async function fanOutMessageUpdate(input: FanOutMessageUpdateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'message.update' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
   const peerIds = await findPeersWithRemoteMembers(input.serverId);
   if (peerIds.length === 0) return;
 
@@ -206,6 +233,8 @@ export interface FanOutMessageDeleteInput {
   actorUsername: string;
   deletedAt: Date;
   log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
 }
 
 /**
@@ -219,6 +248,13 @@ export interface FanOutMessageDeleteInput {
  * enforces that gate.
  */
 export async function fanOutMessageDelete(input: FanOutMessageDeleteInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'message.delete' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
   const peerIds = await findPeersWithRemoteMembers(input.serverId);
   if (peerIds.length === 0) return;
 
@@ -263,6 +299,8 @@ export interface FanOutReactionAddInput {
   actorUsername: string;
   emoji: string;
   log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
 }
 
 /**
@@ -281,6 +319,13 @@ export interface FanOutReactionAddInput {
  * original author. A reaction's actor is whoever clicked the emoji.
  */
 export async function fanOutReactionAdd(input: FanOutReactionAddInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'reaction.add' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
   const peerIds = await findPeersWithRemoteMembers(input.serverId);
   if (peerIds.length === 0) return;
 
@@ -319,6 +364,8 @@ export interface FanOutReactionRemoveInput {
   actorUsername: string;
   emoji: string;
   log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
 }
 
 /**
@@ -328,6 +375,13 @@ export interface FanOutReactionRemoveInput {
  * row on the peer is not an error.
  */
 export async function fanOutReactionRemove(input: FanOutReactionRemoveInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'reaction.remove' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
   const peerIds = await findPeersWithRemoteMembers(input.serverId);
   if (peerIds.length === 0) return;
 

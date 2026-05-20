@@ -356,7 +356,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
     });
     await registerChannelRoutes(app);
-    await registerMessageRoutes(app, { federationProfile, queues, selfHost });
+    await registerMessageRoutes(app, {
+      federationProfile,
+      queues,
+      selfHost,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerRoleRoutes(app);
     await registerOverwriteRoutes(app);
     await registerInviteRoutes(app);
@@ -367,7 +372,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     });
     await registerAttachmentRoutes(app, storage);
     await registerUploadRoutes(app, { config: opts.config, storage, queues });
-    await registerReactionRoutes(app, { queues, selfHost });
+    await registerReactionRoutes(app, {
+      queues,
+      selfHost,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerEmojiRoutes(app);
     await registerVoiceRoutes(app, opts.config);
     await registerCampaignRoutes(app);

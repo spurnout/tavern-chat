@@ -785,9 +785,29 @@ function FederationPanel({ serverId }: { serverId: string }): JSX.Element {
   const [instanceFederationOn, setInstanceFederationOn] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Tracks whether the async permission load has settled. Without this, a
+  // real admin can see the "no permission" branch in the small window before
+  // `loadMyServerPermissions` resolves and hydrates `useCanIn` — `canManage`
+  // defaults to false while the cache is cold, and the server/instance load
+  // below may resolve first. We render the loading state until BOTH this and
+  // the server/instance data have landed.
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
 
   useEffect(() => {
-    void loadMyServerPermissions(serverId);
+    let cancelled = false;
+    loadMyServerPermissions(serverId)
+      .catch(() => {
+        // Swallow — the existing "no permission" / loading branches handle
+        // the user-visible outcome. A failure to load permissions just leaves
+        // `canManage` at its default `false`, which falls through to the
+        // explanatory "no permission" message.
+      })
+      .finally(() => {
+        if (!cancelled) setPermissionsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [serverId, loadMyServerPermissions]);
 
   useEffect(() => {
@@ -831,7 +851,7 @@ function FederationPanel({ serverId }: { serverId: string }): JSX.Element {
   if (loadError) {
     return <p className="text-sm text-danger">{loadError}</p>;
   }
-  if (!server || instanceFederationOn === null) {
+  if (!server || instanceFederationOn === null || !permissionsLoaded) {
     return <p className="text-fg-muted">Loading…</p>;
   }
 

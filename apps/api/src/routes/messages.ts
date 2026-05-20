@@ -60,6 +60,13 @@ interface MessageRouteDeps {
   queues?: QueueClient;
   /** The local instance's federation host (e.g. `a.example`). */
   selfHost?: string | null;
+  /**
+   * The instance-level FEDERATION_ENABLED flag. Threaded through to the
+   * fan-out helpers as defence-in-depth: even if `queues` / `selfHost` end up
+   * wired in on a non-federated instance (e.g. via a future code path that
+   * forgets the gate), the helper short-circuits when this is `false`.
+   */
+  federationEnabledOnInstance?: boolean;
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {
@@ -490,6 +497,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
             createdAt: fullRow.createdAt,
             replyToMessageId: fullRow.replyToMessageId,
             log: app.log,
+            federationEnabledOnInstance: deps.federationEnabledOnInstance,
           });
         }
       } catch (err: unknown) {
@@ -697,6 +705,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
               content: updated.content,
               editedAt: updated.editedAt ?? new Date(),
               log: app.log,
+              federationEnabledOnInstance: deps.federationEnabledOnInstance,
             });
           }
         }
@@ -836,6 +845,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
               actorUsername: message.author.username,
               deletedAt,
               log: app.log,
+              federationEnabledOnInstance: deps.federationEnabledOnInstance,
             });
           }
         }
