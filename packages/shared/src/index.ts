@@ -10,3 +10,4 @@ export * from './parsing/mentions.js';
 export * from './parsing/channel-mentions.js';
 export * from './ttrpg/npc-generator.js';
 export * from './plugins/manifest.js';
+export * from './federation/index.js';
