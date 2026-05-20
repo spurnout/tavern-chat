@@ -1027,6 +1027,59 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.update)', 
       await app.close();
     }
   });
+
+  it('edit on a force_off channel → 403 (effective-federation gate)', async () => {
+    // Asymmetric-state scenario from the spec: an operator flips the channel
+    // to `federationMode='force_off'` AFTER the original create landed. The
+    // inbound update handler must re-evaluate the effective gate on every
+    // envelope, even when the row was originally accepted with federation
+    // on. Without the gate the edit would silently land + broadcast in a
+    // channel that's no longer accepting federated content — exactly the
+    // bug Phase-3 code review caught.
+    const fx = await makeFixture({ channelFederationMode: 'force_off' });
+    const messageId = ulid();
+    // Seed the row directly so the create-time gate doesn't intervene; the
+    // bug being tested is the *update* path missing the check.
+    await prisma.message.create({
+      data: {
+        id: messageId,
+        serverId: fx.serverId,
+        channelId: fx.channelId,
+        authorId: fx.localUserId,
+        type: 'default',
+        content: 'pre-flip content',
+        originInstanceId: fx.peerInstanceId,
+        signature: Buffer.alloc(64, 7),
+      },
+    });
+
+    const envelope = buildMsgUpdateEnvelope({
+      fx,
+      messageId,
+      content: 'attempted edit after flip',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/federation is disabled/i);
+
+      // The row must be unchanged — neither content nor editedAt mutate.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.content).toBe('pre-flip content');
+      expect(row!.editedAt).toBeNull();
+      // And no MessageEdit history was written.
+      const edits = await prisma.messageEdit.findMany({ where: { messageId } });
+      expect(edits).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', () => {
@@ -1183,6 +1236,47 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', 
       // deletedAt unchanged — the original delete time is preserved.
       const row = await prisma.message.findUnique({ where: { id: messageId } });
       expect(row!.deletedAt?.getTime()).toBe(deletedAt.getTime());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('delete on a force_off channel → 403 (effective-federation gate)', async () => {
+    // Same asymmetric-state scenario as the update test: the channel was
+    // flipped to `force_off` AFTER the original create. A subsequent delete
+    // envelope must be rejected — the inbound handler enforces its own gate
+    // even when the row was originally accepted with federation on.
+    const fx = await makeFixture({ channelFederationMode: 'force_off' });
+    const messageId = ulid();
+    await prisma.message.create({
+      data: {
+        id: messageId,
+        serverId: fx.serverId,
+        channelId: fx.channelId,
+        authorId: fx.localUserId,
+        type: 'default',
+        content: 'pre-flip content',
+        originInstanceId: fx.peerInstanceId,
+        signature: Buffer.alloc(64, 7),
+      },
+    });
+
+    const envelope = buildMsgDeleteEnvelope({ fx, messageId });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/federation is disabled/i);
+
+      // The row must NOT be tombstoned.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt).toBeNull();
+      expect(row!.content).toBe('pre-flip content');
     } finally {
       await app.close();
     }

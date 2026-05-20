@@ -636,6 +636,15 @@ async function handleMessageUpdate(input: {
   // Look up the target message. Must exist, must be locally non-deleted —
   // editing a tombstoned row makes no sense (the local DELETE handler gates
   // on `!message.deletedAt` for the same reason). Author check happens next.
+  //
+  // The channel + server federation flags come along on the same query so we
+  // can apply the effective-federation gate before the author check. This
+  // mirrors the outbound gate in `routes/messages.ts` and prevents an edit
+  // envelope from mutating a row in a channel whose operator has since
+  // flipped `federationMode='force_off'` (or whose server turned federation
+  // off entirely). Without this gate the edit would land + broadcast even
+  // though the receiver is no longer accepting federated content for the
+  // channel — exactly the asymmetry the spec forbids.
   const existing = await tx.message.findUnique({
     where: { id: payload.messageId },
     select: {
@@ -646,6 +655,12 @@ async function handleMessageUpdate(input: {
       content: true,
       deletedAt: true,
       author: { select: { remoteUserId: true } },
+      channel: {
+        select: {
+          federationMode: true,
+          server: { select: { federationEnabled: true } },
+        },
+      },
     },
   });
   if (!existing || existing.deletedAt) {
@@ -661,6 +676,21 @@ async function handleMessageUpdate(input: {
     throw new FederationInboundError(
       'unknown_message',
       `message ${payload.messageId} is not in a server channel`,
+    );
+  }
+
+  // Effective federation check. Symmetric with `handleMessageCreate` and
+  // `validateInboundReaction` — the inbound handler must enforce its own
+  // gate so an operator flipping the channel off after the original CREATE
+  // landed correctly rejects subsequent edits.
+  const effective = computeEffectiveFederation(
+    existing.channel?.server?.federationEnabled ?? false,
+    (existing.channel?.federationMode ?? 'inherit') as FederationMode,
+  );
+  if (!effective) {
+    throw new FederationInboundError(
+      'federation_off',
+      `federation is disabled for channel ${existing.channelId}`,
     );
   }
 
@@ -772,6 +802,11 @@ async function handleMessageDelete(input: {
 }): Promise<HandlerOutput> {
   const { payload, remoteUser, tx } = input;
 
+  // Pull channel + server federation flags alongside the target row so we
+  // can apply the effective-federation gate before the author check.
+  // Symmetric with `handleMessageCreate` and `validateInboundReaction` — if
+  // an operator flips `federationMode='force_off'` after the original CREATE
+  // committed, a subsequent delete envelope must NOT mutate the row.
   const existing = await tx.message.findUnique({
     where: { id: payload.messageId },
     select: {
@@ -781,6 +816,12 @@ async function handleMessageDelete(input: {
       authorId: true,
       deletedAt: true,
       author: { select: { remoteUserId: true } },
+      channel: {
+        select: {
+          federationMode: true,
+          server: { select: { federationEnabled: true } },
+        },
+      },
     },
   });
   if (!existing) {
@@ -793,6 +834,20 @@ async function handleMessageDelete(input: {
     throw new FederationInboundError(
       'unknown_message',
       `message ${payload.messageId} is not in a server channel`,
+    );
+  }
+
+  // Effective federation check. See `handleMessageUpdate` for the rationale —
+  // the gate lives on the inbound handler so a channel that's been turned
+  // off after the original CREATE landed rejects subsequent mutations.
+  const effective = computeEffectiveFederation(
+    existing.channel?.server?.federationEnabled ?? false,
+    (existing.channel?.federationMode ?? 'inherit') as FederationMode,
+  );
+  if (!effective) {
+    throw new FederationInboundError(
+      'federation_off',
+      `federation is disabled for channel ${existing.channelId}`,
     );
   }
 
