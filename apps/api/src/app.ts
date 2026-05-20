@@ -107,6 +107,7 @@ import { registerAdminServerRemoteMembersRoutes } from './routes/admin-server-re
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
 import { registerFederationEventsRoutes } from './routes/federation-events.js';
 import { registerFederationInvitePreviewRoutes } from './routes/federation-invite-preview.js';
+import { registerFederationInvitesAcceptRoutes } from './routes/federation-invites-accept.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
@@ -126,6 +127,15 @@ export interface BuildAppOptions {
    * effect on the storage / scan path beyond what the override implements.
    */
   queuesOverride?: import('./services/queues.js').QueueClient;
+  /**
+   * Test-only override for the synchronous federation dispatch helper used by
+   * `/api/federation/invites/:code/accept` (P4-6). Lets tests replace the
+   * outbound POST to the home with a deterministic stub that returns a
+   * pre-built `member.joined` reply, without booting a second Fastify app
+   * to play the role of the home. Defaults to the real
+   * `postFederationEventSync`.
+   */
+  federationSyncDispatchOverride?: import('@tavern/federation').PostFederationEventSyncFn;
 }
 
 export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> {
@@ -351,6 +361,17 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // run in the service via `X-Tavern-Federation-Caller-Host` / -User
       // headers. Rate-limited per source IP inside the route.
       registerFederationInvitePreviewRoutes(app, { selfHost });
+      // P4-6 — authenticated invite acceptance. The joiner asks THIS
+      // instance to redeem a federated invite minted by a peer; we POST a
+      // signed `member.join_request` to the home, parse the snapshot it
+      // returns, and mirror the Server/Channels/Members locally.
+      registerFederationInvitesAcceptRoutes(app, {
+        keys: federationKeys!,
+        userKeys: userKeys!,
+        profile: federationProfile,
+        selfHost,
+        postSyncImpl: opts.federationSyncDispatchOverride,
+      });
       // P3-12 — admin testing backdoor: manually add a remote user as a
       // ServerMember on a local server. Lets us exercise Phase 3 fan-out
       // end-to-end before the Phase 4 federated-invite flow lands.

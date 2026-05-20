@@ -137,6 +137,13 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
     case 'SERVER_UPDATE':
       store.upsertServer(data as Server);
       return;
+    case 'SERVER_ADD':
+      // Phase 4: federated invite acceptance. The API broadcasts SERVER_ADD
+      // to the joiner only, so the sidebar can splice the new mirror Server
+      // in without a full READY refresh. upsertServer is idempotent — a
+      // duplicate event is a no-op.
+      store.upsertServer(data as Server);
+      return;
     case 'TYPING_START': {
       const d = data as { channelId: string; userId: string };
       store.noteTyping(d.channelId, d.userId, Date.now());

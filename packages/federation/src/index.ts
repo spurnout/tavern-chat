@@ -50,3 +50,10 @@ export {
   type FederationOutboxJob,
   type DispatcherDeps,
 } from './outbox-dispatcher.js';
+export {
+  postFederationEventSync,
+  type PostFederationEventSyncInput,
+  type PostFederationEventSyncResult,
+  type PostFederationEventSyncFn,
+  type SingleLayerSignedEnvelope,
+} from './sync-dispatch.js';

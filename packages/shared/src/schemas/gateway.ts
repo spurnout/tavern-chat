@@ -61,6 +61,15 @@ export const GatewayDispatchEvent = {
   CHANNEL_UPDATE: 'CHANNEL_UPDATE',
   CHANNEL_DELETE: 'CHANNEL_DELETE',
   SERVER_UPDATE: 'SERVER_UPDATE',
+  /**
+   * Federation Phase 4 — user-targeted event fired when a Tavern is mirrored
+   * onto this instance and the user is added to it as a member (typically the
+   * joiner of a federated invite). Delivered ONLY to `userId` so the joiner's
+   * SPA can splice the new mirror Server into the sidebar without a full
+   * READY refresh. Mirrors are visible only to their members, so a server-
+   * scoped broadcast would be wasted fan-out.
+   */
+  SERVER_ADD: 'SERVER_ADD',
   MEMBER_ADD: 'MEMBER_ADD',
   MEMBER_REMOVE: 'MEMBER_REMOVE',
   MEMBER_UPDATE: 'MEMBER_UPDATE',
