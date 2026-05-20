@@ -32,7 +32,10 @@ export const channelSchema = z.object({
   position: z.number().int().min(0),
   nsfw: z.boolean(),
   videoEnabled: z.boolean(),
-  federationMode: federationModeSchema,
+  /** P3-11 — per-channel federation override. Defaults to 'inherit' for
+   * forward-compat: stale server payloads or replay queues from before the
+   * field was added still parse cleanly. */
+  federationMode: federationModeSchema.default('inherit'),
   createdAt: z.string().datetime(),
 });
 

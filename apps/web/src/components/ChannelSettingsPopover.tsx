@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Settings, X } from 'lucide-react';
-import type { Channel } from '@tavern/shared';
+import type { Channel, FederationMode } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useRealtime } from '../lib/store.js';
@@ -11,7 +11,6 @@ interface Props {
 }
 
 type PostingScope = 'open' | 'mods_only' | 'admin_only';
-type FederationMode = 'inherit' | 'force_on' | 'force_off';
 
 const SLOWMODE_PRESETS = [0, 5, 10, 30, 60, 300, 900, 3600, 21600];
 
@@ -29,7 +28,7 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
     (channel as unknown as { postingScope?: PostingScope }).postingScope ?? 'open',
   );
   const [federationMode, setFederationMode] = useState<FederationMode>(
-    (channel as unknown as { federationMode?: FederationMode }).federationMode ?? 'inherit',
+    channel.federationMode ?? 'inherit',
   );
   const [busy, setBusy] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
