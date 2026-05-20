@@ -208,6 +208,25 @@ const envSchema = z.object({
   OIDC_REDIRECT_URI: optionalString,
   /** Label shown on the login button. */
   OIDC_BUTTON_LABEL: z.string().default('Sign in with SSO'),
+
+  // Federation -------------------------------------------------------------
+  /**
+   * IR20 federation (phase 1: peering handshake only). When false, .well-known
+   * returns 404, all /_federation and /api/admin/peers routes return 404, and
+   * no signing key is generated. Safe to keep false on instances that don't
+   * federate. See docs/federation.md.
+   */
+  FEDERATION_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  /**
+   * 32 raw bytes, base64-encoded. Encrypts the FederationKey.privateKey
+   * column. Generate with:
+   *   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+   * Required when FEDERATION_ENABLED=true in production.
+   */
+  TAVERN_DATA_KEY: optionalString,
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -240,6 +259,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
   }
+  // Federation: validate TAVERN_DATA_KEY when production federation is enabled.
+  if (cfg.FEDERATION_ENABLED && cfg.NODE_ENV === 'production') {
+    if (!cfg.TAVERN_DATA_KEY) {
+      throw new Error(
+        'FEDERATION_ENABLED=true requires TAVERN_DATA_KEY in production.\n' +
+          'Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
+      );
+    }
+    const decoded = Buffer.from(cfg.TAVERN_DATA_KEY, 'base64');
+    if (decoded.length !== 32) {
+      throw new Error(`TAVERN_DATA_KEY: must decode to exactly 32 bytes (got ${decoded.length}).`);
+    }
+  }
+
   // UPL-007: in production, refuse to launch with ALLOW_UNSCANNED_UPLOADS=true
   // *and* no scanner configured. Together that's "accept any binary the
   // client sends, unscanned" — fine for dev, dangerous on a public instance.
@@ -271,5 +304,6 @@ export function describeConfig(cfg: Config): string {
         ? `${cfg.SMTP_HOST}:${cfg.SMTP_PORT}${cfg.SMTP_SECURE ? ' (tls)' : ''}`
         : 'disabled (password-reset mails logged to console)'
     }`,
+    `  federation: ${cfg.FEDERATION_ENABLED ? 'enabled' : 'disabled'}`,
   ].join('\n');
 }
