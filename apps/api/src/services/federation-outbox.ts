@@ -118,9 +118,11 @@ export async function fanOutMessageCreate(input: FanOutMessageCreateInput): Prom
     } catch (err: unknown) {
       // Per-peer failures must not stop the loop — one bad peer should not
       // strand a message that could reach the others.
-      const msg = err instanceof Error ? err.message : String(err);
+      // Pino's default `err` serializer extracts message + stack + name from
+      // an Error; pre-flattening to a string would drop the stack trace.
+      const errObj = err instanceof Error ? err : new Error(String(err));
       input.log.warn(
-        { err: msg, peerInstanceId, messageId: input.messageId, eventType },
+        { err: errObj, peerInstanceId, messageId: input.messageId, eventType },
         'federation fan-out enqueue failed for peer',
       );
     }

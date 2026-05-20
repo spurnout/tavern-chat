@@ -162,6 +162,10 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         // Federation Phase 3: per-channel override (`inherit | force_on |
         // force_off`). Combined with Server.federationEnabled at fan-out time.
         federationMode: true,
+        // P3-6 — pull the server flag in the same round-trip so the fan-out
+        // gate below doesn't need a second `server.findUnique` on the hot
+        // create path.
+        server: { select: { federationEnabled: true } },
       },
     });
     if (channelMeta) {
@@ -467,12 +471,8 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     //   3. Effective federation: combines server flag with channel override
     if (deps?.queues && deps.selfHost && result.serverId && channelMeta) {
       try {
-        const server = await prisma.server.findUnique({
-          where: { id: result.serverId },
-          select: { federationEnabled: true },
-        });
         const effective = computeEffectiveFederation(
-          server?.federationEnabled ?? false,
+          channelMeta.server?.federationEnabled ?? false,
           channelMeta.federationMode,
         );
         if (effective) {
@@ -491,9 +491,11 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           });
         }
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        // Pino's default `err` serializer extracts message + stack + name from
+        // an Error; pre-flattening to a string would drop the stack trace.
+        const errObj = err instanceof Error ? err : new Error(String(err));
         app.log.warn(
-          { err: msg, messageId: fullRow.id, channelId, serverId: result.serverId },
+          { err: errObj, messageId: fullRow.id, channelId, serverId: result.serverId },
           'federation fan-out failed for message.create',
         );
       }
