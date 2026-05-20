@@ -73,6 +73,11 @@ model User {
   // (see @@unique below) so a re-login matches the same Tavern account.
   oidcIssuer          String?
   oidcSubject         String?
+  // Federation Phase 2: per-user ed25519 keypair provisioned here and used in
+  // Phase 3 for message signing. Private key is AES-256-GCM encrypted at rest
+  // (see apps/api/src/lib/at-rest.ts) using TAVERN_DATA_KEY.
+  federationKeyPublic   Bytes?
+  federationKeyPrivate  Bytes?   // AES-256-GCM encrypted PKCS8 (via TAVERN_DATA_KEY)
   // Wave 2 #18: account deletion grace period.
   scheduledDeleteAt   DateTime?
   // Wave 3 #30/#33: appearance preferences (theme, font, motion).
@@ -2347,6 +2352,7 @@ model RemoteInstance {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   envelopes            FederationEnvelopeLog[]
+  remoteUsers          RemoteUser[]
 
   @@index([status])
 }
@@ -2379,4 +2385,24 @@ model FederationEnvelopeLog {
 
   @@unique([peerInstanceId, nonce])
   @@index([peerInstanceId, receivedAt])
+}
+
+// ============================ FEDERATION (Phase 2) ============================
+// Remote-user identity. RemoteUser is a cache projection from the home instance.
+// User.federationKeyPublic/Private are per-user ed25519 keys used in Phase 3 for
+// message signing (provisioned here in Phase 2 to avoid schema thrash later).
+
+model RemoteUser {
+  id                String         @id
+  remoteInstanceId  String
+  remoteInstance    RemoteInstance @relation(fields: [remoteInstanceId], references: [id], onDelete: Cascade)
+  remoteUserId      String         @unique // "alice@b.example"
+  displayNameCache  String
+  avatarUrlCache    String?
+  publicKey         Bytes          // 32 raw bytes (ed25519)
+  lastSeenAt        DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([remoteInstanceId])
 }
