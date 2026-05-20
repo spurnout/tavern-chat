@@ -103,6 +103,7 @@ import { ok } from './lib/responses.js';
 import { registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
+import { registerAdminServerRemoteMembersRoutes } from './routes/admin-server-remote-members.js';
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
 import { registerFederationEventsRoutes } from './routes/federation-events.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
@@ -343,6 +344,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
+      // P3-12 — admin testing backdoor: manually add a remote user as a
+      // ServerMember on a local server. Lets us exercise Phase 3 fan-out
+      // end-to-end before the Phase 4 federated-invite flow lands.
+      registerAdminServerRemoteMembersRoutes(app, { profile: federationProfile });
       // P3-5: now that all three pieces exist, populate the slot the queue
       // client closure reads on every outbox enqueue.
       federationDispatcherSlot = {
