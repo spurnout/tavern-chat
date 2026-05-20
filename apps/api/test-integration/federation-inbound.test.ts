@@ -552,4 +552,153 @@ describe.skipIf(!dockerOk)('P3-7 — POST /_federation/event (message.create)', 
       await app.close();
     }
   });
+
+  it('previousInstanceKey overlap: envelope signed by previous key still verifies', async () => {
+    // Simulate a peer that has rotated its instance key. We give the peer a
+    // NEW key as `instanceKey` and the OLD key as `previousInstanceKey`. An
+    // envelope signed with the OLD key must still verify (rotation overlap
+    // window — the peer doesn't know we don't have its new key yet).
+    const fx = await makeFixture();
+    // Replace the peer's instance key with a freshly-rotated keypair, and
+    // record the keypair we generated in `makeFixture` as the previous key.
+    const newKp = generateKeyPair();
+    await prisma.remoteInstance.update({
+      where: { id: fx.peerInstanceId },
+      data: {
+        instanceKey: exportPublicKeyRaw(newKp.publicKey),
+        previousInstanceKey: exportPublicKeyRaw(fx.peerKp.publicKey),
+      },
+    });
+
+    // Envelope is signed with the OLD instance key (fx.peerKp). This is
+    // what a peer mid-rotation would send if they hadn't yet completed
+    // re-handshaking with this instance.
+    const messageId = ulid();
+    const envelope = buildMsgCreateEnvelope({
+      fx,
+      messageId,
+      content: 'signed with previous instance key',
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.id).toBe(messageId);
+
+      // The message row must have been persisted normally — the rotation
+      // fallback is transparent to the handler.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row).not.toBeNull();
+      expect(row!.content).toBe('signed with previous instance key');
+
+      // And a third, unrelated key must still be rejected — the fallback
+      // accepts ONLY the previous-key rotation window, not any old key.
+      const attacker = generateKeyPair();
+      const rejected = buildMsgCreateEnvelope({
+        fx,
+        signInstanceOverride: (b: Buffer) => edSign(b, attacker.privateKey),
+      });
+      const res2 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: rejected,
+      });
+      expect(res2.statusCode).toBe(401);
+      const body2 = res2.json();
+      expect(body2.error).toMatch(/instance signature/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('previousInstanceKey fallback does NOT cover user-signature failures', async () => {
+    // Defence-in-depth: the rotation fallback exists for instance-key
+    // rotation only. A user-signature failure must still be a hard 401
+    // even when previousInstanceKey is set, otherwise an attacker could
+    // forge user signatures and have them silently swallowed by the retry.
+    const fx = await makeFixture();
+    await prisma.remoteInstance.update({
+      where: { id: fx.peerInstanceId },
+      data: {
+        previousInstanceKey: exportPublicKeyRaw(generateKeyPair().publicKey),
+      },
+    });
+
+    const attacker = generateKeyPair();
+    const envelope = buildMsgCreateEnvelope({
+      fx,
+      signUserOverride: (b: Buffer) => edSign(b, attacker.privateKey),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(401);
+      const body = res.json();
+      expect(body.error).toMatch(/user signature/i);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('FK violation on replyToMessageId rolls back the envelope log atomically', async () => {
+    // Confirm the envelope-log write + message create live in the same
+    // transaction. A non-existent `replyToMessageId` triggers a P2003 FK
+    // violation on Message.replyTo_fkey; the whole transaction must roll
+    // back so the peer can retry without colliding on the unique nonce.
+    const fx = await makeFixture();
+    const orphanReplyId = ulid(); // not in DB
+
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'message.create',
+      fromInstance: PEER_HOST,
+      toInstance: SELF_HOST,
+      payload: {
+        authorRemoteUserId: fx.authorRemoteUserId,
+        channelId: fx.channelId,
+        messageId: ulid(),
+        content: 'replying to a ghost',
+        replyToMessageId: orphanReplyId,
+        createdAt: new Date().toISOString(),
+      },
+      signUser: (b: Buffer) => edSign(b, fx.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, fx.peerKp.privateKey),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      // Specific status doesn't matter — what matters is that it's a 4xx/5xx
+      // error AND that the envelope log was NOT committed.
+      expect(res.statusCode).toBeGreaterThanOrEqual(400);
+
+      // The transaction must have rolled back: no envelope log row, no
+      // message row.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, nonce: envelope.nonce },
+      });
+      expect(log).toBeNull();
+      const msg = await prisma.message.findFirst({
+        where: { channelId: fx.channelId },
+      });
+      expect(msg).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
 });

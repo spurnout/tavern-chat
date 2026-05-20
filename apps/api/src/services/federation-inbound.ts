@@ -15,13 +15,21 @@
  *      author id lives in its payload (see `extractAuthorRemoteUserId`).
  *   4. Call `verifyTwoLayerMessageEnvelope` with BOTH keys + the appropriate
  *      Zod schema. This is the single point that checks both signatures, the
- *      replay window, the payload shape, and the timestamps.
- *   5. Insert the envelope-log row. The `unique(peerInstanceId, nonce)`
- *      constraint is the replay protection — a duplicate raises Prisma `P2002`
- *      which we translate to 409.
- *   6. Dispatch to the event-type handler. The handler is responsible for the
- *      side-effects (persist, broadcast, update `RemoteUser.lastSeenAt`). It
- *      returns the HTTP status + optional body that the route layer renders.
+ *      replay window, the payload shape, and the timestamps. On instance-
+ *      signature failure ONLY, retry with the peer's `previousInstanceKey`
+ *      (rotation overlap) before declaring `bad_signature`.
+ *   5. Open a transaction; insert the envelope-log row FIRST. The
+ *      `unique(peerInstanceId, nonce)` constraint is the replay protection —
+ *      a duplicate raises Prisma `P2002` which we translate to 409.
+ *   6. Dispatch to the event-type handler INSIDE the transaction. The handler
+ *      does all its writes via the transactional `tx` client, so if it fails
+ *      for an unrecoverable reason the envelope-log insert rolls back too —
+ *      otherwise the peer's retry would collide with the unique nonce and
+ *      the message would be permanently lost.
+ *   7. After the transaction commits, run the handler's `postCommit` hook —
+ *      gateway broadcasts and `RemoteUser.lastSeenAt` cache touch. Both
+ *      MUST be outside the transaction so clients never see an event for a
+ *      row that rolled back, and the cache touch survives rollbacks.
  *
  * Why a dispatcher map: P3-8 (message.update + message.delete) and P3-9
  * (reaction.add + reaction.remove) both register handlers by adding a key to
@@ -190,12 +198,33 @@ export class FederationInboundService {
       }
     }
 
-    const verified = verifyTwoLayerMessageEnvelope({
+    // Verify against the peer's CURRENT instance key first.
+    let verified = verifyTwoLayerMessageEnvelope({
       envelope: body,
       peerInstancePublicKeyRaw: Buffer.from(peer.instanceKey),
       authorPublicKeyRaw: Buffer.from(remoteUserRow.publicKey),
       payloadSchema: handler.payloadSchema,
     });
+    // Rotation-overlap fallback: if verification failed SPECIFICALLY because
+    // the instance signature didn't match (user signature + envelope shape
+    // both fine) AND the peer has a `previousInstanceKey` cached from a prior
+    // rotation, retry with the previous key. The fallback is intentionally
+    // scoped to instance-signature failures — a user-signature failure or an
+    // envelope-shape failure must NOT trigger the retry, because the
+    // previous-key window exists to handle peer rotation, not to disguise
+    // other classes of failure.
+    if (
+      !verified.ok &&
+      peer.previousInstanceKey &&
+      /instance signature does not verify/i.test(verified.reason)
+    ) {
+      verified = verifyTwoLayerMessageEnvelope({
+        envelope: body,
+        peerInstancePublicKeyRaw: Buffer.from(peer.previousInstanceKey),
+        authorPublicKeyRaw: Buffer.from(remoteUserRow.publicKey),
+        payloadSchema: handler.payloadSchema,
+      });
+    }
     if (!verified.ok) {
       // verify returns three flavours of failure: (a) "envelope shape
       // invalid" / "notBefore in the future" / "notAfter expired" — those
@@ -211,28 +240,54 @@ export class FederationInboundService {
       );
     }
 
-    // Replay protection. We insert FIRST and dispatch SECOND so a duplicate
-    // envelope never reaches the handler.
+    // Transactional envelope log + handler side-effects. The log insert is
+    // the FIRST write inside the transaction — its unique(peerInstanceId,
+    // nonce) constraint provides replay protection. If the handler fails
+    // for an unrecoverable reason (FK violation on replyToMessageId, etc.),
+    // the log row rolls back with the rest of the transaction, so the peer
+    // can retry without permanently losing the message.
+    //
+    // What stays OUTSIDE the transaction: `remoteUser.lastSeenAt` updates
+    // (cache touch, best-effort), gateway broadcasts (only fired AFTER the
+    // commit so clients never see an event for a rolled-back row).
     const payloadHash = createHash('sha256')
       .update(canonicalize(verified.envelope.payload as unknown))
       .digest();
+
+    let result: ProcessEnvelopeResult;
+    let postCommit: PostCommitAction | null = null;
     try {
-      await this.prisma.federationEnvelopeLog.create({
-        data: {
-          id: ulid(),
-          direction: 'inbound',
-          peerInstanceId: peer.id,
-          eventType: verified.envelope.eventType,
-          payloadHash,
-          nonce: verified.envelope.nonce,
-          notBefore: new Date(verified.envelope.notBefore),
-          notAfter: new Date(verified.envelope.notAfter),
-          status: 'accepted',
-          processedAt: new Date(),
-        },
+      const txOutput = await this.prisma.$transaction(async (tx) => {
+        await tx.federationEnvelopeLog.create({
+          data: {
+            id: ulid(),
+            direction: 'inbound',
+            peerInstanceId: peer.id,
+            eventType: verified.envelope.eventType,
+            payloadHash,
+            nonce: verified.envelope.nonce,
+            notBefore: new Date(verified.envelope.notBefore),
+            notAfter: new Date(verified.envelope.notAfter),
+            status: 'accepted',
+            processedAt: new Date(),
+          },
+        });
+        return handler.handle({
+          envelope: verified.envelope,
+          payload: verified.payload,
+          peer,
+          remoteUser: remoteUserRow,
+          tx,
+        });
       });
+      result = txOutput.result;
+      postCommit = txOutput.postCommit ?? null;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        // The unique-constraint failure is the log row in the vast majority
+        // of cases (replay). Any other P2002 (e.g. message id reuse with a
+        // different nonce — see handler dedupe path) is handled inside the
+        // handler itself, so reaching here means the log row collided.
         throw new FederationInboundError(
           'replay',
           'nonce already seen for this peer',
@@ -241,18 +296,43 @@ export class FederationInboundService {
       throw err;
     }
 
-    // Hand off to the per-event-type handler.
-    return handler.handle({
-      envelope: verified.envelope,
-      payload: verified.payload,
-      peer,
-      remoteUser: remoteUserRow,
-      prisma: this.prisma,
-    });
+    // Post-commit side effects. Gateway broadcasts and the lastSeenAt touch
+    // MUST happen after the transaction commits, so:
+    //   - clients never see an event for a row that rolled back;
+    //   - the lastSeenAt cache touch survives a transaction rollback (it's
+    //     not authoritative state — we still want to record that we heard
+    //     from this peer even if message persistence had to retry).
+    if (postCommit) {
+      await postCommit(this.prisma);
+    }
+    return result;
   }
 }
 
 // --- handler map -------------------------------------------------------------
+
+/**
+ * Work the handler wants to run AFTER the transaction commits — gateway
+ * broadcasts, cache touches that should survive a rollback, etc.
+ *
+ * It receives the non-transactional `PrismaClient` because by definition it
+ * runs after the surrounding `$transaction` has resolved; the `tx` handle
+ * is no longer valid there.
+ */
+export type PostCommitAction = (prisma: PrismaClient) => Promise<void>;
+
+/**
+ * What every handler returns from inside the transaction. The HTTP shape
+ * `result` is what the route renders; `postCommit` is anything that has to
+ * happen AFTER `$transaction` resolves (gateway broker publishes, the
+ * `lastSeenAt` cache touch). Splitting them lets `processEnvelope` keep the
+ * "fire side effects only on commit" rule in one place — handlers don't
+ * have to know they're being run inside a transaction.
+ */
+export interface HandlerOutput {
+  result: ProcessEnvelopeResult;
+  postCommit?: PostCommitAction;
+}
 
 /**
  * A handler bundles three things: the payload schema (passed into
@@ -263,6 +343,12 @@ export class FederationInboundService {
  * Adding a new event type in P3-8 / P3-9 means adding one entry here. The
  * route shell, signature verification, and replay-log write all stay in
  * `processEnvelope` and don't need to be touched.
+ *
+ * Handlers receive a transactional `tx` client, not the bare `PrismaClient`.
+ * Every DB write the handler performs MUST go through `tx` so that a failure
+ * partway through rolls back the envelope-log insert too — otherwise the
+ * peer's retry would collide with the unique nonce and the message would be
+ * permanently lost.
  */
 interface InboundHandler<TSchema extends z.ZodTypeAny> {
   payloadSchema: TSchema;
@@ -271,9 +357,11 @@ interface InboundHandler<TSchema extends z.ZodTypeAny> {
     envelope: TwoLayerSignedEnvelope<z.infer<TSchema>>;
     payload: z.infer<TSchema>;
     peer: { id: string };
-    remoteUser: Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>;
-    prisma: PrismaClient;
-  }) => Promise<ProcessEnvelopeResult>;
+    remoteUser: NonNullable<
+      Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+    >;
+    tx: Prisma.TransactionClient;
+  }) => Promise<HandlerOutput>;
 }
 
 const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>> = {
@@ -312,14 +400,14 @@ async function handleMessageCreate(input: {
   remoteUser: NonNullable<
     Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
   >;
-  prisma: PrismaClient;
-}): Promise<ProcessEnvelopeResult> {
-  const { envelope, payload, peer, remoteUser, prisma } = input;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { envelope, payload, peer, remoteUser, tx } = input;
 
   // Channel must exist locally. Phase 3 requires the receiving instance to
   // have a mirror Channel row already; Phase 4 will introduce federated
   // invites that create the row on-demand.
-  const channel = await prisma.channel.findUnique({
+  const channel = await tx.channel.findUnique({
     where: { id: payload.channelId },
     select: {
       id: true,
@@ -354,8 +442,16 @@ async function handleMessageCreate(input: {
   // server (see findPeersWithRemoteMembers); the inbound side enforces the
   // symmetric invariant — "we don't accept content from a remote user we
   // haven't already invited into this room."
-  const localUser = await ensureUserForRemoteUser(remoteUser, prisma);
-  const member = await prisma.serverMember.findUnique({
+  //
+  // `ensureUserForRemoteUser` typed as `PrismaClient`, but Prisma's runtime
+  // accepts a TransactionClient anywhere a Client is expected as long as the
+  // calls are on the model-delegate surface. We cast through unknown so the
+  // function participates in this transaction.
+  const localUser = await ensureUserForRemoteUser(
+    remoteUser,
+    tx as unknown as PrismaClient,
+  );
+  const member = await tx.serverMember.findUnique({
     where: { serverId_userId: { serverId: channel.serverId, userId: localUser.id } },
     select: { userId: true },
   });
@@ -371,18 +467,28 @@ async function handleMessageCreate(input: {
   // deletes from the same peer find the local row without an extra lookup
   // table. If a row with that id already exists (concurrent envelopes,
   // replay after envelope-log cleared), short-circuit with the existing one.
-  const existingMessage = await prisma.message.findUnique({
+  // The envelope-log row stays committed in that case — we DID accept this
+  // envelope, it's just a duplicate of a message we already have.
+  const existingMessage = await tx.message.findUnique({
     where: { id: payload.messageId },
     select: { id: true },
   });
   if (existingMessage) {
-    // Touch lastSeenAt even on idempotent path — the peer DID see this user
-    // active when they signed the envelope.
-    await prisma.remoteUser.update({
-      where: { id: remoteUser.id },
-      data: { lastSeenAt: new Date() },
-    });
-    return { status: 200, body: { ok: true, data: { id: existingMessage.id, deduplicated: true } } };
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { id: existingMessage.id, deduplicated: true } },
+      },
+      // Touch lastSeenAt even on idempotent path — the peer DID see this user
+      // active when they signed the envelope. Done post-commit so it survives
+      // any rollback.
+      postCommit: async (prisma) => {
+        await prisma.remoteUser.update({
+          where: { id: remoteUser.id },
+          data: { lastSeenAt: new Date() },
+        });
+      },
+    };
   }
 
   // The "instance signature" (envelope.signature) is the canonical proof
@@ -390,7 +496,7 @@ async function handleMessageCreate(input: {
   // the Message row lets us audit later — and lets future moderation hooks
   // verify the row without re-fetching the envelope.
   const signatureBytes = Buffer.from(envelope.signature, 'base64');
-  const messageRow = await prisma.message.create({
+  const messageRow = await tx.message.create({
     data: {
       id: payload.messageId,
       serverId: channel.serverId,
@@ -405,16 +511,10 @@ async function handleMessageCreate(input: {
     },
   });
 
-  // Touch the cache so the next inbound event for this user takes the warm
-  // path. Cheaper than going around through the profile service again.
-  await prisma.remoteUser.update({
-    where: { id: remoteUser.id },
-    data: { lastSeenAt: new Date() },
-  });
-
   // Pull the full row shape `serializeMessage` expects. We need the relations
-  // to render a wire DTO that matches the local CREATE path.
-  const fullRow = await prisma.message.findUniqueOrThrow({
+  // to render a wire DTO that matches the local CREATE path. Reads through
+  // `tx` so we see the row we just inserted.
+  const fullRow = await tx.message.findUniqueOrThrow({
     where: { id: messageRow.id },
     include: {
       attachments: { select: { id: true } },
@@ -444,18 +544,29 @@ async function handleMessageCreate(input: {
   // local create path passes the author's id, but here we have no single
   // viewer to serialise for.
   const dto = serializeMessage(fullRow, '');
-  gatewayBroker.publish({
-    type: 'MESSAGE_CREATE',
-    serverId: channel.serverId,
-    channelId: channel.id,
-    data: dto,
-  });
 
   // Critically: do NOT call fanOutMessageCreate here. The originInstanceId
   // field is the marker — Phase 3 has no relay, the origin home instance
   // is responsible for delivering to every peer directly. The outbound path
   // in routes/messages.ts only fires from the local CREATE handler.
-  return { status: 200, body: { ok: true, data: { id: messageRow.id } } };
+  return {
+    result: { status: 200, body: { ok: true, data: { id: messageRow.id } } },
+    // Broadcast + lastSeenAt are post-commit. The broadcast happens only
+    // after the message row is durable; the cache touch happens regardless
+    // of the transaction outcome (it's not authoritative state).
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'MESSAGE_CREATE',
+        serverId: channel.serverId,
+        channelId: channel.id,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
 }
 
 // --- helpers ---------------------------------------------------------------
