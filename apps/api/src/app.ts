@@ -103,8 +103,10 @@ import { ok } from './lib/responses.js';
 import { registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
+import { registerFederationProfileRoutes } from './routes/federation-profile.js';
 import { FederationKeyStore } from './services/federation-keys.js';
 import { FederationPeeringService } from './services/federation-peering.js';
+import { FederationProfileService } from './services/federation-profile.js';
 import { UserKeyStore } from './services/user-keys.js';
 import { loadDataKey } from './lib/data-key.js';
 
@@ -301,6 +303,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // Provision the per-user key store so new users get a signing keypair
       // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
       userKeys = new UserKeyStore({ dataKey });
+      const profile = new FederationProfileService({
+        keys: federationKeys!,
+        userKeys: userKeys!,
+        selfHost: new URL(opts.config.PUBLIC_BASE_URL).host,
+      });
+      registerFederationProfileRoutes(app, { service: profile });
     }
 
     await registerServerRoutes(app);
