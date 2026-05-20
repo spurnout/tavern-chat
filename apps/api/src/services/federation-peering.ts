@@ -12,6 +12,36 @@ import { canonicalize } from '../lib/canonical-json.js';
 import { verifyEnvelopeShape, buildSignedEnvelope, type SignedEnvelope } from './federation-envelopes.js';
 import { discoverInstance, postPeeringEnvelope } from './federation-client.js';
 
+/**
+ * Validates a peer hostname before any outbound discovery fetch. Prevents SSRF
+ * via the unauthenticated /_federation/peering route and defence-in-depth for
+ * the admin-initiate path.
+ *
+ * Rejects: bare IPs (IPv4/IPv6), localhost, hostnames without a dot.
+ */
+function assertValidPeerHost(host: string): void {
+  if (!host || typeof host !== 'string') {
+    throw new PeeringError('bad_envelope', 'peer host is required');
+  }
+  const lower = host.toLowerCase();
+  if (lower === 'localhost') {
+    throw new PeeringError('bad_envelope', 'peer host cannot be localhost');
+  }
+  // Bare IPv4: digits, dots, nothing else
+  if (/^\d+\.\d+\.\d+\.\d+(?::\d+)?$/.test(host)) {
+    throw new PeeringError('bad_envelope', 'peer host must be a hostname, not an IPv4 address');
+  }
+  // IPv6: contains colon (a hostname:port shape would also match, but real
+  // peer hosts don't carry a port in the discovery identifier)
+  if (host.includes(':') || host.includes('[') || host.includes(']')) {
+    throw new PeeringError('bad_envelope', 'peer host must not contain port or IPv6 brackets');
+  }
+  // Must contain at least one dot — rejects TLD-less names like "intranet"
+  if (!host.includes('.')) {
+    throw new PeeringError('bad_envelope', 'peer host must be a fully-qualified domain');
+  }
+}
+
 export interface FederationPeeringServiceOptions {
   prisma?: PrismaClient;
 }
@@ -48,6 +78,7 @@ export class FederationPeeringService {
     if (typeof preCheck !== 'string' || preCheck.length === 0) {
       throw new PeeringError('bad_envelope', 'envelope missing fromInstance');
     }
+    assertValidPeerHost(preCheck);
 
     // 2. fetch the sender's discovery doc to get their public key
     const discovery = await discoverInstance(preCheck);
@@ -139,6 +170,7 @@ export class FederationPeeringService {
   }
 
   async initiatePeering(input: InitiatePeeringInput): Promise<{ remoteInstanceId: string }> {
+    assertValidPeerHost(input.host);
     const discovery = await discoverInstance(input.host);
     const pubRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
 
@@ -195,8 +227,11 @@ export class FederationPeeringService {
   }): Promise<void> {
     const peer = await this.prisma.remoteInstance.findUnique({ where: { id: input.id } });
     if (!peer) throw new PeeringError('bad_envelope', `peer ${input.id} not found`);
-    if (peer.status !== 'pending_inbound' && peer.status !== 'pending_outbound') {
-      throw new PeeringError('bad_envelope', `peer is in status ${peer.status}, cannot approve`);
+    if (peer.status !== 'pending_inbound') {
+      throw new PeeringError(
+        'bad_envelope',
+        `peer is ${peer.status}; only pending_inbound peers can be approved on this side`,
+      );
     }
 
     await this.prisma.remoteInstance.update({

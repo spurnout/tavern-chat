@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { loadDataKey } from './lib/data-key.js';
 
 const optionalString = z
   .string()
@@ -267,9 +268,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           'Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
       );
     }
-    const decoded = Buffer.from(cfg.TAVERN_DATA_KEY, 'base64');
-    if (decoded.length !== 32) {
-      throw new Error(`TAVERN_DATA_KEY: must decode to exactly 32 bytes (got ${decoded.length}).`);
+    // Run the same validator the API uses at bootstrap time — one canonical path.
+    try {
+      loadDataKey(cfg.TAVERN_DATA_KEY);
+    } catch (e) {
+      throw new Error(`TAVERN_DATA_KEY validation failed: ${(e as Error).message}`);
     }
   }
 
