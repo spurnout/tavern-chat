@@ -16,6 +16,11 @@ export const ENVELOPE_EVENT_TYPES = [
   'peering.revoke',
   'profile.request',
   'profile.response',
+  'message.create',
+  'message.update',
+  'message.delete',
+  'reaction.add',
+  'reaction.remove',
 ] as const;
 export type EnvelopeEventType = (typeof ENVELOPE_EVENT_TYPES)[number];
 

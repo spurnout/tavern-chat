@@ -3,3 +3,4 @@ export * from './envelope.js';
 export * from './peering.js';
 export * from './discovery.js';
 export * from './profile.js';
+export * from './messages.js';
