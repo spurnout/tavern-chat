@@ -1436,6 +1436,24 @@ async function handleMessageDelete(input: {
     );
   }
 
+  // Author-only check: Phase 3 only accepts deletes signed by the original
+  // author. Moderator-driven federated deletes are a Phase 7 problem —
+  // letting peers' moderators delete content on this instance requires a
+  // separate trust model. For now, treat any actor != original author as
+  // forbidden.
+  //
+  // The author check MUST run BEFORE the `existing.deletedAt` short-circuit
+  // below: otherwise a non-author replaying a delete on an already-deleted
+  // row gets 200 (deduplicated) while a non-author replaying on a still-
+  // present row gets 403, leaking soft-delete state via the status code.
+  // After the reorder both cases consistently return 403. See follow-up #31.
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
   // Idempotent delete: if the row is already soft-deleted, return 200
   // without touching anything. This matters when a peer retries a delete
   // (rare but possible — outbox retries, envelope replay window). The
@@ -1455,18 +1473,6 @@ async function handleMessageDelete(input: {
         });
       },
     };
-  }
-
-  // Author-only check: Phase 3 only accepts deletes signed by the original
-  // author. Moderator-driven federated deletes are a Phase 7 problem —
-  // letting peers' moderators delete content on this instance requires a
-  // separate trust model. For now, treat any actor != original author as
-  // forbidden.
-  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
-    throw new FederationInboundError(
-      'forbidden',
-      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
-    );
   }
 
   // Soft-delete + cleanup, identical to the local DELETE handler:
@@ -3507,7 +3513,24 @@ async function handleDmMessageDelete(input: {
     );
   }
 
-  // 3) Idempotent delete: if the row is already soft-deleted, return 200
+  // 3) Author-only check. Phase 5 only accepts deletes signed by the
+  //    original author — DMs have no moderator concept, so any actor !=
+  //    author is forbidden.
+  //
+  //    The author check MUST run BEFORE the `existing.deletedAt` short-
+  //    circuit below: otherwise a non-author replaying a delete on an
+  //    already-deleted row gets 200 (deduplicated) while a non-author
+  //    replaying on a still-present row gets 403, leaking soft-delete state
+  //    via the status code. After the reorder both cases consistently
+  //    return 403. See follow-up #31.
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
+  // 4) Idempotent delete: if the row is already soft-deleted, return 200
   //    without touching anything. See handleMessageDelete for the full
   //    rationale; same pattern here.
   if (existing.deletedAt) {
@@ -3523,16 +3546,6 @@ async function handleDmMessageDelete(input: {
         });
       },
     };
-  }
-
-  // 4) Author-only check. Phase 5 only accepts deletes signed by the
-  //    original author — DMs have no moderator concept, so any actor !=
-  //    author is forbidden.
-  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
-    throw new FederationInboundError(
-      'forbidden',
-      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
-    );
   }
 
   // 5) Soft-delete + cleanup, mirroring the LOCAL DM delete path:

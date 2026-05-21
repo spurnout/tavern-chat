@@ -1213,6 +1213,87 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', 
     }
   });
 
+  // Follow-up #31: the author-only check must run BEFORE the
+  // `existing.deletedAt` idempotent short-circuit, otherwise a non-author
+  // replaying a delete envelope on an already-deleted message gets 200
+  // (deduplicated) while replaying on a still-present message gets 403 —
+  // a status-code oracle that leaks soft-delete state. Both cases below
+  // must return 403 to close the oracle.
+  it('non-author replay on already-deleted message → 403 forbidden (follow-up #31)', async () => {
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+    // Pre-soft-delete the message — the original author already deleted it.
+    const previouslyDeletedAt = new Date('2026-05-19T12:00:00.000Z');
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: previouslyDeletedAt, content: '' },
+    });
+
+    // A different remote user replays a delete envelope. Before the
+    // reorder this returned 200 deduplicated; after, it must 403.
+    const bob = await seedSecondRemoteUser(fx);
+    const envelope = buildMsgDeleteEnvelope({
+      fx,
+      messageId,
+      actorRemoteUserIdOverride: bob.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, bob.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      // Row still soft-deleted with the ORIGINAL deletedAt — the spoof
+      // attempt didn't even touch the timestamp.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt?.getTime()).toBe(previouslyDeletedAt.getTime());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-author replay on non-deleted message → 403 forbidden (defensive coverage for #31)', async () => {
+    // Pair of the test above — confirms that the unchanged (non-deleted)
+    // path also 403s. Both cases must look identical from the wire so a
+    // probing peer can't distinguish "this message was deleted" from
+    // "this message is still here". This case behaved correctly before
+    // the reorder; we lock it down with an explicit test.
+    const fx = await makeFixture();
+    const messageId = ulid();
+    await seedFederatedMessage({ fx, messageId });
+
+    const bob = await seedSecondRemoteUser(fx);
+    const envelope = buildMsgDeleteEnvelope({
+      fx,
+      messageId,
+      actorRemoteUserIdOverride: bob.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, bob.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('delete of non-existent message → 404', async () => {
     const fx = await makeFixture();
     const envelope = buildMsgDeleteEnvelope({ fx, messageId: ulid() });
@@ -5396,6 +5477,81 @@ describe.skipIf(!dockerOk)('P5-8 — POST /_federation/event (dm.message.delete)
     await seedFederatedDmMessage({ fx, messageId });
     const carol = await seedSecondDmRemoteUser(fx);
 
+    const envelope = buildDmMessageDeleteEnvelope({
+      fx,
+      dmChannelId: fx.dmChannelId,
+      messageId,
+      actorRemoteUserIdOverride: carol.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, carol.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  // Follow-up #31: same status-code oracle as the server-channel delete
+  // handler. The author check must precede the `existing.deletedAt`
+  // short-circuit so a non-author replaying a delete on a previously-
+  // deleted DM gets 403 (not 200 deduplicated), closing the soft-delete
+  // state leak.
+  it('non-author replay on already-deleted message → 403 forbidden (follow-up #31)', async () => {
+    const fx = await makeDmMessageFixture();
+    const messageId = ulid();
+    await seedFederatedDmMessage({ fx, messageId });
+    const previouslyDeletedAt = new Date('2026-05-20T09:00:00.000Z');
+    await prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: previouslyDeletedAt, content: '' },
+    });
+
+    const carol = await seedSecondDmRemoteUser(fx);
+    const envelope = buildDmMessageDeleteEnvelope({
+      fx,
+      dmChannelId: fx.dmChannelId,
+      messageId,
+      actorRemoteUserIdOverride: carol.remoteUserId,
+      signUserOverride: (b: Buffer) => edSign(b, carol.kp.privateKey),
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/not the author/i);
+
+      // Row still soft-deleted with the ORIGINAL deletedAt.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row!.deletedAt?.getTime()).toBe(previouslyDeletedAt.getTime());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('non-author replay on non-deleted message → 403 forbidden (defensive coverage for #31)', async () => {
+    // Pair test — confirms the unchanged path also 403s so both branches
+    // are indistinguishable on the wire.
+    const fx = await makeDmMessageFixture();
+    const messageId = ulid();
+    await seedFederatedDmMessage({ fx, messageId });
+
+    const carol = await seedSecondDmRemoteUser(fx);
     const envelope = buildDmMessageDeleteEnvelope({
       fx,
       dmChannelId: fx.dmChannelId,
