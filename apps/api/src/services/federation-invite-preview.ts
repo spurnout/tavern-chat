@@ -14,12 +14,19 @@
  * we ever need to.
  *
  * Scope semantics — `Invite.remoteScope`:
- *   - `any_peer` — no scope check; any caller IP gets the preview.
+ *   - `any_peer` — no scope-target check; any caller IP gets the preview.
  *   - `specific_instance` — caller must supply `callerHost` AND that host
- *     must currently be a peered `RemoteInstance`. Used so an invite for
+ *     must match the invite's pinned target. Used so an invite for
  *     b.example doesn't leak metadata to c.example.
  *   - `specific_user` — same `callerHost` check AND `callerUser` must
  *     equal `invite.remoteUserId` (the pinned qualified identity).
+ *
+ * Defence-in-depth: regardless of scope, if a `callerHost` header is
+ * supplied, that host MUST currently be a peered `RemoteInstance`. This
+ * blocks forged-header probing by non-peer instances even on `any_peer`
+ * scope. Anonymous (no-header) `any_peer` lookups remain unauthenticated
+ * — that's the common case the receiving-instance fetcher uses before it
+ * has reason to declare its identity.
  *
  * Errors fold into `PreviewError` with one of four codes:
  *   - `unknown_invite` (404) — invite row missing OR `remoteScope` is null
@@ -122,25 +129,33 @@ export async function previewFederatedInvite(
     throw new PreviewError('invite_no_longer_valid', 'invite has been fully used');
   }
 
-  // Scope-specific access check.
+  // Defence-in-depth — `X-Tavern-Federation-Caller-Host` is an honour-system
+  // header that the receiving instance sets to declare who it is. If any
+  // value is provided, it MUST correspond to a currently-peered
+  // RemoteInstance — only known peers may probe scoped invites. This blocks
+  // a forged-header attempt to harvest invite metadata before we even reach
+  // the scope-specific check. `any_peer` scope without a header is still
+  // allowed through (the common public-preview case).
+  if (callerHost) {
+    const callerPeer = await prisma.remoteInstance.findUnique({
+      where: { host: callerHost },
+      select: { status: true },
+    });
+    if (!callerPeer || callerPeer.status !== 'peered') {
+      throw new PreviewError('forbidden', 'caller host is not a peered instance');
+    }
+  }
+
+  // Scope-specific access check. The peer-verification above already covers
+  // the "is this caller-host actually a peer" question, so here we only
+  // need to confirm the header is present AND matches the invite's pinned
+  // target host (for specific_instance and specific_user).
   if (invite.remoteScope === 'specific_instance' || invite.remoteScope === 'specific_user') {
     if (!callerHost) {
       throw new PreviewError('forbidden', 'caller host header required');
     }
-    // The host pinned on the invite is the source of truth — even if the
-    // RemoteInstance row was unpeered after the invite was minted, the
-    // caller still has to be the same host the inviter targeted. We then
-    // ALSO require the host to currently be a peered instance so a
-    // previously-peered-then-revoked instance can't keep redeeming.
     if (callerHost !== invite.remoteInstanceHost) {
       throw new PreviewError('forbidden', 'caller host does not match invite target');
-    }
-    const peer = await prisma.remoteInstance.findUnique({
-      where: { host: callerHost },
-      select: { status: true },
-    });
-    if (!peer || peer.status !== 'peered') {
-      throw new PreviewError('forbidden', 'caller host is not a peered instance');
     }
   }
   if (invite.remoteScope === 'specific_user') {

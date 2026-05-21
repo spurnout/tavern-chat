@@ -16,6 +16,12 @@
  *  11. specific_user with caller-host header but missing caller-user → 403.
  *  12. specific_user with mismatched caller-user → 403.
  *  13. Response shape conforms to `federatedInvitePreviewSchema`.
+ *  14. specific_instance where caller-host matches invite.remoteInstanceHost
+ *      but no RemoteInstance row exists at all → 403 (defence-in-depth: the
+ *      pinned target alone is not enough; the host must currently be peered).
+ *  15. any_peer scope with a caller-host header that is not a peered
+ *      RemoteInstance → 403 (forged-header probing is rejected even when
+ *      the scope itself permits anonymous lookups).
  *
  * Rate-limit assertion: per the task spec we only confirm the rate-limit
  * config is wired into the route registration — testing it end-to-end here
@@ -471,6 +477,60 @@ describe.skipIf(!dockerOk)('GET /_federation/invite-preview/:code', () => {
         'x-tavern-federation-caller-host': PEER_HOST,
         'x-tavern-federation-caller-user': `eve@${PEER_HOST}`,
       },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('PERMISSION_DENIED');
+    await app.close();
+  });
+
+  it('returns 403 for specific_instance when caller-host matches invite target but no RemoteInstance row exists', async () => {
+    // Defence-in-depth: even when the header value matches the invite's
+    // pinned target host EXACTLY, if that host has never been peered (no
+    // RemoteInstance row), the lookup must reject. Without the
+    // pre-scope peer-verification step this would erroneously 200.
+    const { ownerId, serverId } = await seedFederatedServer({
+      // Deliberately seed NO peers — PEER_HOST is the invite target but is
+      // not present in RemoteInstance.
+      peerHosts: [],
+    });
+    const code = await createInvite({
+      serverId,
+      ownerId,
+      remoteScope: 'specific_instance',
+      remoteInstanceHost: PEER_HOST,
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/_federation/invite-preview/${code}`,
+      headers: { 'x-tavern-federation-caller-host': PEER_HOST },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('PERMISSION_DENIED');
+    await app.close();
+  });
+
+  it('returns 403 for any_peer scope when a non-peered caller-host header is supplied', async () => {
+    // any_peer scope normally allows anonymous (no header) lookups — see
+    // the very first happy-path test. But if a caller volunteers a
+    // caller-host header, that host must be peered. This blocks a malicious
+    // non-peer from probing any_peer invites with a forged identity to
+    // build a peer/invite census.
+    const { ownerId, serverId } = await seedFederatedServer({
+      peerHosts: [], // no peers seeded
+    });
+    const code = await createInvite({
+      serverId,
+      ownerId,
+      remoteScope: 'any_peer',
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/_federation/invite-preview/${code}`,
+      headers: { 'x-tavern-federation-caller-host': OTHER_HOST },
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('PERMISSION_DENIED');

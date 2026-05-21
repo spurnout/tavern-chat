@@ -199,6 +199,29 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   Scope expands from "remote user avatars" to "remote Tavern icons" — same
   fix, broader surface. Coordinate with #7 and #12 (CSP).
 
+### 24. `POST /api/servers` response missing `originInstance` join
+
+- **Phase:** 4 (whole-phase review)
+- **Trigger:** when other server-creation API polish lands
+- **What:** The Tavern-creation endpoint returns the new `Server` row but
+  does not include the `originInstance` relation in its response shape,
+  unlike `GET /api/servers/:id` which does. Low risk and matches the
+  pre-existing style for create endpoints, but a client that immediately
+  needs the origin instance after create has to issue a follow-up GET.
+  Fold in when the create endpoint is next touched.
+
+### 25. `MEMBER_REMOVE` broadcast with `userId: null`
+
+- **Phase:** 4 (whole-phase review)
+- **Trigger:** when WS event payload cleanup is on the menu
+- **What:** When a remote member is removed from a mirror Tavern, the
+  `MEMBER_REMOVE` WebSocket broadcast carries `userId: null` (because the
+  remote user doesn't have a local `User` row) alongside the qualified
+  `remoteUserId`. Receivers ignore the null `userId` correctly, but the
+  field is noise — schemas should accept `remoteUserId` as the sole
+  identifier on remote-removal events. Not breakage; clean up when WS
+  payload shapes are next revisited.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up
