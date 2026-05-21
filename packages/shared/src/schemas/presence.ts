@@ -9,10 +9,20 @@ import { idSchema } from './ids.js';
  */
 export const presenceSchema = z.enum(['active', 'idle', 'dnd', 'offline']);
 
-/** Server -> client broadcast when a member's presence changes. */
+/**
+ * Server -> client broadcast when a member's presence changes.
+ *
+ * `customStatus` and `customStatusExpiresAt` are optional so existing emitters
+ * that only know about presence (gateway lifecycle, idle reports) keep working
+ * untouched. Receivers MUST treat absent fields as "no change" — they must NOT
+ * clobber a previously-known custom status when an emitter omits the field.
+ * Set the field to `null` explicitly to clear.
+ */
 export const presenceUpdatePayloadSchema = z.object({
   userId: idSchema,
   presence: presenceSchema,
+  customStatus: z.string().min(1).max(128).nullable().optional(),
+  customStatusExpiresAt: z.string().datetime().nullable().optional(),
 });
 
 /**

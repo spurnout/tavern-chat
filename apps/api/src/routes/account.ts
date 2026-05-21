@@ -1,7 +1,13 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '@tavern/db';
+import { Prisma, prisma } from '@tavern/db';
 import { z } from 'zod';
-import { idSchema, TavernError, ulid } from '@tavern/shared';
+import {
+  idSchema,
+  TavernError,
+  ulid,
+  updateAccountSettingsRequestSchema,
+  type AccountSettings,
+} from '@tavern/shared';
 import type { StorageBackend } from '@tavern/media';
 import { ok } from '../lib/responses.js';
 import { runUserDataExport } from '../services/data-export-service.js';
@@ -23,6 +29,59 @@ export async function registerAccountRoutes(
   app: FastifyInstance,
   opts: AccountRouteOpts,
 ): Promise<void> {
+  // ---- Account-level settings (federation polish) ----------------------
+  //
+  // `/api/me/account` is the home for non-profile account preferences — things
+  // that don't show up on the profile card but govern how the account behaves
+  // at the instance / federation boundary. Today: per-user federation opt-outs
+  // (#28 inbound DMs, #33 outbound presence). Future account-level prefs
+  // (locale overrides, email-notification scopes, etc.) can be added here
+  // without inflating the profile-edit surface.
+
+  app.get('/api/me/account', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const user = await prisma.user.findUnique({
+      where: { id: ctx.userId },
+      select: {
+        acceptsFederatedDms: true,
+        acceptsFederatedPresence: true,
+      },
+    });
+    if (!user) throw TavernError.notFound('User not found');
+    const settings: AccountSettings = {
+      acceptsFederatedDms: user.acceptsFederatedDms,
+      acceptsFederatedPresence: user.acceptsFederatedPresence,
+    };
+    reply.send(ok(settings));
+  });
+
+  app.patch('/api/me/account', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const body = updateAccountSettingsRequestSchema.parse(req.body);
+
+    const data: Prisma.UserUpdateInput = {};
+    if (body.acceptsFederatedDms !== undefined) {
+      data.acceptsFederatedDms = body.acceptsFederatedDms;
+    }
+    if (body.acceptsFederatedPresence !== undefined) {
+      data.acceptsFederatedPresence = body.acceptsFederatedPresence;
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: ctx.userId },
+      data,
+      select: {
+        acceptsFederatedDms: true,
+        acceptsFederatedPresence: true,
+      },
+    });
+    const settings: AccountSettings = {
+      acceptsFederatedDms: updated.acceptsFederatedDms,
+      acceptsFederatedPresence: updated.acceptsFederatedPresence,
+    };
+    reply.send(ok(settings));
+  });
+
   // ---- Sessions ---------------------------------------------------------
 
   app.get('/api/me/sessions', async (req, reply) => {

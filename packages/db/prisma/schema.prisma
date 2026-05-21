@@ -84,6 +84,12 @@ model User {
   remoteUserId       String? @unique  // qualified "alice@b.example" — set on remote users only
   remoteInstanceId   String?
   remoteInstance     RemoteInstance? @relation("UserRemoteInstance", fields: [remoteInstanceId], references: [id], onDelete: SetNull)
+  // Federation polish (post-Phase 6): per-user opt-outs for federated DMs and
+  // presence. Defaults preserve pre-migration behaviour — users were opted in
+  // implicitly when no toggle existed. Both are local-only state; peers don't
+  // need to know about them (we simply stop emitting / reject inbound).
+  acceptsFederatedDms       Boolean @default(true)
+  acceptsFederatedPresence  Boolean @default(true)
   // Wave 2 #18: account deletion grace period.
   scheduledDeleteAt   DateTime?
   // Wave 3 #30/#33: appearance preferences (theme, font, motion).

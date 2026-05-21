@@ -83,6 +83,33 @@ export const meSchema = userProfileSchema.extend({
   postingLockedUntil: z.string().datetime().nullable(),
   uploadsLockedUntil: z.string().datetime().nullable(),
   manualDnd: z.boolean(),
+  // Federation polish (post-Phase 6): per-user opt-outs. Always present in
+  // the Me payload so the account-settings page can render the current state
+  // without a second round-trip.
+  acceptsFederatedDms: z.boolean(),
+  acceptsFederatedPresence: z.boolean(),
+});
+
+/**
+ * Account-level settings — the shape returned by `GET /api/me/account` and
+ * accepted by `PATCH /api/me/account`. Distinct from the profile shape
+ * (`updateProfileRequestSchema`) which carries display-facing fields like
+ * `displayName`, `bio`, `avatar`. Account settings are non-profile
+ * preferences that affect how the account behaves at the instance / federation
+ * boundary.
+ *
+ * Phase-6-polish set: federation privacy toggles. Future account-level
+ * preferences (locale, theme, etc.) can be added here without inflating the
+ * profile-edit surface.
+ */
+export const accountSettingsSchema = z.object({
+  acceptsFederatedDms: z.boolean(),
+  acceptsFederatedPresence: z.boolean(),
+});
+
+export const updateAccountSettingsRequestSchema = z.object({
+  acceptsFederatedDms: z.boolean().optional(),
+  acceptsFederatedPresence: z.boolean().optional(),
 });
 
 export const updateProfileRequestSchema = z.object({
@@ -116,3 +143,5 @@ export type MutualServer = z.infer<typeof mutualServerSchema>;
 export type Me = z.infer<typeof meSchema>;
 export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
 export type UpdateMemberNicknameRequest = z.infer<typeof updateMemberNicknameRequestSchema>;
+export type AccountSettings = z.infer<typeof accountSettingsSchema>;
+export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;

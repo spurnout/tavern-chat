@@ -263,6 +263,8 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
           customStatusExpiresAt: true,
           socialLinks: true,
           createdAt: true,
+          acceptsFederatedDms: true,
+          acceptsFederatedPresence: true,
         },
       });
       if (!user) throw TavernError.notFound('User not found');
@@ -284,6 +286,8 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
         customStatus: user.customStatus,
         customStatusExpiresAt: user.customStatusExpiresAt?.toISOString() ?? null,
         socialLinks: parseSocialLinks(user.socialLinks),
+        acceptsFederatedDms: user.acceptsFederatedDms,
+        acceptsFederatedPresence: user.acceptsFederatedPresence,
         // Mutual-servers is meaningless on the caller's own profile (it'd
         // be all of their memberships). The card hides this section for
         // isSelf anyway.
