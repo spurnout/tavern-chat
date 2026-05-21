@@ -19,6 +19,7 @@ import { ok } from '../lib/responses.js';
 import { parseSocialLinks } from '../lib/serializers.js';
 import { type AuthService, TotpRequiredError } from '../services/auth-service.js';
 import type { Config } from '../config.js';
+import { advertisedCapabilities } from './well-known.js';
 
 interface AuthRouteOpts {
   auth: AuthService;
@@ -288,6 +289,14 @@ export async function registerAuthRoutes(app: FastifyInstance, opts: AuthRouteOp
         socialLinks: parseSocialLinks(user.socialLinks),
         acceptsFederatedDms: user.acceptsFederatedDms,
         acceptsFederatedPresence: user.acceptsFederatedPresence,
+        // Federation polish (PF-5): surface the instance's advertised
+        // capability set on the Me payload so settings UIs can conditionally
+        // render per-user opt-out toggles. Empty when federation is off at
+        // the instance level — the `dms` / `presence` env flags are only
+        // meaningful when FEDERATION_ENABLED itself is true.
+        instanceCapabilities: opts.config.FEDERATION_ENABLED
+          ? advertisedCapabilities(opts.config)
+          : [],
         // Mutual-servers is meaningless on the caller's own profile (it'd
         // be all of their memberships). The card hides this section for
         // isSelf anyway.

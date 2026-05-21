@@ -3,6 +3,7 @@ import { idSchema } from './ids.js';
 import { usernameSchema } from './auth.js';
 import { presenceSchema } from './presence.js';
 import { NAME_LIMITS } from '../constants.js';
+import { CAPABILITIES } from '../federation/constants.js';
 
 // Bounds for the rich-profile fields. Kept here so server validators and
 // client forms agree on byte limits without duplication.
@@ -88,6 +89,11 @@ export const meSchema = userProfileSchema.extend({
   // without a second round-trip.
   acceptsFederatedDms: z.boolean(),
   acceptsFederatedPresence: z.boolean(),
+  // The federation capabilities this instance advertises in its .well-known
+  // doc. Surfaced on the Me payload so settings UIs can conditionally render
+  // toggles (e.g. don't show the federated-DMs opt-out if the operator has
+  // disabled `dms` instance-wide). Empty array iff federation itself is off.
+  instanceCapabilities: z.array(z.enum(CAPABILITIES)),
 });
 
 /**
