@@ -31,6 +31,8 @@ import {
 import type { FederationProfileService } from '../services/federation-profile.js';
 import {
   computeEffectiveFederation,
+  fanOutDmMessageDelete,
+  fanOutDmMessageUpdate,
   fanOutMessageCreate,
   fanOutMessageDelete,
   fanOutMessageUpdate,
@@ -67,6 +69,46 @@ interface MessageRouteDeps {
    * forgets the gate), the helper short-circuits when this is `false`.
    */
   federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * P5-7 — shared DM-side lookup for the PATCH / DELETE federation branches.
+ *
+ * Returns the OTHER member's `remoteInstanceId` (when set — i.e. the DM is
+ * federated) for a 1:1 DM. Returns null for:
+ *   - missing channel (defensive — the route already verified the message
+ *     exists, but the DmChannel could in principle have been deleted by a
+ *     concurrent action),
+ *   - group DMs (`kind !== 'direct'`) — Phase 5 only federates 1:1,
+ *   - both members local (`other.remoteInstanceId == null`),
+ *   - malformed membership (no "other" member, which is a 1:1 invariant
+ *     violation — bail rather than throw on a degenerate row).
+ *
+ * One extra `findUnique` per DM PATCH/DELETE on a federated path. The PATCH
+ * and DELETE handlers each call this from inside their own try/catch so a
+ * lookup failure logs + skips the fan-out without breaking the local
+ * mutation that already committed.
+ */
+async function resolveDmFanOutTarget(
+  dmChannelId: string,
+  selfUserId: string,
+): Promise<{ peerInstanceId: string } | null> {
+  const channel = await prisma.dmChannel.findUnique({
+    where: { id: dmChannelId },
+    select: {
+      kind: true,
+      members: {
+        select: {
+          userId: true,
+          user: { select: { id: true, remoteInstanceId: true } },
+        },
+      },
+    },
+  });
+  if (!channel || channel.kind !== 'direct') return null;
+  const other = channel.members.find((m) => m.userId !== selfUserId);
+  if (!other || !other.user.remoteInstanceId) return null;
+  return { peerInstanceId: other.user.remoteInstanceId };
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {
@@ -677,6 +719,43 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         data: dto,
       });
     }
+    // P5-7 — DM message edit fan-out. Mirrors the server-message branch
+    // below but takes the simpler 1:1-only path: one peer target (the
+    // other member's home), capability-gated inside the helper. The author
+    // check above already rejected non-author edits, which guarantees we
+    // never relay an inbound message back to its origin: if alice tries to
+    // edit a message bob (remote) sent, the 403 fired before we got here.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.dmChannelId &&
+      deps.federationEnabledOnInstance !== false
+    ) {
+      try {
+        const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
+        if (target) {
+          await fanOutDmMessageUpdate({
+            queues: deps.queues,
+            selfHost: deps.selfHost,
+            dmChannelId: message.dmChannelId,
+            messageId: updated.id,
+            authorUserId: updated.authorId,
+            authorUsername: updated.author.username,
+            content: updated.content,
+            editedAt: updated.editedAt ?? new Date(),
+            peerInstanceId: target.peerInstanceId,
+            log: app.log,
+            federationEnabledOnInstance: deps.federationEnabledOnInstance,
+          });
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: updated.id, dmChannelId: message.dmChannelId },
+          'dm.message.update federation fan-out failed (local edit unaffected)',
+        );
+      }
+    }
     // P3-8 — fan out the edit to every peered instance with a member in this
     // server. Same best-effort contract as create: gate on (federation deps
     // wired in) AND (server message, not a DM) AND (locally-originated row,
@@ -814,6 +893,41 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         channelId: message.channelId ?? undefined,
         data: { id, channelId: message.channelId, deletedAt: deletedAt.toISOString() },
       });
+    }
+    // P5-7 — DM message delete fan-out. The DELETE route already rejected
+    // any non-author actor on a DM (DM messages have no moderator override),
+    // so by the time we reach this point `message.authorId === ctx.userId`
+    // for the DM case — the same actor-equals-author invariant the server
+    // path checks below. Same one-peer-only path as the PATCH branch.
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.dmChannelId &&
+      deps.federationEnabledOnInstance !== false
+    ) {
+      try {
+        const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
+        if (target) {
+          await fanOutDmMessageDelete({
+            queues: deps.queues,
+            selfHost: deps.selfHost,
+            dmChannelId: message.dmChannelId,
+            messageId: id,
+            actorUserId: message.authorId,
+            actorUsername: message.author.username,
+            deletedAt,
+            peerInstanceId: target.peerInstanceId,
+            log: app.log,
+            federationEnabledOnInstance: deps.federationEnabledOnInstance,
+          });
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: id, dmChannelId: message.dmChannelId },
+          'dm.message.delete federation fan-out failed (local delete unaffected)',
+        );
+      }
     }
     // P3-8 — federate the delete. Identical gating to the PATCH path:
     //   1. deps wired in (FEDERATION_ENABLED on),

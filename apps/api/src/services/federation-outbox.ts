@@ -25,6 +25,8 @@ import {
   channelUpdatePayloadSchema,
   dmCreatePayloadSchema,
   dmMessageCreatePayloadSchema,
+  dmMessageDeletePayloadSchema,
+  dmMessageUpdatePayloadSchema,
   memberAddPayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
@@ -1446,6 +1448,296 @@ export async function fanOutDmMessageCreate(
       peerInstanceId: input.peerInstanceId,
       eventType,
       authorUserId: input.authorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+// --- P5-7 — DM message edit / delete fan-out --------------------------------
+//
+// Mirrors P3-8 (server message edit/delete fan-out) for the DM path. The
+// gating story is identical to P5-5 (`fanOutDmMessageCreate`):
+//   - exactly ONE peer target (the OTHER member's home); no relay, no
+//     multi-peer fan-out.
+//   - 1:1 DMs only (`DmChannel.kind === 'direct'`). The route guard never
+//     reaches this helper for group DMs.
+//   - capability gate: peer must advertise `dms`.
+//   - peer must be `peered`.
+//
+// Author identity nuance: for both update and delete, the actor is BY
+// CONSTRUCTION the original author. The PATCH route already rejects
+// non-author edits, and the DELETE route gives DM messages no moderator
+// override (only the author can delete their own DM posts — explicit in
+// the existing handler). So the helper carries an `authorUserId` /
+// `authorUsername` for update and `actorUserId` / `actorUsername` for
+// delete, in line with the wire shape (delete's payload uses
+// `actorRemoteUserId` because Phase 7 will introduce moderator deletes on
+// the server-message path; DMs never get one).
+//
+// Federation provenance: a DM message stored locally with
+// `originInstanceId != null` was authored by the REMOTE member (inbound
+// from the peer who sent it). Since the PATCH/DELETE author-only checks
+// reject any local user attempting to edit/delete it, we never reach this
+// helper in the relay-style case — the only path here is "local author
+// mutates a message they themselves wrote". No special-case for inbound
+// rows is needed; the gate is the author check upstream.
+
+export interface FanOutDmMessageUpdateInput {
+  queues: QueueClient;
+  selfHost: string;
+  /** Local DmChannel.id — the originating instance's id for the wire payload. */
+  dmChannelId: string;
+  /** Local Message.id — used both on the wire and as the BullMQ jobId disambiguator. */
+  messageId: string;
+  /** Local User.id used to sign the user-layer envelope (the message author). */
+  authorUserId: string;
+  /** Author's local username — combined with `selfHost` to form `<localpart>@<selfHost>`. */
+  authorUsername: string;
+  /** Sanitised post-edit content as persisted locally. */
+  content: string;
+  /** Local Message.editedAt — serialised as ISO on the wire. */
+  editedAt: Date;
+  /** The remote recipient's home RemoteInstance.id — single fan-out target. */
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.message.update` envelope to the recipient's home instance.
+ * Caller has already verified (a) the DM channel is 1:1, (b) the OTHER
+ * member is a remote user, (c) the local Message row was updated, and
+ * (d) the DM_MESSAGE_UPDATE gateway broadcast already fired. The helper:
+ *   1. Defence-in-depth gate on the instance-level federation flag.
+ *   2. Peer lookup; bail with a warning if not peered or no `dms` capability.
+ *   3. Build + parse the payload through `dmMessageUpdatePayloadSchema`.
+ *   4. Enqueue ONE outbox job, with a fresh nonce so consecutive edits
+ *      don't collapse to a single BullMQ jobId (`nonce ?? messageId`).
+ *
+ * Same defensive posture as the rest: peer-side problems never break the
+ * local edit. The local Message.editedAt has already been written when we
+ * reach this helper.
+ */
+export async function fanOutDmMessageUpdate(
+  input: FanOutDmMessageUpdateInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.update',
+      },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.update',
+      },
+      'dm.message.update fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.message.update',
+      },
+      'dm.message.update fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.message.update',
+      },
+      'dm.message.update fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmMessageUpdatePayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    messageId: input.messageId,
+    authorRemoteUserId: `${input.authorUsername}@${input.selfHost}`,
+    content: input.content,
+    editedAt: input.editedAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'dm.message.update';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      messageId: input.messageId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      // Fresh nonce — without it, two consecutive edits would collapse to a
+      // single BullMQ jobId (`nonce ?? messageId`) and the second edit could
+      // silently disappear if the first job was still in-flight.
+      nonce: ulid(),
+      authorUserId: input.authorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+export interface FanOutDmMessageDeleteInput {
+  queues: QueueClient;
+  selfHost: string;
+  /** Local DmChannel.id — the originating instance's id for the wire payload. */
+  dmChannelId: string;
+  /** Local Message.id — used both on the wire and as the BullMQ jobId disambiguator. */
+  messageId: string;
+  /**
+   * The User.id of the actor performing the delete. For P5-7 this MUST be
+   * the original author — DM messages have no moderator override (the
+   * route's existing 403 enforces this). The helper signs with whichever
+   * key it's pointed at; the gate is upstream.
+   */
+  actorUserId: string;
+  actorUsername: string;
+  /** Local Message.deletedAt — serialised as ISO on the wire. */
+  deletedAt: Date;
+  /** The remote recipient's home RemoteInstance.id — single fan-out target. */
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.message.delete` envelope to the recipient's home instance.
+ * Same shape and gating contract as `fanOutDmMessageUpdate`. The payload
+ * uses `actorRemoteUserId` to match the server-side `message.delete` wire
+ * shape (where Phase 7 will introduce moderator deletes); for DMs in P5-7
+ * the actor is always the original author by route-level gate.
+ */
+export async function fanOutDmMessageDelete(
+  input: FanOutDmMessageDeleteInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.delete',
+      },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.delete',
+      },
+      'dm.message.delete fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.message.delete',
+      },
+      'dm.message.delete fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.message.delete',
+      },
+      'dm.message.delete fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmMessageDeletePayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    messageId: input.messageId,
+    actorRemoteUserId: `${input.actorUsername}@${input.selfHost}`,
+    deletedAt: input.deletedAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'dm.message.delete';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      messageId: input.messageId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      // Delete is naturally idempotent on the receiver, but we still want a
+      // fresh nonce so an edit-then-delete on the same messageId doesn't
+      // dedupe against the prior edit's BullMQ job.
+      nonce: ulid(),
+      authorUserId: input.actorUserId,
       payload,
     });
   } catch (err: unknown) {
