@@ -107,6 +107,7 @@ import { registerAdminServerRemoteMembersRoutes } from './routes/admin-server-re
 import { registerFederationProfileRoutes } from './routes/federation-profile.js';
 import { registerFederationEventsRoutes } from './routes/federation-events.js';
 import { registerFederationInvitePreviewRoutes } from './routes/federation-invite-preview.js';
+import { registerFederationInvitePreviewProxyRoutes } from './routes/federation-invite-preview-proxy.js';
 import { registerFederationInvitesAcceptRoutes } from './routes/federation-invites-accept.js';
 import { registerFederationLeaveMirrorRoutes } from './routes/federation-leave-mirror.js';
 import { registerUsersFederatedRoutes } from './routes/users-federated.js';
@@ -375,6 +376,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // run in the service via `X-Tavern-Federation-Caller-Host` / -User
       // headers. Rate-limited per source IP inside the route.
       registerFederationInvitePreviewRoutes(app, { selfHost });
+      // P4-16 — authenticated browser-facing passthrough to a peer's preview
+      // endpoint. The SPA can't (and shouldn't) call A's preview directly:
+      // CORS, IP leak, and the caller-identity headers can only be set
+      // truthfully from the server side. This route validates peering on B,
+      // injects `X-Tavern-Federation-Caller-Host` + `-Caller-User` from the
+      // session, and returns the home's preview JSON unchanged.
+      registerFederationInvitePreviewProxyRoutes(app, { selfHost });
       // P4-6 — authenticated invite acceptance. The joiner asks THIS
       // instance to redeem a federated invite minted by a peer; we POST a
       // signed `member.join_request` to the home, parse the snapshot it

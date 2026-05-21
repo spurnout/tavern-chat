@@ -45,7 +45,8 @@ interface ReadyPayload {
    * the client needs to bootstrap the sidebar — there's no description /
    * createdAt because READY is not the canonical CRUD response.
    * `federationEnabled` is optional for forwards-compatibility with API
-   * builds that predate P3-10.
+   * builds that predate P3-10. `originInstanceId` + `originInstanceHost`
+   * are similarly optional for P4-16 forwards-compat.
    */
   servers: Array<{
     id: string;
@@ -54,6 +55,8 @@ interface ReadyPayload {
     iconAttachmentId: string | null;
     defaultRoleId: string | null;
     federationEnabled?: boolean;
+    originInstanceId?: string | null;
+    originInstanceHost?: string | null;
     roles: string[];
   }>;
 }
@@ -99,6 +102,12 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
           // to false so the wire shape is forwards-compatible with older
           // backends that haven't been redeployed yet.
           federationEnabled: s.federationEnabled ?? false,
+          // P4-16 — mirror provenance fields. Default to null when missing
+          // (forwards-compat with pre-P4-16 API builds). Once the backend
+          // populates these on every READY (see gateway READY emission) the
+          // ?? null becomes a no-op.
+          originInstanceId: s.originInstanceId ?? null,
+          originInstanceHost: s.originInstanceHost ?? null,
           createdAt: new Date().toISOString(),
         });
       }
@@ -144,6 +153,18 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
       // duplicate event is a no-op.
       store.upsertServer(data as Server);
       return;
+    case 'SERVER_REMOVE': {
+      // P4-16 — federated mirror leave. The API broadcasts SERVER_REMOVE to
+      // the leaver when their tear-down empties the mirror. We splice the
+      // Server row + its cached channel list out of the store; the leaver's
+      // sidebar updates on the next render. Routes that depend on the row
+      // (settings, channel pages) are responsible for handling the
+      // navigation away — usually triggered by the same UI action that
+      // initiated the leave.
+      const d = data as { serverId: string };
+      store.removeServer(d.serverId);
+      return;
+    }
     case 'TYPING_START': {
       const d = data as { channelId: string; userId: string };
       store.noteTyping(d.channelId, d.userId, Date.now());

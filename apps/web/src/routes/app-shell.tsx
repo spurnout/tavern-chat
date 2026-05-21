@@ -344,7 +344,21 @@ function ChannelSidebar({
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">
       <div className="flex items-center justify-between gap-2 border-b border-subtle p-3">
         <div className="min-w-0">
-          <div className="truncate font-serif font-medium">{server?.name ?? '…'}</div>
+          <div className="flex items-center gap-2">
+            <span className="truncate font-serif font-medium">{server?.name ?? '…'}</span>
+            {/* P4-16 — federated den badge. Renders for mirror servers only
+                (originInstanceId is non-null). Compact text + globe glyph so
+                the row stays scannable next to a long den name. The host
+                also appears on the den-settings federation tab. */}
+            {server?.originInstanceId && server.originInstanceHost ? (
+              <span
+                className="shrink-0 rounded bg-tint-ember px-1.5 py-0.5 text-[10px] text-fg-muted"
+                title={`Federated den hosted on ${server.originInstanceHost}`}
+              >
+                {`\u{1F310} ${server.originInstanceHost}`}
+              </span>
+            ) : null}
+          </div>
           {server?.description ? (
             <div className="truncate text-xs text-fg-muted">{server.description}</div>
           ) : null}

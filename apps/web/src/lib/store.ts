@@ -165,6 +165,7 @@ interface RealtimeState {
   ready: boolean;
   setReady: (ready: boolean) => void;
   upsertServer: (server: Server) => void;
+  removeServer: (serverId: string) => void;
   upsertChannels: (serverId: string, channels: Channel[]) => void;
   upsertChannel: (channel: Channel) => void;
   removeChannel: (channelId: string, serverId?: string) => void;
@@ -390,6 +391,19 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
 
   upsertServer: (server) =>
     set((s) => ({ serversById: { ...s.serversById, [server.id]: server } })),
+
+  // P4-16 — splice a server out of the in-memory store. Called from the
+  // SERVER_REMOVE gateway handler (mirror tear-down on leave). We also drop
+  // the per-server channel list so the next paint doesn't briefly render
+  // stale rooms if the user navigates back. The deletes are immutable —
+  // copy + omit rather than mutate-in-place to keep useSyncExternalStore
+  // selectors honest.
+  removeServer: (serverId) =>
+    set((s) => {
+      const { [serverId]: _removedServer, ...nextServers } = s.serversById;
+      const { [serverId]: _removedChannels, ...nextChannels } = s.channelsByServer;
+      return { serversById: nextServers, channelsByServer: nextChannels };
+    }),
 
   upsertChannels: (serverId, channels) =>
     set((s) => ({

@@ -59,7 +59,14 @@ export async function registerServerRoutes(
     const ctx = await app.requireUser(req, reply);
     const memberships = await prisma.serverMember.findMany({
       where: { userId: ctx.userId },
-      include: { server: true },
+      // P4-16 — pull `originInstance.host` so the sidebar can render the
+      // "🌐 host" badge on mirror rows without a follow-up fetch per server.
+      // The relation is nullable in Prisma (`SetNull` on origin delete), so
+      // for local servers and orphaned mirrors `originInstance` is null and
+      // the serializer maps that to a null `originInstanceHost` on the wire.
+      include: {
+        server: { include: { originInstance: { select: { host: true } } } },
+      },
       orderBy: { joinedAt: 'asc' },
     });
     reply.send(ok(memberships.map((m) => serializeServer(m.server))));
@@ -131,7 +138,13 @@ export async function registerServerRoutes(
   app.get('/api/servers/:id', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { id } = z.object({ id: idSchema }).parse(req.params);
-    const server = await prisma.server.findUnique({ where: { id } });
+    // P4-16 — pull originInstance.host so the den-settings Federation tab can
+    // render the leave-this-den UI for mirror servers without a separate
+    // round-trip to resolve the host.
+    const server = await prisma.server.findUnique({
+      where: { id },
+      include: { originInstance: { select: { host: true } } },
+    });
     if (!server) throw TavernError.notFound('Server not found');
     const member = await prisma.serverMember.findUnique({
       where: { serverId_userId: { serverId: id, userId: ctx.userId } },
@@ -183,6 +196,9 @@ export async function registerServerRoutes(
           ? { federationEnabled: body.federationEnabled }
           : {}),
       },
+      // P4-16 — broadcast the SERVER_UPDATE with `originInstanceHost`
+      // populated so mirror rows in the sidebar keep their badge on rename.
+      include: { originInstance: { select: { host: true } } },
     });
 
     await writeAuditEntry({

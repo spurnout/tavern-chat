@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from '@tanstack/react-router';
+import { useNavigate, useParams } from '@tanstack/react-router';
 import { Ban, Bell, Bot, Globe, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
 import type {
   CustomEmoji,
@@ -16,7 +16,7 @@ import {
   parsePermissions,
   serializePermissions,
 } from '@tavern/shared';
-import { api, ApiError } from '../lib/api-client.js';
+import { api, ApiError, leaveMirrorServer } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
 import { awaitTerminal } from '../lib/attachment-ready.js';
@@ -781,10 +781,16 @@ function BansPanel({
 function FederationPanel({ serverId }: { serverId: string }): JSX.Element {
   const canManage = useCanIn(serverId, Permission.MANAGE_SERVER);
   const loadMyServerPermissions = useRealtime((s) => s.loadMyServerPermissions);
+  const navigate = useNavigate();
   const [server, setServer] = useState<Server | null>(null);
   const [instanceFederationOn, setInstanceFederationOn] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // P4-16 — mirror tear-down is a separate in-flight flag so the leave button
+  // can disable independently from the federation toggle. The mirror branch
+  // never shows the toggle, but keeping the flags separate makes the
+  // surfaces unambiguous if a future branch needs both.
+  const [leaving, setLeaving] = useState(false);
   // Tracks whether the async permission load has settled. Without this, a
   // real admin can see the "no permission" branch in the small window before
   // `loadMyServerPermissions` resolves and hydrates `useCanIn` — `canManage`
@@ -848,11 +854,61 @@ function FederationPanel({ serverId }: { serverId: string }): JSX.Element {
     }
   }
 
+  // P4-16 — leave a mirror den. The API synchronously round-trips a signed
+  // member.leave to the home; on success it deletes the local ServerMember
+  // and (if the leaver was the last local member) tears down the mirror.
+  // Either way we navigate back to /app so the user lands somewhere safe;
+  // the realtime SERVER_REMOVE handler splices the row out of the store on
+  // the next tick if the tear-down fired.
+  async function handleLeaveMirror(): Promise<void> {
+    if (!server || leaving) return;
+    setLeaving(true);
+    try {
+      await leaveMirrorServer(serverId);
+      toast.success(`Left ${server.name}.`);
+      await navigate({ to: '/app' });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not leave this den.');
+    } finally {
+      setLeaving(false);
+    }
+  }
+
   if (loadError) {
     return <p className="text-sm text-danger">{loadError}</p>;
   }
   if (!server || instanceFederationOn === null || !permissionsLoaded) {
     return <p className="text-fg-muted">Loading…</p>;
+  }
+
+  // P4-16 — mirror den branch. Comes before the canManage gate because any
+  // local member of a mirror is allowed to leave, regardless of role.
+  // Mirrors don't have a local federation toggle to manage — the canonical
+  // state lives on the home instance — so the toggle UI is suppressed
+  // entirely and replaced with the leave-this-den affordance.
+  if (server.originInstanceId !== null) {
+    const host = server.originInstanceHost ?? 'a peered instance';
+    return (
+      <div className="space-y-6">
+        <section className="space-y-2">
+          <h2 className="font-serif text-lg font-medium">This is a federated den</h2>
+          <p className="text-sm text-fg-muted">
+            Hosted by {host}. You can leave at any time — your local messages here will stop
+            syncing back.
+          </p>
+        </section>
+        <section className="space-y-3 rounded border border-subtle bg-surface p-4">
+          <button
+            type="button"
+            className="btn-danger"
+            disabled={leaving}
+            onClick={() => void handleLeaveMirror()}
+          >
+            {leaving ? 'Leaving…' : 'Leave this den'}
+          </button>
+        </section>
+      </div>
+    );
   }
 
   if (!canManage) {

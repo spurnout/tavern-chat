@@ -538,7 +538,13 @@ async function buildReadyPayload(userId: string): Promise<unknown> {
   const [memberships, bannedFrom] = await Promise.all([
     prisma.serverMember.findMany({
       where: { userId },
-      include: { server: true, roles: true },
+      // P4-16 — pull `originInstance.host` so READY can carry the federated
+      // den badge fields. Reloading after acceptance lets the sidebar show
+      // the badge without waiting for a SERVER_ADD / extra fetch.
+      include: {
+        server: { include: { originInstance: { select: { host: true } } } },
+        roles: true,
+      },
     }),
     // PERM-002: defensive filter — by the time a user IDENTIFYs they should
     // already have been removed from ServerMember on ban, but excluding here
@@ -558,6 +564,10 @@ async function buildReadyPayload(userId: string): Promise<unknown> {
         // P3-10 — clients gate the federation settings UI on this so the
         // toggle state survives a page reload without an extra round-trip.
         federationEnabled: m.server.federationEnabled,
+        // P4-16 — mirror provenance. Non-null on mirror dens, drives the
+        // sidebar's "🌐 host" badge and the den-settings leave-den UI.
+        originInstanceId: m.server.originInstanceId,
+        originInstanceHost: m.server.originInstance?.host ?? null,
         roles: m.roles.map((r) => r.roleId),
       })),
   };

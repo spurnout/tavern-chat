@@ -37,6 +37,21 @@ interface ServerRow {
   defaultRoleId: string | null;
   /** P3-10 — per-Tavern federation opt-in. */
   federationEnabled: boolean;
+  /**
+   * P4-16 — mirror provenance. Null on locally-owned servers; non-null on
+   * mirrors, pointing at `RemoteInstance.id`. Optional on the row shape
+   * because some legacy queries (existing tests, older route handlers) don't
+   * pull this column yet; the serializer treats `undefined` the same as
+   * `null` (locally-owned).
+   */
+  originInstanceId?: string | null;
+  /**
+   * P4-16 — resolved origin host. Set by callers that fetch the Server with
+   * `include: { originInstance: { select: { host: true } } }`. Pass a bare
+   * string here and the serializer threads it through; pass undefined and we
+   * default to null (the wire schema's nullable default).
+   */
+  originInstance?: { host: string } | null;
   createdAt: Date;
 }
 
@@ -49,6 +64,8 @@ export function serializeServer(row: ServerRow): ServerDto {
     iconAttachmentId: row.iconAttachmentId,
     defaultRoleId: row.defaultRoleId ?? '',
     federationEnabled: row.federationEnabled,
+    originInstanceId: row.originInstanceId ?? null,
+    originInstanceHost: row.originInstance?.host ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }

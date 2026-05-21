@@ -1,4 +1,4 @@
-import type { ApiResponse, TokenPair } from '@tavern/shared';
+import type { ApiResponse, FederatedInvitePreview, TokenPair } from '@tavern/shared';
 
 const API_BASE = '/api';
 
@@ -155,4 +155,64 @@ async function tryRefresh(): Promise<boolean> {
     }
   })();
   return refreshInflight;
+}
+
+// --- Federation Phase 4 / P4-16 ----------------------------------------------
+//
+// Three thin wrappers over the federated invite + mirror flows. They live on
+// the api-client (rather than a feature module) so the existing rawRequest /
+// retry-on-401 / token refresh plumbing applies for free.
+
+/**
+ * Fetch a preview of a federated invite by proxying through OUR API to the
+ * peer's preview endpoint. The SPA can't call the peer directly (CORS, IP
+ * leak, and the X-Tavern-Federation-Caller-* headers can only be set
+ * truthfully server-side). On success: the standard preview DTO. On peer
+ * error: the API forwards the upstream code (NOT_FOUND / INVALID_INVITE /
+ * PERMISSION_DENIED), so the caller can switch on `ApiError.code`.
+ */
+export async function previewFederatedInvite(
+  host: string,
+  code: string,
+): Promise<FederatedInvitePreview> {
+  return api<FederatedInvitePreview>('/federation/invite-preview', {
+    method: 'GET',
+    query: { host, code },
+  });
+}
+
+/**
+ * Redeem a federated invite. POSTs a signed member.join_request to the home
+ * via the API, which mirrors the snapshot the home returns. On success the
+ * gateway broadcasts SERVER_ADD to the joiner, but the resolved `serverId` is
+ * also returned here so the caller can navigate immediately without waiting
+ * for the WS round-trip.
+ */
+export async function acceptFederatedInvite(
+  code: string,
+  host: string,
+): Promise<{ serverId: string; mirrored: boolean; alreadyMember: boolean }> {
+  return api<{ serverId: string; mirrored: boolean; alreadyMember: boolean }>(
+    `/federation/invites/${encodeURIComponent(code)}/accept`,
+    {
+      method: 'POST',
+      body: { remoteInstanceHost: host },
+    },
+  );
+}
+
+/**
+ * Leave a federated mirror den. Synchronously round-trips a member.leave to
+ * the home and only mutates local state once the home acks. The caller is
+ * expected to navigate away from the mirror's routes immediately afterwards
+ * (the gateway will broadcast SERVER_REMOVE on the next tick when the mirror
+ * is torn down).
+ */
+export async function leaveMirrorServer(
+  serverId: string,
+): Promise<{ serverId: string; mirrorTornDown: boolean }> {
+  return api<{ serverId: string; mirrorTornDown: boolean }>(
+    `/federation/mirror-servers/${encodeURIComponent(serverId)}/leave`,
+    { method: 'POST', body: {} },
+  );
 }

@@ -332,6 +332,10 @@ export function registerFederationInvitesAcceptRoutes(
       //    the canonical wire shape (with the defaultRoleId etc.).
       const serverRow = await prisma.server.findUnique({
         where: { id: txOutput.mirroredServerId },
+        // P4-16 — pull `originInstance.host` so the post-commit SERVER_ADD
+        // carries the wire-shape `originInstanceHost`, letting the joiner's
+        // sidebar render the federated-den badge immediately on splice-in.
+        include: { originInstance: { select: { host: true } } },
       });
       if (serverRow) {
         gatewayBroker.publish({

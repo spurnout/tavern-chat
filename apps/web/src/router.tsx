@@ -39,6 +39,7 @@ const AdminFederationPage = lazy(() =>
 );
 import { SearchPage } from './routes/search-page.js';
 import { AccountSettingsPage } from './routes/account-settings-page.js';
+import { InvitePage } from './routes/invite-page.js';
 import { AuthGate } from './components/AuthGate.js';
 import { useAuth } from './lib/auth.js';
 
@@ -199,6 +200,16 @@ const adminFederationRoute = createRoute({
   ),
 });
 
+// P4-16 — invite redemption surface. Hosted under the AuthGate so the user
+// is guaranteed to be logged in (federated previews need a session). The
+// `?host=…` query param flips the handler into the federated preview-modal
+// flow; without it, the legacy local-join flow runs.
+const inviteRoute = createRoute({
+  getParentRoute: () => appLayoutRoute,
+  path: '/invites/$code',
+  component: InvitePage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   bootstrapRoute,
@@ -220,6 +231,7 @@ const routeTree = rootRoute.addChildren([
     dmThreadRoute,
     accountSettingsRoute,
     adminFederationRoute,
+    inviteRoute,
   ]),
 ]);
 

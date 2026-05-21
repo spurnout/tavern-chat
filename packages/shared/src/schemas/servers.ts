@@ -16,6 +16,26 @@ export const serverSchema = z.object({
    * Defaults to false on every fresh server (see Prisma schema).
    */
   federationEnabled: z.boolean(),
+  /**
+   * Federation Phase 4 — mirror provenance. Null on locally-owned servers.
+   * Non-null on mirror servers, pointing at the `RemoteInstance.id` of the
+   * peer that owns the canonical state. The web UI uses this to render a
+   * "federated den" badge and to show a leave button instead of the local
+   * federation toggle on the den-settings federation tab.
+   *
+   * Optional with a default for forward-compat: clients pinned to an older
+   * server build will parse new payloads cleanly when the field rolls in,
+   * and tests that hand-craft Server fixtures keep working unchanged.
+   */
+  originInstanceId: idSchema.nullable().default(null),
+  /**
+   * Resolved host of the origin RemoteInstance (e.g. `a.example`). Set on
+   * mirror servers via a JOIN at serialization time so the sidebar can show
+   * the host without an extra round-trip. Null on locally-owned servers and
+   * also null when the origin row has been deleted (shouldn't happen — the
+   * FK uses SetNull on delete — but defence-in-depth here).
+   */
+  originInstanceHost: z.string().nullable().default(null),
   createdAt: z.string().datetime(),
 });
 

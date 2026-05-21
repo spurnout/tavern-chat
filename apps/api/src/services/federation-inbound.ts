@@ -2069,6 +2069,8 @@ async function handleServerUpdate(input: {
 
   // Reload the row in the shape `serializeServer` expects. The mirror
   // helper is keyed on update fields only, so we always re-read post-mutate.
+  // P4-16 — also pull `originInstanceId` + `originInstance.host` so the
+  // SERVER_UPDATE broadcast carries the federated-den badge fields.
   const updated = await tx.server.findUniqueOrThrow({
     where: { id: payload.serverId },
     select: {
@@ -2079,6 +2081,8 @@ async function handleServerUpdate(input: {
       iconAttachmentId: true,
       defaultRoleId: true,
       federationEnabled: true,
+      originInstanceId: true,
+      originInstance: { select: { host: true } },
       createdAt: true,
     },
   });
