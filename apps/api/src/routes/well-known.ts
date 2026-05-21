@@ -12,14 +12,18 @@ export interface WellKnownDeps {
 /**
  * Compute the capability set this instance advertises in its .well-known doc.
  * Starts from the static shared `CAPABILITIES` list and removes any capability
- * the operator has opted out of via env (P5-11: `FEDERATION_DMS_ENABLED`).
+ * the operator has opted out of via env (P5-11: `FEDERATION_DMS_ENABLED`;
+ * P6-2: `FEDERATION_PRESENCE_ENABLED`).
  *
  * Exported so the peering service can reuse the same filtering logic when
  * intersecting requested + advertised capabilities at handshake time.
  */
-export function advertisedCapabilities(config: Pick<Config, 'FEDERATION_DMS_ENABLED'>): Capability[] {
+export function advertisedCapabilities(
+  config: Pick<Config, 'FEDERATION_DMS_ENABLED' | 'FEDERATION_PRESENCE_ENABLED'>,
+): Capability[] {
   return CAPABILITIES.filter((cap) => {
     if (cap === 'dms' && !config.FEDERATION_DMS_ENABLED) return false;
+    if (cap === 'presence' && !config.FEDERATION_PRESENCE_ENABLED) return false;
     return true;
   });
 }

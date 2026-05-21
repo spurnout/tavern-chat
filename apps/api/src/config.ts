@@ -246,6 +246,25 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  /**
+   * Phase 6 — federated presence (P6-2). When true (the default), the instance
+   * advertises `'presence'` in its .well-known capability list, accepts inbound
+   * `presence.update` envelopes, and fans out presence transitions + custom
+   * status changes to peers that also advertise `presence`. When false:
+   *   - `'presence'` is filtered out of the well-known capabilities array;
+   *   - inbound `presence.update` handlers reject with 403
+   *     `presence_capability_missing` BEFORE checking the peer's stored
+   *     capability set (defence-in-depth);
+   *   - every outbound `fanOutPresenceUpdate` call short-circuits at the
+   *     service layer (no enqueue, no warning spam — presence is opted out by
+   *     THIS operator, not by an unreachable peer).
+   * Requires FEDERATION_ENABLED=true to have any effect; with federation
+   * fully off this flag is meaningless.
+   */
+  FEDERATION_PRESENCE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export type Config = z.infer<typeof envSchema>;

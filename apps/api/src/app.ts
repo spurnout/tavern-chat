@@ -375,6 +375,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         queues,
         federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
         federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
+        // P6-2 — wired now so the P6-7 dispatcher can short-circuit
+        // `presence.update` envelopes before signature work when the
+        // operator has opted out. Stored on the service even though no
+        // handler reads it yet.
+        federationPresenceEnabledOnInstance: opts.config.FEDERATION_PRESENCE_ENABLED,
         log: app.log,
       });
       registerFederationEventsRoutes(app, { service: federationInbound });

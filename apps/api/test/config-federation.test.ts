@@ -58,4 +58,18 @@ describe('config — federation flags', () => {
     } as NodeJS.ProcessEnv);
     expect(cfg.FEDERATION_DMS_ENABLED).toBe(false);
   });
+
+  // P6-2 — per-instance presence federation opt-out.
+  it('defaults FEDERATION_PRESENCE_ENABLED to true', () => {
+    const cfg = loadConfig({ ...BASE_ENV } as NodeJS.ProcessEnv);
+    expect(cfg.FEDERATION_PRESENCE_ENABLED).toBe(true);
+  });
+
+  it('parses FEDERATION_PRESENCE_ENABLED=false', () => {
+    const cfg = loadConfig({
+      ...BASE_ENV,
+      FEDERATION_PRESENCE_ENABLED: 'false',
+    } as NodeJS.ProcessEnv);
+    expect(cfg.FEDERATION_PRESENCE_ENABLED).toBe(false);
+  });
 });

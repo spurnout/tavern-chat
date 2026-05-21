@@ -206,6 +206,17 @@ export interface FederationInboundServiceOptions {
    */
   federationDmsEnabledOnInstance?: boolean;
   /**
+   * P6-2 — operator-level opt-out for federated presence. Symmetric with
+   * `federationDmsEnabledOnInstance`. When `false` the dispatcher will
+   * reject every `presence.update` envelope with
+   * `presence_capability_missing` BEFORE checking the peer's stored
+   * capability set (defence-in-depth against a stale `'presence'` advert
+   * on the peer row). Wired here in P6-2; consumed by the dispatcher in
+   * P6-7. Defaults to `true` so callers that pre-date this flag get the
+   * historical behaviour.
+   */
+  federationPresenceEnabledOnInstance?: boolean;
+  /**
    * Optional structured logger for handler-side fan-out failures (P4-10).
    * The dispatcher itself never logs — failures are thrown as
    * `FederationInboundError` and rendered by the route. The fan-out
@@ -263,6 +274,14 @@ export class FederationInboundService {
    * P5-11 — operator opt-out for federated DMs. See option doc.
    */
   private readonly federationDmsEnabledOnInstance: boolean;
+  /**
+   * P6-2 — operator opt-out for federated presence. See option doc. Stored
+   * here so the P6-7 dispatcher can short-circuit `presence.update`
+   * envelopes before signature verification. Exposed via the protected
+   * getter below so tests + the future dispatcher branch can read it
+   * without violating noUnusedLocals on the as-yet-unread private field.
+   */
+  protected readonly federationPresenceEnabledOnInstance: boolean;
   private readonly log: FastifyBaseLogger;
 
   constructor(opts: FederationInboundServiceOptions) {
@@ -274,6 +293,8 @@ export class FederationInboundService {
     this.federationEnabledOnInstance = opts.federationEnabledOnInstance ?? false;
     this.federationDmsEnabledOnInstance =
       opts.federationDmsEnabledOnInstance ?? true;
+    this.federationPresenceEnabledOnInstance =
+      opts.federationPresenceEnabledOnInstance ?? true;
     this.log = opts.log ?? noopLogger;
   }
 

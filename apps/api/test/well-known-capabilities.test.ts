@@ -13,7 +13,10 @@ import { intersectCapabilities } from '../src/services/federation-peering.js';
 
 describe('advertisedCapabilities()', () => {
   it("includes 'dms' when FEDERATION_DMS_ENABLED is true", () => {
-    const out = advertisedCapabilities({ FEDERATION_DMS_ENABLED: true });
+    const out = advertisedCapabilities({
+      FEDERATION_DMS_ENABLED: true,
+      FEDERATION_PRESENCE_ENABLED: true,
+    });
     expect(out).toContain('dms');
     // Sanity — every other capability still surfaces.
     for (const cap of CAPABILITIES) {
@@ -22,11 +25,48 @@ describe('advertisedCapabilities()', () => {
   });
 
   it("strips 'dms' when FEDERATION_DMS_ENABLED is false", () => {
-    const out = advertisedCapabilities({ FEDERATION_DMS_ENABLED: false });
+    const out = advertisedCapabilities({
+      FEDERATION_DMS_ENABLED: false,
+      FEDERATION_PRESENCE_ENABLED: true,
+    });
     expect(out).not.toContain('dms');
     // Other capabilities are untouched — this is a DM-only switch.
     for (const cap of CAPABILITIES) {
       if (cap === 'dms') continue;
+      expect(out).toContain(cap);
+    }
+  });
+
+  it("includes 'presence' when FEDERATION_PRESENCE_ENABLED is true (default)", () => {
+    const out = advertisedCapabilities({
+      FEDERATION_DMS_ENABLED: true,
+      FEDERATION_PRESENCE_ENABLED: true,
+    });
+    expect(out).toContain('presence');
+  });
+
+  it("strips 'presence' when FEDERATION_PRESENCE_ENABLED is false", () => {
+    const out = advertisedCapabilities({
+      FEDERATION_DMS_ENABLED: true,
+      FEDERATION_PRESENCE_ENABLED: false,
+    });
+    expect(out).not.toContain('presence');
+    // Other capabilities are untouched — this is a presence-only switch.
+    for (const cap of CAPABILITIES) {
+      if (cap === 'presence') continue;
+      expect(out).toContain(cap);
+    }
+  });
+
+  it("strips BOTH 'dms' and 'presence' when both flags are off", () => {
+    const out = advertisedCapabilities({
+      FEDERATION_DMS_ENABLED: false,
+      FEDERATION_PRESENCE_ENABLED: false,
+    });
+    expect(out).not.toContain('dms');
+    expect(out).not.toContain('presence');
+    for (const cap of CAPABILITIES) {
+      if (cap === 'dms' || cap === 'presence') continue;
       expect(out).toContain(cap);
     }
   });
