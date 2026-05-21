@@ -747,6 +747,19 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
   // omitted; an attacker reusing those event types here gets a 501.
+  //
+  // `member.joined` (P4-7) and `member.removed` (P4-12, see P4-15) are also
+  // intentionally omitted — they are SINGLE-LAYER signed envelopes returned as
+  // the synchronous HTTP response to a `member.join_request` / `member.leave`
+  // POST. The originating peer's calling code consumes the response inline
+  // (via `postFederationEventSync` with an `expectedResponseSchema`), so they
+  // never reach this dispatcher on the happy path. The two-layer dispatcher
+  // also literally cannot verify them (no user-layer signature is present), so
+  // even if a peer mistakenly sent one to `/_federation/event` it would fail
+  // before reaching a handler. The 501 returned by the HANDLERS-miss path is
+  // the correct response for that misuse. If we ever need async / out-of-band
+  // delivery of these acks, the dispatcher would have to grow single-layer
+  // verification — tracked as a follow-up in `docs/federation-followups.md`.
 };
 
 // Sanity check at startup that every handler key is a valid EnvelopeEventType

@@ -118,6 +118,25 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 - **Trigger:** before adding more inbound envelope kinds (Phase 4+)
 - **What:** `federation-inbound.ts` currently distinguishes "signature failed" (401) from "envelope malformed" (400) by string-matching the `reason` field returned by `verifyTwoLayerMessageEnvelope`. The regex is brittle and silently miscategorises any new failure mode the verifier introduces. Fix: change `verifyTwoLayerMessageEnvelope` to return a discriminated `{ kind: 'sig_failure' | 'envelope_invalid' | 'expired' }` on the failure branch, and dispatch on `kind` in the inbound handler.
 
+### 18. Async delivery of `member.joined` / `member.removed` acks
+
+- **Phase:** 4 (P4-15)
+- **Trigger:** if/when async out-of-band delivery of join/leave acks is needed
+- **What:** `member.joined` (P4-7) and `member.removed` (P4-12) are single-layer
+  signed envelopes returned as the synchronous HTTP response to a
+  `member.join_request` / `member.leave` POST. The originating peer's calling
+  code consumes the response inline via `postFederationEventSync`, so these
+  event types are intentionally not registered in `HANDLERS` in
+  `federation-inbound.ts` — a peer that posts one to `/_federation/event` gets
+  a 501, which is the correct behaviour for that misuse. The two-layer
+  dispatcher also literally cannot verify them (no user-layer signature is
+  present). If we ever need to deliver these acks out-of-band (e.g. retry
+  after a sync timeout, or instance-to-instance ack relay), the dispatcher
+  has to grow a single-layer verification path that bypasses the
+  `extractAuthorRemoteUserId` / `RemoteUser` lookup and verifies only the
+  instance signature. No action needed until that delivery mode is on the
+  roadmap.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up

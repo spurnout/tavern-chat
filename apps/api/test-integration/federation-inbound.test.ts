@@ -241,7 +241,13 @@ interface BuildMessageEnvelopeInput {
   signUserOverride?: (bytes: Buffer) => Buffer;
   /** Override the instance-key used to sign the envelope (for bad-instance-sig tests). */
   signInstanceOverride?: (bytes: Buffer) => Buffer;
-  eventType?: 'message.create' | 'message.update' | 'message.delete' | 'reaction.add' | 'reaction.remove';
+  eventType?:
+    | 'message.create'
+    | 'message.update'
+    | 'message.delete'
+    | 'reaction.add'
+    | 'reaction.remove'
+    | 'member.removed';
 }
 
 function buildMsgCreateEnvelope(input: BuildMessageEnvelopeInput): TwoLayerSignedEnvelope<unknown> {
@@ -722,12 +728,17 @@ describe.skipIf(!dockerOk)('P3-7 — POST /_federation/event (message.create)', 
     }
   });
 
-  it('unimplemented event type (reaction.add) → 501', async () => {
+  it('unimplemented event type (member.removed) → 501', async () => {
     const fx = await makeFixture();
-    // A 'reaction.add' envelope. Payload shape doesn't matter — the handler
+    // A 'member.removed' envelope. Payload shape doesn't matter — the handler
     // map rejects the event type before signature/payload checks.
-    // (P3-8 added message.update + message.delete; reactions land in P3-9.)
-    const envelope = buildMsgCreateEnvelope({ fx, eventType: 'reaction.add' });
+    // `member.removed` is intentionally not registered in HANDLERS (it's the
+    // single-layer ack consumed inline by the synchronous `member.leave`
+    // route — see P4-15 / the comment block at the bottom of HANDLERS in
+    // `federation-inbound.ts`), so a peer that posts one to /_federation/event
+    // gets a 501. We use it here as a stable "always-501" event type now that
+    // every previously-unimplemented entry has gained a handler.
+    const envelope = buildMsgCreateEnvelope({ fx, eventType: 'member.removed' });
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
     try {
       const res = await app.inject({
