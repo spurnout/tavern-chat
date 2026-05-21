@@ -48,6 +48,7 @@ import {
   type FederationOutboxJob,
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
+import { buildSignedEnvelope } from '../src/services/federation-envelopes.js';
 import {
   PROTOCOL_VERSION,
   messageCreatePayloadSchema,
@@ -6235,6 +6236,499 @@ describe.skipIf(!dockerOk)('P5-10 — POST /_federation/event (dm.reaction.remov
       expect(res.statusCode).toBe(403);
       const body = res.json();
       expect(body.error).toMatch(/dms.*capability/i);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ─── P6-7: presence.update (single-layer) ────────────────────────────────────
+//
+// Presence is the only single-layer-signed event type that flows through the
+// inbound dispatcher: the home instance asserts authoritative state about its
+// own user, signed with the instance key only (no user-layer signature). The
+// dispatcher branches at `eventType === 'presence.update'` and routes through
+// `processPresenceEnvelope` → `verifyEnvelopeShape` (single-layer verify) →
+// `handlePresenceUpdate`. Tests below pin every branch of that path.
+
+interface PresenceFixture {
+  peerInstanceId: string;
+  peerKp: ReturnType<typeof generateKeyPair>;
+  /** Local mirror User row id corresponding to the peer's user. */
+  localUserId: string;
+  /** Qualified id `<localpart>@<PEER_HOST>` */
+  userRemoteUserId: string;
+  /** RemoteUser row id (so we can verify `lastSeenAt` updates). */
+  remoteUserRowId: string;
+  /** Initial presenceUpdatedAt baseline. */
+  initialPresenceUpdatedAt: Date;
+}
+
+/**
+ * Seed a peered RemoteInstance + mirror User row + RemoteUser cache row
+ * suitable for presence.update tests. Mirrors the leaner end of `makeFixture`
+ * (no Server / Channel — presence is per-user, not per-channel).
+ */
+async function makePresenceFixture(opts?: {
+  peerHost?: string;
+  initialPresence?: 'active' | 'idle' | 'dnd' | 'offline';
+  initialPresenceUpdatedAt?: Date;
+}): Promise<PresenceFixture> {
+  const peerHost = opts?.peerHost ?? PEER_HOST;
+  const peerKp = generateKeyPair();
+  const peerInstanceId = ulid();
+  const localpart = `alice-${peerInstanceId.slice(-6).toLowerCase()}`;
+  const userRemoteUserId = `${localpart}@${peerHost}`;
+  const initialPresenceUpdatedAt =
+    opts?.initialPresenceUpdatedAt ?? new Date('2026-01-01T00:00:00.000Z');
+
+  await prisma.remoteInstance.create({
+    data: {
+      id: peerInstanceId,
+      host: peerHost,
+      instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+      status: 'peered',
+      capabilities: ['messages', 'presence'],
+      peeredAt: new Date(),
+    },
+  });
+
+  const remoteUserRowId = ulid();
+  const authorKp = generateKeyPair();
+  await prisma.remoteUser.create({
+    data: {
+      id: remoteUserRowId,
+      remoteInstanceId: peerInstanceId,
+      remoteUserId: userRemoteUserId,
+      displayNameCache: 'Alice from B',
+      avatarUrlCache: null,
+      publicKey: exportPublicKeyRaw(authorKp.publicKey),
+      lastSeenAt: new Date(0),
+    },
+  });
+
+  const localUserId = ulid();
+  const syntheticUsername = `__rem_${ulid().toLowerCase()}`;
+  await prisma.user.create({
+    data: {
+      id: localUserId,
+      username: syntheticUsername,
+      usernameLower: syntheticUsername,
+      displayName: 'Alice from B',
+      email: `${userRemoteUserId}.federated.local`,
+      emailLower: `${userRemoteUserId}.federated.local`,
+      passwordHash: null,
+      remoteUserId: userRemoteUserId,
+      remoteInstanceId: peerInstanceId,
+      federationKeyPublic: exportPublicKeyRaw(authorKp.publicKey),
+      presence: opts?.initialPresence ?? 'offline',
+      presenceUpdatedAt: initialPresenceUpdatedAt,
+    },
+  });
+
+  return {
+    peerInstanceId,
+    peerKp,
+    localUserId,
+    userRemoteUserId,
+    remoteUserRowId,
+    initialPresenceUpdatedAt,
+  };
+}
+
+function buildPresenceEnvelope(input: {
+  fx: PresenceFixture;
+  fromInstance?: string;
+  userRemoteUserId?: string;
+  presence?: 'active' | 'idle' | 'dnd' | 'offline';
+  customStatus?: string | null;
+  customStatusExpiresAt?: string | null;
+  updatedAt?: string;
+  signOverride?: (bytes: Buffer) => Buffer;
+}): ReturnType<typeof buildSignedEnvelope<unknown>> {
+  const fx = input.fx;
+  return buildSignedEnvelope({
+    eventType: 'presence.update',
+    fromInstance: input.fromInstance ?? PEER_HOST,
+    toInstance: SELF_HOST,
+    payload: {
+      userRemoteUserId: input.userRemoteUserId ?? fx.userRemoteUserId,
+      presence: input.presence ?? 'active',
+      customStatus:
+        input.customStatus === undefined ? null : input.customStatus,
+      customStatusExpiresAt:
+        input.customStatusExpiresAt === undefined
+          ? null
+          : input.customStatusExpiresAt,
+      updatedAt: input.updatedAt ?? new Date().toISOString(),
+    },
+    sign:
+      input.signOverride ??
+      ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+function envForPresence(opts: {
+  dbUrl: string;
+  presenceEnabled?: boolean;
+}): NodeJS.ProcessEnv {
+  const out: Record<string, string> = {
+    DATABASE_URL: opts.dbUrl,
+    JWT_ACCESS_SECRET: 'a'.repeat(48),
+    JWT_REFRESH_SECRET: 'b'.repeat(48),
+    NODE_ENV: 'test',
+    FEDERATION_ENABLED: 'true',
+    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    PUBLIC_BASE_URL: `https://${SELF_HOST}`,
+  };
+  if (opts.presenceEnabled !== undefined) {
+    out.FEDERATION_PRESENCE_ENABLED = opts.presenceEnabled ? 'true' : 'false';
+  }
+  return out as NodeJS.ProcessEnv;
+}
+
+describe.skipIf(!dockerOk)('P6-7 — POST /_federation/event (presence.update)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: updates mirror, broadcasts PRESENCE_UPDATE, touches lastSeenAt', async () => {
+    const fx = await makePresenceFixture();
+    const updatedAt = new Date('2026-02-01T12:00:00.000Z');
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'idle',
+      updatedAt: updatedAt.toISOString(),
+    });
+
+    const events: Array<{ type: string; userId?: string; data: unknown }> = [];
+    const unsub = gatewayBroker.subscribe((e) => {
+      if ((e as { type?: string }).type === 'PRESENCE_UPDATE') {
+        events.push(e as { type: string; userId?: string; data: unknown });
+      }
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.userId).toBe(fx.localUserId);
+
+      const row = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+        select: {
+          presence: true,
+          presenceUpdatedAt: true,
+          customStatus: true,
+          customStatusExpiresAt: true,
+        },
+      });
+      expect(row?.presence).toBe('idle');
+      expect(row?.presenceUpdatedAt.toISOString()).toBe(updatedAt.toISOString());
+      expect(row?.customStatus).toBeNull();
+      expect(row?.customStatusExpiresAt).toBeNull();
+
+      expect(
+        events.find(
+          (e) =>
+            (e.data as { userId?: string; presence?: string }).userId ===
+              fx.localUserId &&
+            (e.data as { presence?: string }).presence === 'idle',
+        ),
+      ).toBeTruthy();
+
+      const remoteUserRow = await prisma.remoteUser.findUnique({
+        where: { id: fx.remoteUserRowId },
+      });
+      expect(remoteUserRow!.lastSeenAt.getTime()).toBeGreaterThan(0);
+
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'presence.update' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+      expect(log!.direction).toBe('inbound');
+    } finally {
+      unsub();
+      await app.close();
+    }
+  });
+
+  it('not-home-instance: peer X cannot emit presence for a user on peer Y → 403', async () => {
+    const fxY = await makePresenceFixture({ peerHost: 'y.example' });
+    // Peer X is a separately peered instance, with its own keys.
+    const peerXKp = generateKeyPair();
+    const peerXId = ulid();
+    await prisma.remoteInstance.create({
+      data: {
+        id: peerXId,
+        host: 'x.example',
+        instanceKey: exportPublicKeyRaw(peerXKp.publicKey),
+        status: 'peered',
+        capabilities: ['messages', 'presence'],
+        peeredAt: new Date(),
+      },
+    });
+
+    // X signs a presence envelope claiming to be about alice@y.example.
+    const envelope = buildSignedEnvelope({
+      eventType: 'presence.update',
+      fromInstance: 'x.example',
+      toInstance: SELF_HOST,
+      payload: {
+        userRemoteUserId: fxY.userRemoteUserId,
+        presence: 'active',
+        customStatus: null,
+        customStatusExpiresAt: null,
+        updatedAt: new Date().toISOString(),
+      },
+      sign: (b: Buffer) => edSign(b, peerXKp.privateKey),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/cannot emit presence/i);
+
+      // Mirror row must NOT have changed.
+      const row = await prisma.user.findUnique({
+        where: { id: fxY.localUserId },
+        select: { presence: true, presenceUpdatedAt: true },
+      });
+      expect(row?.presence).toBe('offline'); // unchanged from seed
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('unknown user (no local mirror) → 200 skipped: unknown_user', async () => {
+    // Peer is set up, but no local User row references this localpart.
+    const peerKp = generateKeyPair();
+    const peerInstanceId = ulid();
+    await prisma.remoteInstance.create({
+      data: {
+        id: peerInstanceId,
+        host: PEER_HOST,
+        instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+        status: 'peered',
+        capabilities: ['messages', 'presence'],
+        peeredAt: new Date(),
+      },
+    });
+
+    const envelope = buildSignedEnvelope({
+      eventType: 'presence.update',
+      fromInstance: PEER_HOST,
+      toInstance: SELF_HOST,
+      payload: {
+        userRemoteUserId: `ghost@${PEER_HOST}`,
+        presence: 'active',
+        customStatus: null,
+        customStatusExpiresAt: null,
+        updatedAt: new Date().toISOString(),
+      },
+      sign: (b: Buffer) => edSign(b, peerKp.privateKey),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.skipped).toBe('unknown_user');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('stale watermark: incoming updatedAt <= existing presenceUpdatedAt → 200 skipped: stale, no row update', async () => {
+    const baseline = new Date('2026-03-15T08:00:00.000Z');
+    const fx = await makePresenceFixture({
+      initialPresence: 'active',
+      initialPresenceUpdatedAt: baseline,
+    });
+    // Incoming envelope's updatedAt is EXACTLY equal to the watermark — must
+    // be treated as stale (the spec is <=, not strict <).
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'offline',
+      updatedAt: baseline.toISOString(),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.data?.skipped).toBe('stale');
+
+      const row = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+        select: { presence: true, presenceUpdatedAt: true },
+      });
+      // Presence must NOT have flipped to offline.
+      expect(row?.presence).toBe('active');
+      expect(row?.presenceUpdatedAt.toISOString()).toBe(baseline.toISOString());
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('capability gate: FEDERATION_PRESENCE_ENABLED=false → 403 presence_capability_missing (before signature work)', async () => {
+    const fx = await makePresenceFixture();
+    // Use a bogus signing key — the gate must reject BEFORE the signature
+    // is verified, so even a totally invalid envelope produces 403
+    // presence_capability_missing rather than 401 bad_signature.
+    const attackerKp = generateKeyPair();
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'active',
+      signOverride: (b: Buffer) => edSign(b, attackerKp.privateKey),
+    });
+
+    const app = await buildApp({
+      config: loadConfig(envForPresence({ dbUrl: ctx!.databaseUrl, presenceEnabled: false })),
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/presence/i);
+
+      // No envelope log row should exist either — the gate fires before the
+      // transactional log write.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'presence.update' },
+      });
+      expect(log).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('custom status clear: payload customStatus=null → mirror row customStatus + expiresAt go null', async () => {
+    const fx = await makePresenceFixture();
+    // Pre-populate a custom status that the inbound envelope must wipe.
+    await prisma.user.update({
+      where: { id: fx.localUserId },
+      data: {
+        customStatus: 'gaming',
+        customStatusExpiresAt: new Date('2099-01-01T00:00:00.000Z'),
+      },
+    });
+
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'idle',
+      customStatus: null,
+      customStatusExpiresAt: null,
+      updatedAt: new Date('2026-04-01T00:00:00.000Z').toISOString(),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const row = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+        select: { customStatus: true, customStatusExpiresAt: true },
+      });
+      expect(row?.customStatus).toBeNull();
+      expect(row?.customStatusExpiresAt).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('custom status set: payload carries customStatus + expiresAt → mirror row reflects both', async () => {
+    const fx = await makePresenceFixture();
+    const expiresAt = new Date('2026-05-01T17:30:00.000Z');
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'active',
+      customStatus: 'In a session',
+      customStatusExpiresAt: expiresAt.toISOString(),
+      updatedAt: new Date('2026-04-01T00:00:00.000Z').toISOString(),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      const row = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+        select: { customStatus: true, customStatusExpiresAt: true, presence: true },
+      });
+      expect(row?.customStatus).toBe('In a session');
+      expect(row?.customStatusExpiresAt?.toISOString()).toBe(expiresAt.toISOString());
+      expect(row?.presence).toBe('active');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('tampered envelope (bad instance signature) → 401', async () => {
+    const fx = await makePresenceFixture();
+    const attackerKp = generateKeyPair();
+    const envelope = buildPresenceEnvelope({
+      fx,
+      presence: 'active',
+      signOverride: (b: Buffer) => edSign(b, attackerKp.privateKey),
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(401);
+      const body = res.json();
+      expect(body.error).toMatch(/signature/i);
+
+      // Mirror row must NOT have changed.
+      const row = await prisma.user.findUnique({
+        where: { id: fx.localUserId },
+        select: { presence: true },
+      });
+      expect(row?.presence).toBe('offline');
     } finally {
       await app.close();
     }

@@ -69,6 +69,7 @@ import {
   dmReactionRemovePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
+  federatedPresenceUpdatePayloadSchema,
   memberAddPayloadSchema,
   memberJoinRequestPayloadSchema,
   memberJoinedPayloadSchema,
@@ -89,6 +90,7 @@ import {
   type DmMessageUpdatePayload,
   type DmReactionAddPayload,
   type DmReactionRemovePayload,
+  type FederatedPresenceUpdatePayload,
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
@@ -117,6 +119,7 @@ import {
 import type { QueueClient } from './queues.js';
 import {
   buildSignedEnvelope,
+  verifyEnvelopeShape,
   type SignedEnvelope,
 } from './federation-envelopes.js';
 import { deriveServerIconUrl } from './federation-invite-preview.js';
@@ -155,6 +158,8 @@ export type InboundErrorCode =
   | 'not_origin' // 403 — sending peer is not the origin instance of the mirror
   | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
   | 'dms_capability_missing' // 403 — peer does not advertise the `dms` capability
+  | 'presence_capability_missing' // 403 — this instance has FEDERATION_PRESENCE_ENABLED=false (P6-7)
+  | 'not_home_instance' // 403 — presence.update from a peer that isn't the user's home (P6-7)
   | 'dm_channel_conflict' // 409 — dm.create payload's dmChannelId/pairKey collides with an unrelated DmChannel
   | 'unknown_dm_channel' // 404 — dm.message.* references a DmChannelId we don't have (likely out-of-order delivery before dm.create landed)
   | 'unknown_dm_member' // 404 — dm.message.* author User row not materialised locally yet
@@ -275,13 +280,13 @@ export class FederationInboundService {
    */
   private readonly federationDmsEnabledOnInstance: boolean;
   /**
-   * P6-2 — operator opt-out for federated presence. See option doc. Stored
-   * here so the P6-7 dispatcher can short-circuit `presence.update`
-   * envelopes before signature verification. Exposed via the protected
-   * getter below so tests + the future dispatcher branch can read it
-   * without violating noUnusedLocals on the as-yet-unread private field.
+   * P6-2 / P6-7 — operator opt-out for federated presence. See option
+   * doc. The dispatcher reads this to short-circuit `presence.update`
+   * envelopes before signature verification when the operator has opted
+   * out. Demoted from `protected readonly` to `private readonly` in P6-7
+   * now that the dispatcher consumes the field directly.
    */
-  protected readonly federationPresenceEnabledOnInstance: boolean;
+  private readonly federationPresenceEnabledOnInstance: boolean;
   private readonly log: FastifyBaseLogger;
 
   constructor(opts: FederationInboundServiceOptions) {
@@ -363,6 +368,39 @@ export class FederationInboundService {
         'dms_capability_missing',
         `this instance does not advertise the 'dms' capability`,
       );
+    }
+
+    // P6-7 — instance-level presence opt-out. Symmetric with the dm.* gate:
+    // when the operator has flipped FEDERATION_PRESENCE_ENABLED to `false`,
+    // reject every `presence.update` envelope BEFORE signature verification.
+    // Same defence-in-depth rationale as the dm.* check — the peer's stored
+    // capability set may still claim `presence` from a prior negotiation.
+    if (
+      !this.federationPresenceEnabledOnInstance &&
+      preCheck.eventType === 'presence.update'
+    ) {
+      this.log.warn(
+        {
+          eventType: preCheck.eventType,
+          fromInstance: preCheck.fromInstance,
+        },
+        'inbound presence.update envelope rejected — this instance has FEDERATION_PRESENCE_ENABLED=false',
+      );
+      throw new FederationInboundError(
+        'presence_capability_missing',
+        `this instance does not advertise the 'presence' capability`,
+      );
+    }
+
+    // P6-7 — SINGLE-LAYER dispatch branch. Presence is not a user-authored
+    // content event but the home instance reporting authoritative state
+    // about one of its users (decision #6 in the Phase 6 plan). The envelope
+    // therefore carries ONLY an instance signature — no user-layer signature.
+    // The two-layer verification path below cannot process it (it needs a
+    // RemoteUser publicKey it would never find), so we take a separate
+    // verification + handler-dispatch path here and return early.
+    if (preCheck.eventType === 'presence.update') {
+      return this.processPresenceEnvelope({ body, peer });
     }
 
     // Resolve the author's public key. Two-layer verification needs BOTH
@@ -574,6 +612,106 @@ export class FederationInboundService {
       });
       return { status: result.status, body: signed };
     }
+    return result;
+  }
+
+  /**
+   * P6-7 — single-layer dispatch path for `presence.update`. Presence
+   * envelopes carry ONLY an instance signature (decision #6 in the Phase 6
+   * plan); the two-layer dispatcher above cannot process them because there
+   * is no user-layer signer to look up. This method mirrors the structure of
+   * `processEnvelope` but uses `verifyEnvelopeShape` (peer instance key
+   * only) and routes to `handlePresenceUpdate` directly.
+   *
+   * The peer + status checks have already happened in `processEnvelope`; we
+   * only need to verify the envelope signature, log it for replay
+   * protection, persist the mirror state, and broadcast.
+   */
+  private async processPresenceEnvelope(input: {
+    body: unknown;
+    peer: NonNullable<
+      Awaited<ReturnType<PrismaClient['remoteInstance']['findUnique']>>
+    >;
+  }): Promise<ProcessEnvelopeResult> {
+    const { body, peer } = input;
+
+    // Verify against the peer's CURRENT instance key first, then fall back
+    // to `previousInstanceKey` if the failure is specifically a signature
+    // mismatch (same rotation-overlap posture as the two-layer dispatcher).
+    let verified = verifyEnvelopeShape({
+      envelope: body,
+      peerPublicKeyRaw: Buffer.from(peer.instanceKey),
+      payloadSchema: federatedPresenceUpdatePayloadSchema,
+    });
+    if (
+      !verified.ok &&
+      peer.previousInstanceKey &&
+      /signature does not verify/i.test(verified.reason)
+    ) {
+      verified = verifyEnvelopeShape({
+        envelope: body,
+        peerPublicKeyRaw: Buffer.from(peer.previousInstanceKey),
+        payloadSchema: federatedPresenceUpdatePayloadSchema,
+      });
+    }
+    if (!verified.ok) {
+      const reason = verified.reason;
+      const isSigFailure = /signature does not verify/i.test(reason);
+      throw new FederationInboundError(
+        isSigFailure ? 'bad_signature' : 'bad_envelope',
+        reason,
+      );
+    }
+
+    const env = verified.envelope;
+    const payload = env.payload;
+    const payloadHash = createHash('sha256')
+      .update(canonicalize(payload as unknown))
+      .digest();
+
+    let result: ProcessEnvelopeResult;
+    let postCommit: PostCommitAction | null = null;
+    try {
+      const txOutput = await this.prisma.$transaction(async (tx) => {
+        await tx.federationEnvelopeLog.create({
+          data: {
+            id: ulid(),
+            direction: 'inbound',
+            peerInstanceId: peer.id,
+            eventType: env.eventType,
+            payloadHash,
+            nonce: env.nonce,
+            notBefore: new Date(env.notBefore),
+            notAfter: new Date(env.notAfter),
+            status: 'accepted',
+            processedAt: new Date(),
+          },
+        });
+        return handlePresenceUpdate({
+          payload,
+          peer: { id: peer.id, host: peer.host },
+          tx,
+        });
+      });
+      result = txOutput.result;
+      postCommit = txOutput.postCommit ?? null;
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        throw new FederationInboundError(
+          'replay',
+          'nonce already seen for this peer',
+        );
+      }
+      throw err;
+    }
+
+    if (postCommit) {
+      await postCommit(this.prisma);
+    }
+
     return result;
   }
 }
@@ -3875,6 +4013,115 @@ async function handleDmReactionRemove(input: {
       });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- presence.update handler (single-layer; P6-7) ----------------------------
+//
+// Routed via `FederationInboundService.processPresenceEnvelope` — NOT via the
+// two-layer `HANDLERS` map. Presence is a SINGLE-LAYER signed envelope
+// (instance signature only — no user-layer signature) because it's the home
+// instance reporting authoritative state about its own user, not a user-
+// authored content event (decision #6 in the Phase 6 plan).
+//
+// Authority model:
+//   - Home is authoritative — only the peer whose host matches the user's
+//     `<localpart>@<host>` may emit `presence.update` for that user.
+//   - `presenceUpdatedAt` is the last-write-wins watermark; out-of-order
+//     deliveries are dropped on the floor (200 `skipped: stale`).
+
+async function handlePresenceUpdate(input: {
+  payload: FederatedPresenceUpdatePayload;
+  peer: { id: string; host: string };
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, tx } = input;
+
+  // 1) Authority check. Parse `<localpart>@<host>` and verify the sending
+  //    peer IS the user's home. A peer can only emit presence for users on
+  //    its own instance; anything else is a spoof attempt (or a confused
+  //    relay) and must be rejected without persisting.
+  const atIdx = payload.userRemoteUserId.lastIndexOf('@');
+  const userHost =
+    atIdx >= 0 ? payload.userRemoteUserId.slice(atIdx + 1) : '';
+  if (userHost !== peer.host) {
+    throw new FederationInboundError(
+      'not_home_instance',
+      `peer ${peer.host} cannot emit presence for ${payload.userRemoteUserId}`,
+    );
+  }
+
+  // 2) Resolve the local mirror via `User.remoteUserId`. If the mirror
+  //    doesn't exist yet (no shared Tavern, no DM, no profile fetch), there
+  //    is nowhere for the presence to surface — drop with 200 so the peer
+  //    doesn't retry. We DO NOT lazily materialise the User row here; the
+  //    home should send `member.add` / `dm.create` before its presence
+  //    means anything on this side.
+  const localUser = await tx.user.findUnique({
+    where: { remoteUserId: payload.userRemoteUserId },
+    select: { id: true, presenceUpdatedAt: true },
+  });
+  if (!localUser) {
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { skipped: 'unknown_user' } },
+      },
+    };
+  }
+
+  // 3) Watermark check. Out-of-order envelope delivery is possible
+  //    (BullMQ retries + the 5s outbound debounce). Last-write-wins on
+  //    `presenceUpdatedAt`.
+  const incomingTs = new Date(payload.updatedAt);
+  if (incomingTs.getTime() <= localUser.presenceUpdatedAt.getTime()) {
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { skipped: 'stale' } },
+      },
+    };
+  }
+
+  // 4) Persist mirror state. The schema already carries every column we
+  //    need (Phase 3); no migration required.
+  await tx.user.update({
+    where: { id: localUser.id },
+    data: {
+      presence: payload.presence,
+      presenceUpdatedAt: incomingTs,
+      customStatus: payload.customStatus,
+      customStatusExpiresAt: payload.customStatusExpiresAt
+        ? new Date(payload.customStatusExpiresAt)
+        : null,
+    },
+  });
+
+  const userId = localUser.id;
+  const userRemoteUserId = payload.userRemoteUserId;
+  const presence = payload.presence;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { userId } } },
+    postCommit: async (prisma) => {
+      // Broadcast locally using the exact same event shape that
+      // `presence-service.ts#broadcast` uses for local users. The web client
+      // already handles PRESENCE_UPDATE for mirror rows the same way it
+      // handles local ones.
+      gatewayBroker.publish({
+        type: 'PRESENCE_UPDATE',
+        userId,
+        data: { userId, presence },
+      });
+      // Touch lastSeenAt — mirrors what every other handler does. The
+      // RemoteUser row may or may not exist (the mirror User row's
+      // `remoteUserId` is the source of truth), so use `updateMany` to
+      // make the touch best-effort.
+      await prisma.remoteUser.updateMany({
+        where: { remoteUserId: userRemoteUserId },
         data: { lastSeenAt: new Date() },
       });
     },
