@@ -30,7 +30,21 @@ function sanitizeContent(content: string): string {
   return sanitizeHtml(content, { allowedTags: [], allowedAttributes: {} });
 }
 
-export async function registerDmRoutes(app: FastifyInstance): Promise<void> {
+export interface DmRouteDeps {
+  /**
+   * Local instance's federation host (e.g. `a.example`). Threaded into
+   * `findOrCreateDirectDm` so federated DM pairKeys can be computed from
+   * qualified ids. Optional — when null/undefined, federated DM channels
+   * fall back to the local-id pairKey (which still works, but the key won't
+   * match the one the remote instance computes).
+   */
+  selfHost?: string | null;
+}
+
+export async function registerDmRoutes(
+  app: FastifyInstance,
+  deps?: DmRouteDeps,
+): Promise<void> {
   // ---- DM channels ---------------------------------------------------------
 
   // Users I share at least one tavern with — the eligible pool for starting
@@ -100,7 +114,9 @@ export async function registerDmRoutes(app: FastifyInstance): Promise<void> {
           'You can only DM members of a tavern you share',
         );
       }
-      const id = await findOrCreateDirectDm(ctx.userId, body.userId);
+      const id = await findOrCreateDirectDm(ctx.userId, body.userId, {
+        selfHost: deps?.selfHost ?? null,
+      });
       const dto = await serializeDmChannel(id, ctx.userId);
       // Notify both members so the channel pops into their list.
       gatewayBroker.publish({

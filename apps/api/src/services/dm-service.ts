@@ -20,6 +20,28 @@ export function directPairKey(userA: string, userB: string): string {
 }
 
 /**
+ * Federation-aware variant of `directPairKey` for 1:1 DMs that span
+ * instances. Inputs are qualified ids of the form `<localpart>@<host>`:
+ *
+ *   - Local side:  `${user.username}@${selfHost}`
+ *   - Remote side: `user.remoteUserId` (already qualified)
+ *
+ * Sorting is plain lexicographic, identical to `directPairKey` — the only
+ * difference is the input alphabet. We deliberately keep this as a separate
+ * helper (instead of overloading `directPairKey`) so the call site documents
+ * which form of identity it's using and so a misuse (e.g. mixing a local id
+ * with a qualified id) is loud rather than silent.
+ */
+export function federatedDmPairKey(
+  qualifiedIdA: string,
+  qualifiedIdB: string,
+): string {
+  return qualifiedIdA < qualifiedIdB
+    ? `${qualifiedIdA}:${qualifiedIdB}`
+    : `${qualifiedIdB}:${qualifiedIdA}`;
+}
+
+/**
  * Return the dmChannel row if the user is a member; throw 404 / 403
  * otherwise. Throwing 404 instead of 403 on non-membership avoids leaking
  * which DM channels exist.
@@ -60,6 +82,12 @@ export async function requireDmChannelMembership(
 /**
  * True if userA and userB are both members of at least one server. Used
  * as the gate when starting a DM with someone.
+ *
+ * Federation note: this query works unchanged for federated mirror members
+ * because remote users live as `User` rows (with `remoteUserId` set) and
+ * are recorded in `ServerMember` exactly like local users. Both ids are
+ * always local User ids — the caller resolves remote identities to mirror
+ * User rows upstream.
  */
 export async function usersShareServer(userA: string, userB: string): Promise<boolean> {
   if (userA === userB) return false;
@@ -83,15 +111,59 @@ export async function usersShareServer(userA: string, userB: string): Promise<bo
  * database, so a race between two simultaneous starts surfaces as a
  * P2002 unique-constraint violation that we recover from by fetching
  * whichever side won.
+ *
+ * Federation: when the OTHER user is a remote-user mirror (User row with
+ * `remoteUserId IS NOT NULL`) AND `opts.selfHost` is provided, the pairKey
+ * is computed from qualified ids (`<creator.username>@<selfHost>` +
+ * `other.remoteUserId`) instead of local User ids. This makes the pairKey
+ * stable across both ends of the federation hop — the remote instance
+ * computes the same key from its side using the mirrored pair of usernames.
+ *
+ * Caveat: if the operator renames the instance (PUBLIC_BASE_URL host
+ * changes), previously-created federated DM rows are orphaned because the
+ * recomputed pairKey no longer matches. A subsequent open call will create
+ * a new DmChannel with the new key. Hostname changes are an identity event
+ * and should be handled with the same care as user-rename — see
+ * `docs/federation.md`.
  */
+export interface FindOrCreateDirectDmOpts {
+  /**
+   * Local instance's federation host (e.g. `a.example`). Required to build
+   * the qualified-id pairKey for federated DMs. Pass `null`/`undefined` on
+   * non-federated instances; the local-id pairKey is used in that case.
+   */
+  selfHost?: string | null;
+}
+
 export async function findOrCreateDirectDm(
   creatorId: string,
   otherUserId: string,
+  opts?: FindOrCreateDirectDmOpts,
 ): Promise<string> {
   if (creatorId === otherUserId) {
     throw TavernError.validation('Cannot DM yourself');
   }
-  const pairKey = directPairKey(creatorId, otherUserId);
+
+  // Load both users in a single round-trip; we need usernames + remoteUserId
+  // to decide whether this is a federated DM (other side is a mirror user).
+  const users = await prisma.user.findMany({
+    where: { id: { in: [creatorId, otherUserId] } },
+    select: { id: true, username: true, remoteUserId: true },
+  });
+  const creator = users.find((u) => u.id === creatorId);
+  const otherUser = users.find((u) => u.id === otherUserId);
+  if (!creator || !otherUser) {
+    throw TavernError.notFound('User not found');
+  }
+
+  const selfHost = opts?.selfHost ?? null;
+  // Federation gate: switch to qualified-id pairKey only when the other
+  // side is a mirror AND we know our own host. Both local users + missing
+  // selfHost fall through to the legacy local-id pairKey.
+  const pairKey =
+    otherUser.remoteUserId !== null && selfHost
+      ? federatedDmPairKey(`${creator.username}@${selfHost}`, otherUser.remoteUserId)
+      : directPairKey(creatorId, otherUserId);
 
   const existing = await prisma.dmChannel.findUnique({
     where: { pairKey },
