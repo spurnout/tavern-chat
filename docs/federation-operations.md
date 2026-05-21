@@ -1,12 +1,14 @@
 # Federation operations guide
 
-Phases 1–4 of Tavern federation are now in place: peering, remote-user identity,
-channel-message federation (create / edit / delete / reactions), and **federated invites
+Phases 1–5 of Tavern federation are now in place: peering, remote-user identity,
+channel-message federation (create / edit / delete / reactions), **federated invites
 plus Tavern mirroring** (members on one instance can join Taverns hosted on another, with
-live server/channel/membership sync and home-instance message relay). Federated DMs,
-presence, and moderation propagation are still pending. Operators can safely enable peering,
-exchange channel messages with peered instances at the per-Tavern and per-channel opt-in
-level, federate invites end-to-end, and verify everything via the admin UI.
+live server/channel/membership sync and home-instance message relay), and **federated
+1:1 direct messages** (DMs cross peers when both advertise the `dms` capability).
+Federated presence and moderation propagation are still pending. Operators can safely
+enable peering, exchange channel messages with peered instances at the per-Tavern and
+per-channel opt-in level, federate invites end-to-end, exchange 1:1 DMs with remote
+users, and verify everything via the admin UI.
 
 See `docs/federation.md` for the full design, protocol spec, and rollout phases.
 
@@ -458,3 +460,97 @@ hits `POST /api/federation/mirror-servers/{id}/leave`:
 The Phase 3 `POST /api/admin/servers/:id/remote-members` endpoint still exists and bypasses
 the invite flow. Use it for testing or to add a remote member without an invite ceremony. The
 same membership envelopes fire afterward.
+
+---
+
+## Phase 5 — federated 1:1 direct messages
+
+Phase 5 lets users on different instances exchange direct messages. Both peers
+must advertise the `dms` capability for federation to engage; instances may
+opt out via `FEDERATION_DMS_ENABLED=false`.
+
+### How federated DMs work
+
+A 1:1 DM between alice@a.example and bob@b.example is **mirrored on both
+instances** — each side stores its own DmChannel and Message rows. Messages
+typed on either side cross to the other via signed envelopes.
+
+- **Identifier**: both instances use the SAME `DmChannel.id` (a global ULID).
+  The originating instance picks it; the receiver accepts it.
+- **PairKey**: sorted qualified ids form (`alice@a.example:bob@b.example`).
+  Local DMs continue using local-id pairKeys; both formats fit the `@unique`
+  constraint.
+- **Storage**: each instance has its own DmChannel + DmChannelMember rows
+  (one local user, one remote-user mirror) and its own Message rows.
+
+### Capability gate
+
+Both peers must list `dms` in their `.well-known/tavern-federation`
+capabilities. The peering handshake intersects the two lists; if either side
+has DMs disabled, the resulting `RemoteInstance.capabilities` on both sides
+will not include `dms`, and all DM federation operations short-circuit.
+
+To disable DM federation on a specific instance, set
+`FEDERATION_DMS_ENABLED=false` in `.env`. The instance:
+- Drops `dms` from the well-known advertisement.
+- Rejects all inbound `dm.*` events with 403 `dms_capability_missing`.
+- Skips all outbound DM fan-out at the route level.
+
+Existing federated DMs persist locally on each instance but stop syncing.
+
+### Starting a federated DM
+
+The initiator's UI calls `POST /api/dms/direct` with the recipient's local
+user id (which is the recipient's mirror User row on the initiator's
+instance — created earlier via federated Tavern membership). The route:
+
+1. Resolves both users via Prisma.
+2. Verifies the share-server gate — the initiator and recipient must share at
+   least one server (local or federated mirror).
+3. Computes the qualified-id pairKey.
+4. Creates the DmChannel locally via `findOrCreateDirectDm` (idempotent on
+   pairKey UNIQUE).
+5. Fans out `dm.create` to the recipient's home instance.
+
+The receiving instance's inbound handler:
+1. Verifies the peer advertises `dms`.
+2. Resolves the recipient as a local user.
+3. Ensures the initiator's mirror User row exists.
+4. Creates the matching DmChannel with the SAME id.
+5. Broadcasts DM_CHANNEL_CREATE to the recipient's gateway.
+
+### What propagates
+
+| Event | When |
+|-------|------|
+| `dm.create` | Initiator opens a DM with a remote user |
+| `dm.message.create` | Message posted in a federated DM |
+| `dm.message.update` | Message edited (author only) |
+| `dm.message.delete` | Message deleted (author only) |
+| `dm.reaction.add` | Reaction added |
+| `dm.reaction.remove` | Reaction removed |
+
+### What stays local
+
+- **Read state** (`DmChannelMember.lastReadAt`).
+- **Drafts** (browser-local).
+- **Notification settings**.
+- **Typing indicators**.
+- **Group DMs** (Phase 5 covers 1:1 only — group DM federation is deferred).
+
+### Out-of-order delivery
+
+If a `dm.message.create` arrives before the `dm.create` for that channel, the
+receiver returns 404 `unknown_dm_channel`. The outbox retries the message
+envelope until the dm.create lands. This is rare in practice — `dm.create`
+fires synchronously before any messages can be posted — but the retry
+handles edge cases like dropped connections during initial DM setup.
+
+### Privacy considerations
+
+Federated DMs leak the same metadata as federated channel messages:
+- The peer instance learns who you're talking to and the message content.
+- Operators of both instances can read DM messages in their database.
+- This is by design — federation IS the leak. Users who require strict
+  locality should pick an instance that disables `dms`.
+- End-to-end encryption is deferred to Phase 8+.

@@ -222,6 +222,74 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   identifier on remote-removal events. Not breakage; clean up when WS
   payload shapes are next revisited.
 
+### 26. Group DM federation
+
+- **Phase:** 5 (deferred)
+- **Trigger:** when group DM federation is on the roadmap
+- **What:** Phase 5 covers 1:1 DMs only. Group DMs (3+ participants) are
+  intentionally deferred — the cross-instance fan-out math, the
+  mirror-on-every-participant-instance topology, and the moderation surface
+  (a group member from instance C is added to a 1:1 between A and B) all
+  need design work. The Phase 5 schemas and envelopes are 1:1-shaped; group
+  DM federation will need new envelope kinds or a generalization of the
+  existing ones. Revisit once the 1:1 path has run in production for a
+  while and the use case demand is clear.
+
+### 27. DM moderation propagation
+
+- **Phase:** 5 (deferred to Phase 7)
+- **Trigger:** Phase 7 (moderation propagation)
+- **What:** Phase 5 federates DM content but not moderation actions. A user
+  blocked on instance A is not blocked on instance B; a user banned from
+  the platform on A can still DM B users via B's mirror of their account.
+  Block lists, banned-user enforcement, and "report this DM to the home
+  instance" flows are Phase 7 work. Until then, users should rely on
+  per-DM mute / leave actions, which stay local.
+
+### 28. Per-user "disable federated DMs" preference
+
+- **Phase:** 5 (whole-phase review)
+- **Trigger:** when user-level federation preferences are added
+- **What:** Phase 5 gates federated DMs at the instance level via the `dms`
+  capability advertisement. There is no per-user opt-out — if both
+  instances advertise `dms`, any local user can be DMed by any remote
+  user (subject to the share-server gate). Some users may want to refuse
+  federated DMs even when their instance supports them. Add a
+  `User.acceptsFederatedDms` preference + UI toggle in account settings;
+  initiator-side check before fan-out, receiver-side 403 with
+  `recipient_refuses_federated_dms` on the inbound handler.
+
+### 29. `peering.accept` envelope inbound handler missing
+
+- **Phase:** 5 (P5-11 review)
+- **Trigger:** before relying on capability re-intersection after a peer
+  reconfigures its advertised set
+- **What:** P5-11 added capability intersection on the **inbound** peering
+  handshake (B intersects A's advertised caps with B's own when accepting),
+  but the **initiator** side (A) never reconciles the peer's accepted
+  capabilities. If B drops `dms` from its advertisement after the initial
+  peering, A's `RemoteInstance.capabilities` row for B still lists `dms`
+  until A re-handshakes manually. Add a `peering.accept` inbound handler
+  (or extend the existing accept ack) that lets B push its current
+  capability set back to A on every handshake, including post-config
+  changes triggered by a re-handshake request.
+
+### 30. Existing pre-Phase-5 `RemoteInstance` rows hold un-intersected capability sets
+
+- **Phase:** 5 (P5-11 review)
+- **Trigger:** when Phase 5 ships to instances with existing peers
+- **What:** P5-11 introduced capability intersection on the peering
+  handshake going forward, but did not migrate existing `RemoteInstance`
+  rows that were peered before Phase 5 deployed. Those rows hold the
+  un-intersected capability set from the original handshake, which means
+  a Phase 5 instance peered with a pre-Phase-5 instance may incorrectly
+  think the peer supports `dms` (or, more dangerously, may not know the
+  peer rejects DMs and try to fan out anyway). Mitigations: either
+  re-handshake all existing peers as part of the Phase 5 deployment
+  runbook (operator action), or add a one-shot migration that nulls
+  `capabilities` on all rows + forces a re-fetch on next contact (code
+  change). Document the operator path in the Phase 5 release notes.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up

@@ -1,13 +1,13 @@
 # IR20 federation network — design
 
-> **Status: Phase 0–4 implemented.** Peering, remote-user identity, federated
-> channel messages/edits/deletes/reactions, AND **federated invites + Tavern
-> mirroring** (members on one instance can join Taverns hosted on another,
-> with live server/channel/membership sync and home-instance message relay).
-> Federated DMs, presence, moderation propagation, and voice are still pending.
-> See [Rollout phases](#rollout-phases).
+> **Status: Phase 0–5 implemented.** Peering, remote-user identity, federated
+> channel messages/edits/deletes/reactions, federated invites with full Tavern
+> mirroring, AND **federated 1:1 direct messages** (DMs cross peers when both
+> advertise the `dms` capability; messages, edits, deletes, and reactions
+> propagate symmetrically). Federated presence, moderation propagation, and
+> voice are still pending. See [Rollout phases](#rollout-phases).
 > All 7 open design questions are locked per the recommendations below.
-> Phases 5 through 8 are pending. See [Rollout phases](#rollout-phases).
+> Phases 6 through 8 are pending. See [Rollout phases](#rollout-phases).
 
 Tavern was originally framed as a closed-graph, self-hosted community
 app. The IR20 work reverses that stance: identity, invites, messages,
