@@ -278,11 +278,22 @@ describe.skipIf(!dockerOk)('P6-8 — setCustomStatus / clearCustomStatus service
       expect(row?.customStatusExpiresAt?.getTime()).toBe(expiresAt.getTime());
       expect(row?.presenceUpdatedAt.getTime()).toBeGreaterThan(watermarkBefore);
 
-      // Broadcast fired with PRESENCE_UPDATE for the user.
+      // Broadcast fired with PRESENCE_UPDATE for the user. PF-2 / #32 — the
+      // payload now carries customStatus + customStatusExpiresAt (ISO string)
+      // alongside the presence enum, so live UIs can reflect status changes
+      // without a profile re-fetch.
       const evt = events.find(
         (e) => e.type === 'PRESENCE_UPDATE' && e.userId === alice.id,
       );
       expect(evt).toBeDefined();
+      const evtData = evt?.data as {
+        userId: string;
+        presence: string;
+        customStatus: string | null;
+        customStatusExpiresAt: string | null;
+      };
+      expect(evtData.customStatus).toBe('In a session');
+      expect(evtData.customStatusExpiresAt).toBe(expiresAt.toISOString());
 
       // Immediate fan-out — no debounce drain needed. The setTimeout(0)-style
       // emitFanOut goes through one microtask + a DB read; give it a couple
@@ -348,6 +359,15 @@ describe.skipIf(!dockerOk)('P6-8 — setCustomStatus / clearCustomStatus service
         (e) => e.type === 'PRESENCE_UPDATE' && e.userId === alice.id,
       );
       expect(evt).toBeDefined();
+      // PF-2 / #32 — clearCustomStatus broadcasts customStatus=null +
+      // customStatusExpiresAt=null so live consumers KNOW to drop the pill
+      // (not just stop refreshing it).
+      const evtData = evt?.data as {
+        customStatus: string | null;
+        customStatusExpiresAt: string | null;
+      };
+      expect(evtData.customStatus).toBeNull();
+      expect(evtData.customStatusExpiresAt).toBeNull();
 
       await new Promise<void>((r) => setTimeout(r, 50));
       expect(enqueue).toHaveBeenCalledTimes(1);

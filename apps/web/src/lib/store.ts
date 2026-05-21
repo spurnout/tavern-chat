@@ -117,6 +117,23 @@ interface RealtimeState {
    * `'offline'` when read.
    */
   presenceByUserId: Record<string, Presence>;
+  /**
+   * userId -> live custom status overlay (PF-2 / follow-up #32). Populated
+   * by PRESENCE_UPDATE broadcasts whose payload carries the optional
+   * `customStatus` / `customStatusExpiresAt` fields. Consumers should prefer
+   * this map over the snapshot on `UserProfile` so a status change reflects
+   * in the UI without waiting for the next profile re-fetch.
+   *
+   * `expiresAt` is a `Date` (parsed from the wire ISO string) so consumers
+   * can compare against `Date.now()` directly without re-parsing on every
+   * render. Missing entries mean "no live signal yet" — fall through to the
+   * profile snapshot. An explicit `status: null` means the user CLEARED
+   * their status; consumers should render no pill (do NOT fall through).
+   */
+  customStatusByUserId: Record<
+    string,
+    { status: string | null; expiresAt: Date | null }
+  >;
   /** dmChannelId -> DmChannel; populated by GET /dms and DM_CHANNEL_CREATE. */
   dmChannelsById: Record<string, DmChannel>;
   /** dmChannelId -> messages array, kept sorted by id like messagesByChannel. */
@@ -181,6 +198,17 @@ interface RealtimeState {
   setActiveDmChannelId: (dmChannelId: string | null) => void;
   setPresence: (userId: string, presence: Presence) => void;
   setPresences: (entries: Record<string, Presence>) => void;
+  /**
+   * Apply a live custom-status update for `userId`. Pass `status: null` to
+   * record an explicit clear (renders no pill); pass a non-null string to
+   * set / replace. `expiresAt` is the wall-clock expiry — consumers compare
+   * against `Date.now()` on each render. See follow-up #32.
+   */
+  setCustomStatus: (
+    userId: string,
+    status: string | null,
+    expiresAt: Date | null,
+  ) => void;
   upsertDmChannel: (channel: DmChannel) => void;
   removeDmChannel: (channelId: string) => void;
   setDmMessages: (dmChannelId: string, messages: Message[]) => void;
@@ -241,6 +269,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
   activeChannelId: null,
   activeDmChannelId: null,
   presenceByUserId: {},
+  customStatusByUserId: {},
   dmChannelsById: {},
   messagesByDmChannel: {},
   profilesByUserId: {},
@@ -260,6 +289,13 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     set((s) => ({ presenceByUserId: { ...s.presenceByUserId, [userId]: presence } })),
   setPresences: (entries) =>
     set((s) => ({ presenceByUserId: { ...s.presenceByUserId, ...entries } })),
+  setCustomStatus: (userId, status, expiresAt) =>
+    set((s) => ({
+      customStatusByUserId: {
+        ...s.customStatusByUserId,
+        [userId]: { status, expiresAt },
+      },
+    })),
 
   upsertDmChannel: (channel) =>
     set((s) => ({ dmChannelsById: { ...s.dmChannelsById, [channel.id]: channel } })),

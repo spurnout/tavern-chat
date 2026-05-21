@@ -3,7 +3,7 @@ import { Check, Copy, ExternalLink, MessageSquare, Pencil, AtSign, X } from 'luc
 import * as Popover from '@radix-ui/react-popover';
 import type { Member, Role, UserProfile } from '@tavern/shared';
 import type { Presence } from '@tavern/shared';
-import type { LoadedProfile } from '../lib/store.js';
+import { useRealtime, type LoadedProfile } from '../lib/store.js';
 import { cn } from '../lib/cn.js';
 import { PresenceDot } from './PresenceDot.js';
 
@@ -42,11 +42,13 @@ function formatJoinedDate(iso: string): string {
 /**
  * True if `expiresAt` is in the past. The worker sweep clears expired
  * custom statuses every 5 minutes; this gate hides the row during the
- * gap between expiry and the next sweep.
+ * gap between expiry and the next sweep. Accepts the profile snapshot's
+ * ISO string OR the live-overlay's `Date` — both shapes route through here.
  */
-function isExpired(expiresAt: string | null): boolean {
+function isExpired(expiresAt: string | Date | null): boolean {
   if (!expiresAt) return false;
-  const t = Date.parse(expiresAt);
+  const t =
+    typeof expiresAt === 'string' ? Date.parse(expiresAt) : expiresAt.getTime();
   return Number.isFinite(t) && t < Date.now();
 }
 
@@ -124,6 +126,25 @@ export function MemberProfileCard({
   const username = profile?.username ?? member?.user.username ?? '';
   const nickname = member?.nickname ?? null;
   const accent = profile?.accentColor ?? null;
+
+  // PF-2 / follow-up #32 — live-first resolution. When a PRESENCE_UPDATE
+  // broadcast has carried the user's customStatus we use that; otherwise we
+  // fall through to the snapshot baked into the profile fetch. Critically,
+  // an explicit `null` from the live source means the user CLEARED their
+  // status, so we render NO pill (we do NOT fall through to the profile
+  // snapshot — that would resurrect the stale string until the next
+  // profile re-fetch).
+  const liveCustomStatus = useRealtime((s) => s.customStatusByUserId[userId]);
+  const hasLiveCustomStatus = liveCustomStatus !== undefined;
+  const effectiveCustomStatus = hasLiveCustomStatus
+    ? liveCustomStatus.status
+    : profile?.customStatus ?? null;
+  const effectiveCustomStatusExpiresAt: string | Date | null = hasLiveCustomStatus
+    ? liveCustomStatus.expiresAt
+    : profile?.customStatusExpiresAt ?? null;
+  const showCustomStatus =
+    effectiveCustomStatus !== null &&
+    !isExpired(effectiveCustomStatusExpiresAt);
 
   const handleCopyId = async (): Promise<void> => {
     await onCopyId();
@@ -216,8 +237,8 @@ export function MemberProfileCard({
 
         {profile && state === 'loaded' ? (
           <div className="space-y-3">
-            {profile.customStatus && !isExpired(profile.customStatusExpiresAt) ? (
-              <p className="text-sm italic text-fg-muted">{profile.customStatus}</p>
+            {showCustomStatus ? (
+              <p className="text-sm italic text-fg-muted">{effectiveCustomStatus}</p>
             ) : null}
 
             {profile.bio ? (

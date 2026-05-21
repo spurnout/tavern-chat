@@ -196,6 +196,26 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
       const parsed = presenceUpdatePayloadSchema.safeParse(data);
       if (!parsed.success) return;
       store.setPresence(parsed.data.userId, parsed.data.presence);
+      // PF-2 / follow-up #32: the broadcast OPTIONALLY carries the user's
+      // live customStatus. "Absent" and "null" mean different things on the
+      // wire — `null` is an explicit clear, missing means "this broadcast
+      // didn't touch customStatus". The Zod schema strips unknown keys but
+      // preserves the absent-vs-null distinction on declared optional+nullable
+      // fields, so `'customStatus' in parsed.data` is the right gate. Without
+      // this guard, idle/active flaps (which don't include customStatus)
+      // would clobber a previously-set status to undefined on every flap.
+      if (
+        typeof data === 'object' &&
+        data !== null &&
+        'customStatus' in (data as Record<string, unknown>)
+      ) {
+        const expiresAtIso = parsed.data.customStatusExpiresAt ?? null;
+        store.setCustomStatus(
+          parsed.data.userId,
+          parsed.data.customStatus ?? null,
+          expiresAtIso === null ? null : new Date(expiresAtIso),
+        );
+      }
       return;
     }
     case 'MEMBER_UPDATE': {

@@ -6443,6 +6443,21 @@ describe.skipIf(!dockerOk)('P6-7 — POST /_federation/event (presence.update)',
             (e.data as { presence?: string }).presence === 'idle',
         ),
       ).toBeTruthy();
+      // PF-2 / #32 — even when the inbound envelope carries no custom-status
+      // change (both fields null on the wire), the broadcast MUST include the
+      // explicit nulls so live web consumers know the user has no pill (and
+      // can drop a previously-cached one).
+      const idleEvt = events.find(
+        (e) =>
+          (e.data as { userId?: string }).userId === fx.localUserId &&
+          (e.data as { presence?: string }).presence === 'idle',
+      );
+      const idleData = idleEvt!.data as {
+        customStatus: string | null;
+        customStatusExpiresAt: string | null;
+      };
+      expect(idleData.customStatus).toBeNull();
+      expect(idleData.customStatusExpiresAt).toBeNull();
 
       const remoteUserRow = await prisma.remoteUser.findUnique({
         where: { id: fx.remoteUserRowId },
@@ -6671,7 +6686,7 @@ describe.skipIf(!dockerOk)('P6-7 — POST /_federation/event (presence.update)',
     }
   });
 
-  it('custom status set: payload carries customStatus + expiresAt → mirror row reflects both', async () => {
+  it('custom status set: payload carries customStatus + expiresAt → mirror row reflects both AND broadcast carries the new values', async () => {
     const fx = await makePresenceFixture();
     const expiresAt = new Date('2026-05-01T17:30:00.000Z');
     const envelope = buildPresenceEnvelope({
@@ -6680,6 +6695,15 @@ describe.skipIf(!dockerOk)('P6-7 — POST /_federation/event (presence.update)',
       customStatus: 'In a session',
       customStatusExpiresAt: expiresAt.toISOString(),
       updatedAt: new Date('2026-04-01T00:00:00.000Z').toISOString(),
+    });
+
+    // PF-2 / #32 — capture the PRESENCE_UPDATE broadcast so we can assert
+    // the live customStatus fields rode along with the presence flip.
+    const events: Array<{ type: string; userId?: string; data: unknown }> = [];
+    const unsub = gatewayBroker.subscribe((e) => {
+      if ((e as { type?: string }).type === 'PRESENCE_UPDATE') {
+        events.push(e as { type: string; userId?: string; data: unknown });
+      }
     });
 
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
@@ -6698,7 +6722,23 @@ describe.skipIf(!dockerOk)('P6-7 — POST /_federation/event (presence.update)',
       expect(row?.customStatus).toBe('In a session');
       expect(row?.customStatusExpiresAt?.toISOString()).toBe(expiresAt.toISOString());
       expect(row?.presence).toBe('active');
+
+      // The captured broadcast carries the post-mirror customStatus values.
+      const evt = events.find(
+        (e) => (e.data as { userId?: string }).userId === fx.localUserId,
+      );
+      expect(evt).toBeDefined();
+      const evtData = evt!.data as {
+        userId: string;
+        presence: string;
+        customStatus: string | null;
+        customStatusExpiresAt: string | null;
+      };
+      expect(evtData.presence).toBe('active');
+      expect(evtData.customStatus).toBe('In a session');
+      expect(evtData.customStatusExpiresAt).toBe(expiresAt.toISOString());
     } finally {
+      unsub();
       await app.close();
     }
   });

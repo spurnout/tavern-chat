@@ -4120,6 +4120,16 @@ async function handlePresenceUpdate(input: {
   const userId = localUser.id;
   const userRemoteUserId = payload.userRemoteUserId;
   const presence = payload.presence;
+  // Snapshot the customStatus values we just persisted so the postCommit
+  // broadcast carries the LIVE pill alongside the presence dot. Mirrors the
+  // local presence-service.ts broadcast shape exactly so the web client's
+  // PRESENCE_UPDATE handler treats mirror users identically to local ones.
+  // PF-2 / follow-up #32. The wire field is an ISO string so it matches
+  // `presenceUpdatePayloadSchema` on the receiver side.
+  const customStatus = payload.customStatus ?? null;
+  const customStatusExpiresAt = payload.customStatusExpiresAt
+    ? new Date(payload.customStatusExpiresAt).toISOString()
+    : null;
 
   return {
     result: { status: 200, body: { ok: true, data: { userId } } },
@@ -4131,7 +4141,7 @@ async function handlePresenceUpdate(input: {
       gatewayBroker.publish({
         type: 'PRESENCE_UPDATE',
         userId,
-        data: { userId, presence },
+        data: { userId, presence, customStatus, customStatusExpiresAt },
       });
       // Touch lastSeenAt — mirrors what every other handler does. The
       // RemoteUser row may or may not exist (the mirror User row's

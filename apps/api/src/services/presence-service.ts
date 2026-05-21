@@ -172,11 +172,38 @@ async function emitFanOut(userId: string): Promise<void> {
 
 // --- Local presence -------------------------------------------------------
 
-function broadcast(userId: string, presence: Presence): void {
+/**
+ * Snapshot of every field PRESENCE_UPDATE carries on the wire. The
+ * `broadcast` helper takes this whole shape so a single fan-out emits both
+ * the live presence dot AND the live custom-status pill — receivers diff
+ * against their store and only re-render on actual changes. See follow-up
+ * #32 / PF-2.
+ *
+ * `customStatus` carries a SERIALISED ISO string for the expiry so the wire
+ * payload matches `presenceUpdatePayloadSchema` (which requires
+ * `customStatusExpiresAt: string().datetime().nullable().optional()`). The
+ * service-internal callers hold a `Date` and convert here so the broadcast
+ * site stays a one-liner.
+ */
+interface PresenceSnapshot {
+  presence: Presence;
+  customStatus: string | null;
+  customStatusExpiresAt: Date | null;
+}
+
+function broadcast(userId: string, snapshot: PresenceSnapshot): void {
   gatewayBroker.publish({
     type: 'PRESENCE_UPDATE',
     userId,
-    data: { userId, presence },
+    data: {
+      userId,
+      presence: snapshot.presence,
+      customStatus: snapshot.customStatus,
+      customStatusExpiresAt:
+        snapshot.customStatusExpiresAt === null
+          ? null
+          : snapshot.customStatusExpiresAt.toISOString(),
+    },
   });
 }
 
@@ -189,9 +216,18 @@ function compute(userId: string, manualDnd: boolean): Presence {
 }
 
 async function persistAndBroadcast(userId: string, next: Presence): Promise<void> {
+  // Single read pulls presence (for the no-op short-circuit) AND the custom
+  // status fields that the broadcast now carries. Reading them here means
+  // every PRESENCE_UPDATE we publish reflects the LIVE custom-status — a
+  // receiver that joined the gateway after the status was set still gets
+  // the up-to-date pill on the next presence flap. PF-2 / follow-up #32.
   const row = await prisma.user.findUnique({
     where: { id: userId },
-    select: { presence: true },
+    select: {
+      presence: true,
+      customStatus: true,
+      customStatusExpiresAt: true,
+    },
   });
   if (!row) return;
   if (row.presence === next) return;
@@ -199,7 +235,11 @@ async function persistAndBroadcast(userId: string, next: Presence): Promise<void
     where: { id: userId },
     data: { presence: next, presenceUpdatedAt: new Date() },
   });
-  broadcast(userId, next);
+  broadcast(userId, {
+    presence: next,
+    customStatus: row.customStatus,
+    customStatusExpiresAt: row.customStatusExpiresAt,
+  });
   // Federation fan-out: offline transitions fire immediately; active⇄idle
   // and dnd flaps go through the 5s debounce so we don't thrash the outbox.
   scheduleFanOut(userId, next === 'offline');
@@ -292,7 +332,9 @@ export async function setCustomStatus(
   // Single read pulls both the existence-check (`id`) and the `manualDnd`
   // bit needed for the broadcast — `manualDnd` is a sticky user setting
   // that this call doesn't mutate, so reading it before the update is
-  // safe and saves a round-trip.
+  // safe and saves a round-trip. The PRESENCE_UPDATE snapshot below uses
+  // the NEW `status` / `expiresAt` we're about to write rather than
+  // re-reading the row, so a second findUnique isn't needed.
   const existing = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, manualDnd: true },
@@ -306,7 +348,11 @@ export async function setCustomStatus(
       presenceUpdatedAt: new Date(),
     },
   });
-  broadcast(userId, compute(userId, existing.manualDnd));
+  broadcast(userId, {
+    presence: compute(userId, existing.manualDnd),
+    customStatus: status,
+    customStatusExpiresAt: expiresAt,
+  });
   scheduleFanOut(userId, /* immediate */ true);
 }
 
@@ -316,7 +362,8 @@ export async function setCustomStatus(
  */
 export async function clearCustomStatus(userId: string): Promise<void> {
   // Same shape as setCustomStatus — pull `manualDnd` in the existence
-  // check so the post-update broadcast doesn't need a second read.
+  // check so the post-update broadcast doesn't need a second read. The
+  // broadcast snapshot carries the explicit nulls we're about to write.
   const existing = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, manualDnd: true },
@@ -330,7 +377,11 @@ export async function clearCustomStatus(userId: string): Promise<void> {
       presenceUpdatedAt: new Date(),
     },
   });
-  broadcast(userId, compute(userId, existing.manualDnd));
+  broadcast(userId, {
+    presence: compute(userId, existing.manualDnd),
+    customStatus: null,
+    customStatusExpiresAt: null,
+  });
   scheduleFanOut(userId, /* immediate */ true);
 }
 
