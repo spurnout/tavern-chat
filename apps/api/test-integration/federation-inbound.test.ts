@@ -451,6 +451,8 @@ async function cleanDb(): Promise<void> {
   await prisma.userMention.deleteMany({});
   await prisma.pinnedMessage.deleteMany({});
   await prisma.message.deleteMany({});
+  await prisma.dmChannelMember.deleteMany({});
+  await prisma.dmChannel.deleteMany({});
   await prisma.invite.deleteMany({});
   await prisma.serverMember.deleteMany({});
   await prisma.permissionOverwrite.deleteMany({});
@@ -4055,6 +4057,483 @@ describe.skipIf(!dockerOk)('P4-13 — home-instance relay on inbound message.cre
         // verification fails because the canonical bytes change.
         expect(tamperResult.reason).toMatch(/user signature|instance signature/i);
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5-4 — POST /_federation/event (dm.create)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Coverage matrix:
+//   1. Happy path: peer advertises `dms`, recipient localpart maps to a
+//      local user → DmChannel created with both members, DM_CHANNEL_CREATE
+//      broadcast targeted at the recipient.
+//   2. Idempotent re-delivery: second envelope with a different nonce but
+//      the same dmChannelId → 200 deduplicated, still exactly one
+//      DmChannel row.
+//   3. Peer lacks the `dms` capability → 403 `dms_capability_missing`.
+//   4. Recipient localpart doesn't match any local user → 404 `unknown_recipient`.
+//   5. Recipient host doesn't match selfHost → 404 `unknown_recipient`.
+//   6. Same pairKey already maps to a DIFFERENT DmChannel id → 409
+//      `dm_channel_conflict`.
+//   7. Same dmChannelId already exists but represents a DIFFERENT pair →
+//      409 `dm_channel_conflict`.
+
+interface DmPeerFixture {
+  peerInstanceId: string;
+  peerHost: string;
+  peerKp: ReturnType<typeof generateKeyPair>;
+  /** The remote initiator on the peer instance. */
+  initiatorKp: ReturnType<typeof generateKeyPair>;
+  initiatorRemoteUserId: string;
+  /** Local recipient on this instance. */
+  recipientUserId: string;
+  recipientUsername: string;
+}
+
+async function makeDmFixture(opts?: {
+  capabilities?: string[];
+  /** Override the recipient username so we can simulate a different localpart. */
+  recipientUsername?: string;
+}): Promise<DmPeerFixture> {
+  const peerHost = 'dm-peer.example';
+  const peerKp = generateKeyPair();
+  const initiatorKp = generateKeyPair();
+  const peerInstanceId = ulid();
+  const initiatorLocalpart = `bob-${peerInstanceId.slice(-6).toLowerCase()}`;
+  const initiatorRemoteUserId = `${initiatorLocalpart}@${peerHost}`;
+
+  await prisma.remoteInstance.create({
+    data: {
+      id: peerInstanceId,
+      host: peerHost,
+      instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+      status: 'peered',
+      capabilities: opts?.capabilities ?? ['messages', 'dms'],
+      peeredAt: new Date(),
+    },
+  });
+
+  await prisma.remoteUser.create({
+    data: {
+      id: ulid(),
+      remoteInstanceId: peerInstanceId,
+      remoteUserId: initiatorRemoteUserId,
+      displayNameCache: 'Bob from peer',
+      avatarUrlCache: null,
+      publicKey: exportPublicKeyRaw(initiatorKp.publicKey),
+      lastSeenAt: new Date(0),
+    },
+  });
+
+  // Local recipient — alice@self.example. Username MUST be lower-case so
+  // the handler's `usernameLower` lookup matches without further folding
+  // (Tavern's signup path lowercases ahead of insert; the test fixture
+  // mirrors that invariant).
+  const recipientUserId = ulid();
+  const recipientUsername =
+    opts?.recipientUsername ?? `alice-${recipientUserId.slice(-6).toLowerCase()}`;
+  await prisma.user.create({
+    data: {
+      id: recipientUserId,
+      username: recipientUsername,
+      usernameLower: recipientUsername,
+      displayName: 'Alice (local)',
+      email: `${recipientUsername}@${SELF_HOST}`,
+      emailLower: `${recipientUsername}@${SELF_HOST}`,
+      passwordHash: 'x',
+    },
+  });
+
+  return {
+    peerInstanceId,
+    peerHost,
+    peerKp,
+    initiatorKp,
+    initiatorRemoteUserId,
+    recipientUserId,
+    recipientUsername,
+  };
+}
+
+interface BuildDmCreateEnvelopeInput {
+  fx: DmPeerFixture;
+  dmChannelId?: string;
+  /** Override the initiator id placed in the payload (for spoof / signature-mismatch tests). */
+  initiatorRemoteUserIdOverride?: string;
+  /** Override the recipient id (for unknown-recipient + wrong-host tests). */
+  recipientRemoteUserIdOverride?: string;
+  signUserOverride?: (bytes: Buffer) => Buffer;
+  signInstanceOverride?: (bytes: Buffer) => Buffer;
+}
+
+function buildDmCreateEnvelope(
+  input: BuildDmCreateEnvelopeInput,
+): TwoLayerSignedEnvelope<unknown> {
+  const { fx } = input;
+  return buildTwoLayerMessageEnvelope({
+    eventType: 'dm.create',
+    fromInstance: fx.peerHost,
+    toInstance: SELF_HOST,
+    payload: {
+      dmChannelId: input.dmChannelId ?? ulid(),
+      initiatorRemoteUserId:
+        input.initiatorRemoteUserIdOverride ?? fx.initiatorRemoteUserId,
+      recipientRemoteUserId:
+        input.recipientRemoteUserIdOverride ??
+        `${fx.recipientUsername}@${SELF_HOST}`,
+      createdAt: new Date().toISOString(),
+    },
+    signUser:
+      input.signUserOverride ?? ((b: Buffer) => edSign(b, fx.initiatorKp.privateKey)),
+    signInstance:
+      input.signInstanceOverride ?? ((b: Buffer) => edSign(b, fx.peerKp.privateKey)),
+  });
+}
+
+describe.skipIf(!dockerOk)('P5-4 — POST /_federation/event (dm.create)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('happy path: persists DmChannel + both members and broadcasts DM_CHANNEL_CREATE to the recipient', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const dmChannelId = ulid();
+    const envelope = buildDmCreateEnvelope({ fx, dmChannelId });
+
+    const events: Array<{
+      type: string;
+      userId?: string;
+      dmChannelId?: string;
+      data: unknown;
+    }> = [];
+    const unsubscribe = gatewayBroker.subscribe((e) => events.push(e));
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.dmChannelId).toBe(dmChannelId);
+      expect(body.data?.deduplicated).toBe(false);
+
+      // DmChannel row + both members present.
+      const channel = await prisma.dmChannel.findUnique({
+        where: { id: dmChannelId },
+        include: { members: { select: { userId: true } } },
+      });
+      expect(channel).not.toBeNull();
+      expect(channel!.kind).toBe('direct');
+      expect(channel!.pairKey).not.toBeNull();
+
+      // Initiator's synthetic local User must have been materialised.
+      const initiatorLocal = await prisma.user.findUnique({
+        where: { remoteUserId: fx.initiatorRemoteUserId },
+        select: { id: true },
+      });
+      expect(initiatorLocal).not.toBeNull();
+
+      const memberIds = channel!.members.map((m) => m.userId).sort();
+      const expectedIds = [fx.recipientUserId, initiatorLocal!.id].sort();
+      expect(memberIds).toEqual(expectedIds);
+
+      // pairKey is the sorted qualified-id pair.
+      const expectedPairKey =
+        fx.initiatorRemoteUserId < `${fx.recipientUsername}@${SELF_HOST}`
+          ? `${fx.initiatorRemoteUserId}:${fx.recipientUsername}@${SELF_HOST}`
+          : `${fx.recipientUsername}@${SELF_HOST}:${fx.initiatorRemoteUserId}`;
+      expect(channel!.pairKey).toBe(expectedPairKey);
+
+      // Gateway broadcast targeted at the recipient.
+      const dmCreates = events.filter((e) => e.type === 'DM_CHANNEL_CREATE');
+      expect(dmCreates).toHaveLength(1);
+      expect(dmCreates[0]!.dmChannelId).toBe(dmChannelId);
+      expect(dmCreates[0]!.userId).toBe(fx.recipientUserId);
+
+      // Envelope log + lastSeenAt updated.
+      const log = await prisma.federationEnvelopeLog.findFirst({
+        where: { peerInstanceId: fx.peerInstanceId, eventType: 'dm.create' },
+      });
+      expect(log).not.toBeNull();
+      expect(log!.status).toBe('accepted');
+
+      const ru = await prisma.remoteUser.findUnique({
+        where: { remoteUserId: fx.initiatorRemoteUserId },
+      });
+      expect(ru!.lastSeenAt.getTime()).toBeGreaterThan(0);
+    } finally {
+      unsubscribe();
+      await app.close();
+    }
+  });
+
+  it('idempotent re-delivery: same dmChannelId with a fresh nonce → 200 deduplicated, still one row', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const dmChannelId = ulid();
+
+    try {
+      // First delivery — normal happy path.
+      const first = buildDmCreateEnvelope({ fx, dmChannelId });
+      const res1 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: first,
+      });
+      expect(res1.statusCode).toBe(200);
+      expect(res1.json().data?.deduplicated).toBe(false);
+
+      // Second delivery — same payload contents (incl. same dmChannelId)
+      // but a NEW nonce so the envelope-log replay protection doesn't
+      // catch it. The handler-level idempotency MUST kick in.
+      const second = buildDmCreateEnvelope({ fx, dmChannelId });
+      // `buildTwoLayerMessageEnvelope` generates a fresh ULID nonce each
+      // call; sanity-check.
+      expect((second as { nonce: string }).nonce).not.toBe(
+        (first as { nonce: string }).nonce,
+      );
+      const res2 = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: second,
+      });
+      expect(res2.statusCode).toBe(200);
+      expect(res2.json().data?.deduplicated).toBe(true);
+      expect(res2.json().data?.dmChannelId).toBe(dmChannelId);
+
+      // Only one DmChannel row across both deliveries.
+      const channels = await prisma.dmChannel.findMany({ where: { id: dmChannelId } });
+      expect(channels).toHaveLength(1);
+      const allMembers = await prisma.dmChannelMember.findMany({
+        where: { dmChannelId },
+      });
+      expect(allMembers).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects with 403 when the peer does not advertise the `dms` capability', async () => {
+    // Peer is peered for `messages` only — DM federation is opt-in.
+    const fx = await makeDmFixture({ capabilities: ['messages'] });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const envelope = buildDmCreateEnvelope({ fx });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/dms.*capability/i);
+
+      // No DmChannel created.
+      const count = await prisma.dmChannel.count();
+      expect(count).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects with 404 when the recipient localpart does not match a local user', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    // Recipient localpart that nobody has signed up under.
+    const envelope = buildDmCreateEnvelope({
+      fx,
+      recipientRemoteUserIdOverride: `nobody-${ulid().toLowerCase()}@${SELF_HOST}`,
+    });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/no local user matches/i);
+
+      const count = await prisma.dmChannel.count();
+      expect(count).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects with 404 when the recipient @host does not match selfHost', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    // Right localpart, WRONG host — the peer is targeting a different
+    // instance. Should NOT match anything local.
+    const envelope = buildDmCreateEnvelope({
+      fx,
+      recipientRemoteUserIdOverride: `${fx.recipientUsername}@wrong.example`,
+    });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(404);
+      const body = res.json();
+      expect(body.error).toMatch(/does not match this instance/i);
+
+      const count = await prisma.dmChannel.count();
+      expect(count).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects with 409 when an existing DmChannel for this pair has a different id', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    // Pre-seed the initiator's local mirror User + a DmChannel with the
+    // canonical pairKey but a DIFFERENT id than the envelope will carry.
+    // That simulates the "we already opened this DM locally" case where
+    // the peer doesn't know about our id yet.
+    const initiatorRemoteUserRow = await prisma.remoteUser.findUnique({
+      where: { remoteUserId: fx.initiatorRemoteUserId },
+    });
+    const initiatorLocalUserId = ulid();
+    const initiatorSyntheticUsername = `__rem_${initiatorLocalUserId.toLowerCase()}`;
+    await prisma.user.create({
+      data: {
+        id: initiatorLocalUserId,
+        username: initiatorSyntheticUsername,
+        usernameLower: initiatorSyntheticUsername,
+        displayName: 'Bob from peer',
+        email: `${fx.initiatorRemoteUserId}.federated.local`,
+        emailLower: `${fx.initiatorRemoteUserId}.federated.local`,
+        passwordHash: null,
+        remoteUserId: fx.initiatorRemoteUserId,
+        remoteInstanceId: fx.peerInstanceId,
+        federationKeyPublic: initiatorRemoteUserRow!.publicKey,
+      },
+    });
+    const recipientQualifiedId = `${fx.recipientUsername}@${SELF_HOST}`;
+    const expectedPairKey =
+      fx.initiatorRemoteUserId < recipientQualifiedId
+        ? `${fx.initiatorRemoteUserId}:${recipientQualifiedId}`
+        : `${recipientQualifiedId}:${fx.initiatorRemoteUserId}`;
+    const existingDmChannelId = ulid();
+    await prisma.dmChannel.create({
+      data: {
+        id: existingDmChannelId,
+        kind: 'direct',
+        pairKey: expectedPairKey,
+        createdById: fx.recipientUserId,
+        members: {
+          create: [
+            { userId: fx.recipientUserId },
+            { userId: initiatorLocalUserId },
+          ],
+        },
+      },
+    });
+
+    // Now deliver a dm.create with a different id but the same pair.
+    const proposedDmChannelId = ulid();
+    expect(proposedDmChannelId).not.toBe(existingDmChannelId);
+    const envelope = buildDmCreateEnvelope({
+      fx,
+      dmChannelId: proposedDmChannelId,
+    });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(409);
+      const body = res.json();
+      expect(body.error).toMatch(/pairKey already maps to a different DmChannel/i);
+
+      // Existing DmChannel untouched, no new row.
+      const channels = await prisma.dmChannel.findMany({});
+      expect(channels).toHaveLength(1);
+      expect(channels[0]!.id).toBe(existingDmChannelId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects with 409 when the proposed dmChannelId already exists for a different pair', async () => {
+    const fx = await makeDmFixture();
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    // Seed a DmChannel between two LOCAL users with the proposed id.
+    // The pairKey will be the local-id form (no `@`), which is
+    // guaranteed not to collide with the federated qualified-id pairKey
+    // the envelope will compute.
+    const otherLocalUserId = ulid();
+    const otherLocalUsername = `dave-${otherLocalUserId.slice(-6).toLowerCase()}`;
+    await prisma.user.create({
+      data: {
+        id: otherLocalUserId,
+        username: otherLocalUsername,
+        usernameLower: otherLocalUsername,
+        displayName: 'Dave (local)',
+        email: `${otherLocalUsername}@${SELF_HOST}`,
+        emailLower: `${otherLocalUsername}@${SELF_HOST}`,
+        passwordHash: 'x',
+      },
+    });
+    const proposedDmChannelId = ulid();
+    const localPairKey =
+      fx.recipientUserId < otherLocalUserId
+        ? `${fx.recipientUserId}:${otherLocalUserId}`
+        : `${otherLocalUserId}:${fx.recipientUserId}`;
+    await prisma.dmChannel.create({
+      data: {
+        id: proposedDmChannelId,
+        kind: 'direct',
+        pairKey: localPairKey,
+        createdById: fx.recipientUserId,
+        members: {
+          create: [
+            { userId: fx.recipientUserId },
+            { userId: otherLocalUserId },
+          ],
+        },
+      },
+    });
+
+    // Envelope wants to claim the same dmChannelId for the federated pair.
+    const envelope = buildDmCreateEnvelope({ fx, dmChannelId: proposedDmChannelId });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(409);
+      const body = res.json();
+      expect(body.error).toMatch(/already exists for a different pair/i);
+
+      // Existing DmChannel still keyed on the local pair, not overwritten.
+      const channels = await prisma.dmChannel.findMany({});
+      expect(channels).toHaveLength(1);
+      expect(channels[0]!.id).toBe(proposedDmChannelId);
+      expect(channels[0]!.pairKey).toBe(localPairKey);
     } finally {
       await app.close();
     }

@@ -61,6 +61,7 @@ import {
   channelCreatePayloadSchema,
   channelDeletePayloadSchema,
   channelUpdatePayloadSchema,
+  dmCreatePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   memberAddPayloadSchema,
@@ -77,6 +78,7 @@ import {
   type ChannelCreatePayload,
   type ChannelDeletePayload,
   type ChannelUpdatePayload,
+  type DmCreatePayload,
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
@@ -94,6 +96,7 @@ import {
 } from '@tavern/shared';
 import { z } from 'zod';
 import { ensureUserForRemoteUser } from './remote-user-upsert.js';
+import { federatedDmPairKey, serializeDmChannel } from './dm-service.js';
 import {
   computeEffectiveFederation,
   fanOutMemberAdd,
@@ -135,11 +138,14 @@ export type InboundErrorCode =
   | 'unknown_invite' // 404 — payload.inviteCode not found / not federated
   | 'unknown_mirror_server' // 404 — payload.serverId not present as a mirror locally
   | 'unknown_member' // 404 — payload references a leaverRemoteUserId we don't have a User row for
+  | 'unknown_recipient' // 404 — dm.create recipient localpart/host doesn't match a local user
   | 'invite_no_longer_valid' // 410 — invite is revoked / expired / exhausted
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
   | 'not_origin' // 403 — sending peer is not the origin instance of the mirror
   | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
+  | 'dms_capability_missing' // 403 — peer does not advertise the `dms` capability
+  | 'dm_channel_conflict' // 409 — dm.create payload's dmChannelId/pairKey collides with an unrelated DmChannel
   | 'not_implemented'; // 501 — event type recognised by schema, handler is TBD
 
 export class FederationInboundError extends Error {
@@ -581,7 +587,14 @@ interface InboundHandler<TSchema extends z.ZodTypeAny> {
   handle: (input: {
     envelope: TwoLayerSignedEnvelope<z.infer<TSchema>>;
     payload: z.infer<TSchema>;
-    peer: { id: string; host: string };
+    /**
+     * `capabilities` is the intersected capability set negotiated at peering
+     * time (e.g. `['messages','dms']`). The P5-4 `dm.create` handler needs
+     * it to enforce the `dms` gate at receive time; other handlers ignore it.
+     * The dispatcher passes the full `RemoteInstance` row here, so handlers
+     * can safely read this field directly.
+     */
+    peer: { id: string; host: string; capabilities: string[] };
     remoteUser: NonNullable<
       Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
     >;
@@ -743,6 +756,25 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleMemberLeave as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P5-4 — inbound DM channel creation. The initiator is the user-layer
+  // signer (only they can announce a DM they're opening from their side).
+  // The handler:
+  //   1. Verifies the peer advertises `dms` (capability gate — peers that
+  //      haven't opted into DM federation get 403, not a silent drop).
+  //   2. Resolves the recipient from `payload.recipientRemoteUserId` —
+  //      localpart against `User.usernameLower`, host against `selfHost`.
+  //   3. Materialises the initiator's mirror User row + creates the
+  //      DmChannel with both members. Idempotent on `pairKey`; conflicts
+  //      on dmChannelId/pairKey collisions surface as 409 `dm_channel_conflict`.
+  'dm.create': {
+    payloadSchema: dmCreatePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { initiatorRemoteUserId?: unknown } | null)
+        ?.initiatorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmCreate as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -2655,6 +2687,256 @@ async function handleMemberLeave(input: {
           );
         }
       }
+    },
+  };
+}
+
+/**
+ * Inbound `dm.create` (P5-4).
+ *
+ * Peer B is announcing that one of its users has opened a 1:1 DM with one
+ * of our users. Symmetric counterpart of the outbound `fanOutDmCreate`
+ * (P5-3). Behaviour:
+ *
+ *   1. Capability gate — peer MUST advertise `dms` in the negotiated
+ *      capability set. Unlike server-message federation the `dms`
+ *      capability is opt-in per instance; a peer that's peered for
+ *      messages-only gets a hard 403 (NOT a 501) so the sender knows the
+ *      DM didn't land and can surface it to its user. This mirrors the
+ *      defensive posture of `fanOutDmCreate`, which short-circuits on the
+ *      send side when the peer doesn't advertise `dms`.
+ *
+ *   2. Recipient resolution — `payload.recipientRemoteUserId` has the form
+ *      `<localpart>@<host>`. The host MUST match `selfHost` (the peer is
+ *      targeting THIS instance), and the localpart MUST resolve to a
+ *      local User row via `usernameLower`. Either failure → 404
+ *      `unknown_recipient` (we don't disclose which leg failed).
+ *
+ *   3. Initiator mirror — the initiator's RemoteUser row was already
+ *      resolved by the dispatcher (cache hit OR profile-fetch). We
+ *      materialise the matching local synthetic User row via
+ *      `ensureUserForRemoteUser` so we have a real `User.id` to slot into
+ *      DmChannelMember.
+ *
+ *   4. PairKey collision rules — there are TWO ways a DmChannel can
+ *      collide here, and each surfaces as 409 `dm_channel_conflict`:
+ *        (a) a DmChannel with this `pairKey` already exists under a
+ *            DIFFERENT id. Treating this as anything other than 409 would
+ *            corrupt federation state — both sides would end up with
+ *            divergent dmChannelIds for the same conversation.
+ *        (b) a DmChannel with the same `id` (payload.dmChannelId)
+ *            already exists but represents a DIFFERENT pair. This is a
+ *            ULID collision (vanishingly unlikely but possible) or a
+ *            peer-side bug; either way we refuse to overwrite the
+ *            existing row.
+ *      If the existing row matches BOTH the proposed id AND the
+ *      computed pairKey, treat as idempotent re-delivery (200) — the
+ *      peer is re-sending a previously-accepted envelope (e.g. retry
+ *      after a transient failure on their side). This is the same
+ *      idempotency posture as `findOrCreateDirectDm`.
+ *
+ * Federation note: this handler runs on the RECEIVING side. The
+ * federation envelope's `originInstanceId` is the peer's `peer.id`, but
+ * Tavern's `DmChannel` schema doesn't carry an originInstanceId column
+ * (DMs are inherently two-sided — both ends are "home" of the channel).
+ * We persist the channel as a normal local row; the federated nature is
+ * implicit in the participant set (one local User + one mirror User with
+ * `remoteUserId IS NOT NULL`).
+ */
+async function handleDmCreate(input: {
+  envelope: TwoLayerSignedEnvelope<DmCreatePayload>;
+  payload: DmCreatePayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+  selfHost: string | null;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx, selfHost } = input;
+
+  // 1) Capability gate. The peer is peered (verified upstream), but must
+  // also advertise `dms` — DM federation is opt-in per instance.
+  if (!peer.capabilities.includes('dms')) {
+    throw new FederationInboundError(
+      'dms_capability_missing',
+      `peer ${peer.host} does not advertise the 'dms' capability`,
+    );
+  }
+
+  // 2) Defence-in-depth: the user-layer signature verified the payload
+  //    was signed by `remoteUser.publicKey`. Cross-check that the
+  //    initiator named in the payload matches the verified RemoteUser so
+  //    a peer can't sign with user A's key and pretend the initiator is
+  //    user B. Same posture as `member.leave` / `member.join_request`.
+  if (payload.initiatorRemoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'bad_envelope',
+      `initiatorRemoteUserId ${payload.initiatorRemoteUserId} does not match ` +
+        `verified user ${remoteUser.remoteUserId}`,
+    );
+  }
+
+  // 3) Parse recipient `<localpart>@<host>`. The schema already enforced
+  //    the regex; rsplit on `@` is safe here because the localpart cannot
+  //    contain `@` (regex `[a-z0-9_.-]+`).
+  const recipientId = payload.recipientRemoteUserId;
+  const atIdx = recipientId.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === recipientId.length - 1) {
+    // Schema would have already rejected this, but guard defensively in
+    // case the regex ever loosens. `bad_envelope` matches the dispatcher's
+    // shape-error semantics.
+    throw new FederationInboundError(
+      'bad_envelope',
+      `recipientRemoteUserId ${recipientId} is not a valid qualified id`,
+    );
+  }
+  const recipientLocalpart = recipientId.slice(0, atIdx);
+  const recipientHost = recipientId.slice(atIdx + 1);
+
+  if (!selfHost) {
+    // Configuration bug — dm.create cannot be processed without selfHost
+    // because the host-equality check is what proves the peer is
+    // targeting this instance. Crash loudly so the gap is caught early.
+    throw new Error(
+      'dm.create requires selfHost on FederationInboundService',
+    );
+  }
+
+  // Compare hosts case-insensitively. The schema regex is case-insensitive
+  // and federation hosts are DNS labels (case-folded). We don't trust the
+  // peer to send a normalised case.
+  if (recipientHost.toLowerCase() !== selfHost.toLowerCase()) {
+    // The peer is targeting the wrong instance. 404 (not 403) — symmetric
+    // with "no such local user": both leaks the same amount of information
+    // (none) and lets the peer's caller surface a single "recipient not
+    // found" error to its user.
+    throw new FederationInboundError(
+      'unknown_recipient',
+      `recipient host ${recipientHost} does not match this instance (${selfHost})`,
+    );
+  }
+
+  const recipient = await tx.user.findUnique({
+    where: { usernameLower: recipientLocalpart.toLowerCase() },
+    select: { id: true },
+  });
+  if (!recipient) {
+    throw new FederationInboundError(
+      'unknown_recipient',
+      `no local user matches ${recipientLocalpart}`,
+    );
+  }
+
+  // 4) Materialise the initiator's local synthetic User row. Idempotent.
+  const initiator = await ensureUserForRemoteUser(
+    remoteUser,
+    tx as unknown as PrismaClient,
+  );
+
+  // 5) Compute the federated pairKey from the two qualified ids. This
+  //    matches what the sending side does in `findOrCreateDirectDm`, so
+  //    both ends store the same key.
+  const pairKey = federatedDmPairKey(
+    payload.initiatorRemoteUserId,
+    payload.recipientRemoteUserId,
+  );
+
+  // 6) Existing DmChannel lookup. Two independent checks:
+  //    (a) row keyed on pairKey  — same pair, possibly different id
+  //    (b) row keyed on the proposed id — same id, possibly different pair
+  //    The dual lookup catches a malicious or buggy peer that proposes a
+  //    new id for an existing conversation OR reuses an id for a
+  //    different pair.
+  const existingByPairKey = await tx.dmChannel.findUnique({
+    where: { pairKey },
+    select: { id: true, pairKey: true },
+  });
+  if (existingByPairKey) {
+    if (existingByPairKey.id === payload.dmChannelId) {
+      // Idempotent re-delivery — same pair, same id. Touch lastSeenAt
+      // and return 200.
+      return {
+        result: {
+          status: 200,
+          body: {
+            ok: true,
+            data: { dmChannelId: existingByPairKey.id, deduplicated: true },
+          },
+        },
+        postCommit: async (prisma) => {
+          await prisma.remoteUser.update({
+            where: { id: remoteUser.id },
+            data: { lastSeenAt: new Date() },
+          });
+        },
+      };
+    }
+    // Same pair, DIFFERENT id — the peer would corrupt our state if we
+    // accepted this. 409 so the peer can reconcile.
+    throw new FederationInboundError(
+      'dm_channel_conflict',
+      `pairKey already maps to a different DmChannel id`,
+    );
+  }
+
+  const existingById = await tx.dmChannel.findUnique({
+    where: { id: payload.dmChannelId },
+    select: { id: true, pairKey: true },
+  });
+  if (existingById) {
+    // existingByPairKey was null above, so by definition the existing
+    // row's pairKey is different. ULID reuse for an unrelated pair is a
+    // 409 — never overwrite.
+    throw new FederationInboundError(
+      'dm_channel_conflict',
+      `dmChannelId ${payload.dmChannelId} already exists for a different pair`,
+    );
+  }
+
+  // 7) Create the mirror DmChannel + both members. `createdById` is the
+  //    initiator's local synthetic User id — matches what the home would
+  //    have stored.
+  await tx.dmChannel.create({
+    data: {
+      id: payload.dmChannelId,
+      kind: 'direct',
+      pairKey,
+      createdById: initiator.id,
+      members: {
+        create: [
+          { userId: recipient.id },
+          { userId: initiator.id },
+        ],
+      },
+    },
+  });
+
+  const recipientUserId = recipient.id;
+  const dmChannelId = payload.dmChannelId;
+  return {
+    result: {
+      status: 200,
+      body: {
+        ok: true,
+        data: { dmChannelId, deduplicated: false },
+      },
+    },
+    postCommit: async (prisma) => {
+      // Broadcast to the local recipient so the DM pops into their list.
+      // The serializer loads the channel + members from committed state;
+      // safe to call here because we're post-commit.
+      const dto = await serializeDmChannel(dmChannelId, recipientUserId);
+      gatewayBroker.publish({
+        type: 'DM_CHANNEL_CREATE',
+        dmChannelId,
+        userId: recipientUserId,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
     },
   };
 }
