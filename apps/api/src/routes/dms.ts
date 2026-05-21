@@ -24,7 +24,7 @@ import {
   serializeDmChannelRow,
   usersShareServer,
 } from '../services/dm-service.js';
-import { fanOutDmCreate } from '../services/federation-outbox.js';
+import { fanOutDmCreate, fanOutDmMessageCreate } from '../services/federation-outbox.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import type { QueueClient } from '../services/queues.js';
 
@@ -387,6 +387,84 @@ export async function registerDmRoutes(
         dmChannelId,
         data: dto,
       });
+
+      // P5-5 — federation fan-out for DM messages. Best-effort: wrapped in
+      // try/catch so a federation hiccup never breaks the local send. Gated on:
+      //   (a) federation deps wired in (`queues` + `selfHost`),
+      //   (b) instance-level FEDERATION_ENABLED is not explicitly off
+      //       (defence-in-depth also enforced inside the helper),
+      //   (c) the DM is 1:1 (`kind === 'direct'`) — group DM federation is
+      //       out of scope for Phase 5,
+      //   (d) the OTHER member is a remote user (User.remoteInstanceId set).
+      //
+      // For (c) + (d) we need to know who the other member is and what
+      // kind of channel this is. One extra query against DmChannel pulls
+      // both in a single round-trip rather than chasing the existing
+      // `fullRow` (which doesn't carry membership info).
+      if (
+        deps?.queues &&
+        deps.selfHost &&
+        deps.federationEnabledOnInstance !== false
+      ) {
+        try {
+          const channel = await prisma.dmChannel.findUnique({
+            where: { id: dmChannelId },
+            select: {
+              kind: true,
+              members: {
+                select: {
+                  userId: true,
+                  user: {
+                    select: {
+                      id: true,
+                      username: true,
+                      remoteInstanceId: true,
+                    },
+                  },
+                },
+              },
+            },
+          });
+          // Group DMs do not federate in Phase 5. The wire schema has no
+          // notion of group-DM message envelopes; bail out before doing the
+          // per-member dance.
+          if (channel && channel.kind === 'direct') {
+            const otherMembers = channel.members.filter(
+              (m) => m.userId !== ctx.userId,
+            );
+            // 1:1 invariant — exactly one other member. Defensive `[0]` lookup
+            // so a malformed row (shouldn't happen) silently skips fan-out
+            // rather than throwing in the federation branch.
+            const other = otherMembers[0];
+            if (other && other.user.remoteInstanceId) {
+              // `fullRow.author.username` is already populated by the
+              // transaction's include — no extra user lookup needed for the
+              // qualified-id construction.
+              await fanOutDmMessageCreate({
+                queues: deps.queues,
+                selfHost: deps.selfHost,
+                dmChannelId,
+                messageId: fullRow.id,
+                authorUserId: ctx.userId,
+                authorUsername: fullRow.author.username,
+                content: fullRow.content,
+                replyToMessageId: fullRow.replyToMessageId,
+                createdAt: fullRow.createdAt,
+                peerInstanceId: other.user.remoteInstanceId,
+                log: req.log,
+                federationEnabledOnInstance: deps.federationEnabledOnInstance,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          req.log.warn(
+            { err: errObj, dmChannelId, messageId: fullRow.id },
+            'dm.message.create federation fan-out failed (local DM unaffected)',
+          );
+        }
+      }
+
       reply.status(201).send(ok(dto));
     },
   });

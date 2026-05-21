@@ -24,6 +24,7 @@ import {
   channelDeletePayloadSchema,
   channelUpdatePayloadSchema,
   dmCreatePayloadSchema,
+  dmMessageCreatePayloadSchema,
   memberAddPayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
@@ -1294,6 +1295,167 @@ export async function fanOutDmCreate(input: FanOutDmCreateInput): Promise<void> 
         err: errObj,
         peerInstanceId: input.peerInstanceId,
         dmChannelId: input.dmChannelId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+// --- P5-5 — DM message create fan-out ---------------------------------------
+//
+// A local user sends a message in a 1:1 DM whose other party is a remote user.
+// The local persist + gateway broadcast has already happened; this helper
+// enqueues a single `dm.message.create` envelope to the OTHER party's home
+// instance so the remote user can render the message.
+//
+// Phase 5 limitations baked in by the caller (not this helper):
+//   - 1:1 DMs only (`DmChannel.kind === 'direct'`). Group DM federation is
+//     out of scope; the route guard never reaches this helper for groups.
+//   - exactly ONE peer target (the other member's home). No relay, no
+//     multi-peer fan-out — both sides talk directly to the shared channel
+//     from their respective homes, mirroring how `dm.create` itself flows.
+//
+// Capability gate: peer must advertise the `dms` capability (negotiated at
+// peering time). A peer that's peered for `messages` only is treated the same
+// way `fanOutDmCreate` treats it — no enqueue, warn log, local DM unaffected.
+// We do NOT roll back the local message: the defence is the same as every
+// other fan-out helper, peer-side problems never break the local write.
+
+export interface FanOutDmMessageCreateInput {
+  queues: QueueClient;
+  selfHost: string;
+  /** Local DmChannel.id — the originating instance's id for the wire payload. */
+  dmChannelId: string;
+  /** Local Message.id — used both on the wire and as the BullMQ jobId disambiguator. */
+  messageId: string;
+  /** Local User.id used to sign the user-layer envelope (the message author). */
+  authorUserId: string;
+  /** Author's local username — combined with `selfHost` to form `<localpart>@<selfHost>`. */
+  authorUsername: string;
+  /** Sanitised message content as persisted locally. */
+  content: string;
+  /** Optional reply-to pointer; the wire schema accepts null. */
+  replyToMessageId: string | null;
+  /** Local Message.createdAt — serialised as ISO on the wire. */
+  createdAt: Date;
+  /** The remote recipient's home RemoteInstance.id — single fan-out target. */
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.message.create` envelope to the recipient's home instance.
+ * Caller has already verified (a) the DM channel is 1:1 (`kind === 'direct'`),
+ * (b) the OTHER member is a remote user (User.remoteInstanceId set), and
+ * (c) the local Message row + DM_MESSAGE_CREATE gateway broadcast already
+ * fired. The helper itself:
+ *   1. Defence-in-depth gate on the instance-level federation flag.
+ *   2. Look up the peer; bail with a warning when the peer is not peered or
+ *      does not advertise the `dms` capability. The local message is
+ *      unaffected.
+ *   3. Build the wire payload and parse it through
+ *      `dmMessageCreatePayloadSchema` so a schema drift surfaces at the
+ *      source instance.
+ *   4. Enqueue ONE outbox job, keyed by `messageId` so repeated sends with
+ *      the same local id collapse to a single BullMQ jobId via the default
+ *      `nonce ?? messageId` rule.
+ */
+export async function fanOutDmMessageCreate(
+  input: FanOutDmMessageCreateInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.create',
+      },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  // Peer must be peered AND advertise the `dms` capability. Either gate
+  // failing is a no-op + warning (not a hard error) — the local message
+  // stays valid, the user just doesn't get federated delivery.
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.create',
+      },
+      'dm.message.create fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.message.create',
+      },
+      'dm.message.create fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.message.create',
+      },
+      'dm.message.create fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmMessageCreatePayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    messageId: input.messageId,
+    authorRemoteUserId: `${input.authorUsername}@${input.selfHost}`,
+    content: input.content,
+    replyToMessageId: input.replyToMessageId,
+    createdAt: input.createdAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'dm.message.create';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      // Use messageId as the BullMQ jobId-dedupe key — repeated sends of
+      // the same local id (idempotent retry) collapse to a single job per
+      // (message, peer) pair.
+      messageId: input.messageId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      authorUserId: input.authorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
         eventType,
       },
       'federation fan-out enqueue failed for peer',
