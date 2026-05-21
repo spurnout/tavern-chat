@@ -269,18 +269,100 @@ export async function setManualDnd(userId: string, dnd: boolean): Promise<void> 
 }
 
 /**
+ * Set the user's custom status string + optional expiry.
+ *
+ * Touches `presenceUpdatedAt` so the outbound watermark advances — without
+ * that, peers reject the new state as stale and the custom-status update
+ * never propagates. After persist we:
+ *   1. Broadcast the current effective presence to local gateway subscribers
+ *      (the broadcast nudges live clients to re-read the user row, which now
+ *      carries the new customStatus + customStatusExpiresAt).
+ *   2. Schedule an IMMEDIATE federation fan-out — custom-status changes are
+ *      infrequent and user-visible enough that the 5s debounce isn't worth
+ *      the latency.
+ *
+ * No-op if the user row is missing (defensive — matches the
+ * persistAndBroadcast posture).
+ */
+export async function setCustomStatus(
+  userId: string,
+  status: string,
+  expiresAt: Date | null,
+): Promise<void> {
+  const existing = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
+  });
+  if (!existing) return;
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      customStatus: status,
+      customStatusExpiresAt: expiresAt,
+      presenceUpdatedAt: new Date(),
+    },
+  });
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { manualDnd: true },
+  });
+  if (!row) return;
+  broadcast(userId, compute(userId, row.manualDnd));
+  scheduleFanOut(userId, /* immediate */ true);
+}
+
+/**
+ * Clear the user's custom status (both fields → null). Same broadcast +
+ * fan-out shape as `setCustomStatus`.
+ */
+export async function clearCustomStatus(userId: string): Promise<void> {
+  const existing = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
+  });
+  if (!existing) return;
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      customStatus: null,
+      customStatusExpiresAt: null,
+      presenceUpdatedAt: new Date(),
+    },
+  });
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { manualDnd: true },
+  });
+  if (!row) return;
+  broadcast(userId, compute(userId, row.manualDnd));
+  scheduleFanOut(userId, /* immediate */ true);
+}
+
+/**
  * Read the full presence state for a user (used by /me responses).
  */
 export async function getPresenceForUser(
   userId: string,
-): Promise<{ presence: Presence; manualDnd: boolean }> {
+): Promise<{
+  presence: Presence;
+  manualDnd: boolean;
+  customStatus: string | null;
+  customStatusExpiresAt: Date | null;
+}> {
   const row = await prisma.user.findUnique({
     where: { id: userId },
-    select: { presence: true, manualDnd: true },
+    select: {
+      presence: true,
+      manualDnd: true,
+      customStatus: true,
+      customStatusExpiresAt: true,
+    },
   });
   return {
     presence: (row?.presence as Presence | undefined) ?? 'offline',
     manualDnd: row?.manualDnd ?? false,
+    customStatus: row?.customStatus ?? null,
+    customStatusExpiresAt: row?.customStatusExpiresAt ?? null,
   };
 }
 
