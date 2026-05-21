@@ -268,39 +268,70 @@ export class FederationPeeringService {
     //    If already `peered` → just refresh capabilities + key (re-handshake
     //    support, e.g. peer dropped or added a capability). Anything else is
     //    rejected.
-    if (existing.status !== 'pending_outbound' && existing.status !== 'peered') {
-      throw new PeeringError(
-        'bad_envelope',
-        `peer ${preCheck.fromInstance} is ${existing.status}; cannot accept`,
-      );
-    }
-    await this.prisma.remoteInstance.update({
-      where: { id: existing.id },
-      data: {
-        instanceKey: pubRaw,
-        status: 'peered',
-        capabilities: negotiated,
-        peeredAt: existing.peeredAt ?? new Date(),
-      },
-    });
-
-    // 7. Log envelope — unique(peerInstanceId, nonce) enforces replay protection.
+    //
+    //    TOCTOU note: the row was read at step 2, before the outbound
+    //    `discoverInstance` HTTP call at step 3, which can take seconds. An
+    //    admin operation that revokes the peer during that network call
+    //    would have its revocation silently overwritten if we used the
+    //    stale `existing.status` here. To close the window we re-read the
+    //    row inside a transaction and assert its status hasn't changed
+    //    before writing. The outbound HTTP + signature verify deliberately
+    //    stay OUTSIDE the transaction — both are pure / outbound and would
+    //    bloat the lock window for no correctness benefit.
     const payloadHash = createHash('sha256').update(canonicalize(env.payload)).digest();
     const logId = ulid();
     try {
-      await this.prisma.federationEnvelopeLog.create({
-        data: {
-          id: logId,
-          direction: 'inbound',
-          peerInstanceId: existing.id,
-          eventType: env.eventType,
-          payloadHash,
-          nonce: env.nonce,
-          notBefore: new Date(env.notBefore),
-          notAfter: new Date(env.notAfter),
-          status: 'accepted',
-          processedAt: new Date(),
-        },
+      await this.prisma.$transaction(async (tx) => {
+        const fresh = await tx.remoteInstance.findUnique({
+          where: { id: existing.id },
+        });
+        if (!fresh) {
+          throw new PeeringError(
+            'bad_envelope',
+            `peer ${preCheck.fromInstance} was deleted concurrently`,
+          );
+        }
+        if (fresh.status === 'revoked' || fresh.status === 'blocked') {
+          throw new PeeringError(
+            'blocked',
+            `peer ${preCheck.fromInstance} is ${fresh.status}`,
+          );
+        }
+        if (fresh.status !== 'pending_outbound' && fresh.status !== 'peered') {
+          throw new PeeringError(
+            'bad_envelope',
+            `peer ${preCheck.fromInstance} is ${fresh.status}; cannot accept`,
+          );
+        }
+
+        await tx.remoteInstance.update({
+          where: { id: fresh.id },
+          data: {
+            instanceKey: pubRaw,
+            status: 'peered',
+            capabilities: negotiated,
+            peeredAt: fresh.peeredAt ?? new Date(),
+          },
+        });
+
+        // 7. Log envelope — unique(peerInstanceId, nonce) enforces replay
+        //    protection. Inside the same transaction so that a replay-throw
+        //    rolls the status flip back too — the peer must retry with a
+        //    fresh nonce, and we don't want to leave the row half-updated.
+        await tx.federationEnvelopeLog.create({
+          data: {
+            id: logId,
+            direction: 'inbound',
+            peerInstanceId: fresh.id,
+            eventType: env.eventType,
+            payloadHash,
+            nonce: env.nonce,
+            notBefore: new Date(env.notBefore),
+            notAfter: new Date(env.notAfter),
+            status: 'accepted',
+            processedAt: new Date(),
+          },
+        });
       });
     } catch (err: unknown) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
