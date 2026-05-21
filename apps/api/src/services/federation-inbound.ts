@@ -63,6 +63,8 @@ import {
   channelUpdatePayloadSchema,
   dmCreatePayloadSchema,
   dmMessageCreatePayloadSchema,
+  dmMessageDeletePayloadSchema,
+  dmMessageUpdatePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   memberAddPayloadSchema,
@@ -81,6 +83,8 @@ import {
   type ChannelUpdatePayload,
   type DmCreatePayload,
   type DmMessageCreatePayload,
+  type DmMessageDeletePayload,
+  type DmMessageUpdatePayload,
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
@@ -804,6 +808,37 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleDmMessageCreate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P5-8 — inbound DM message update + delete. Same author-only posture as
+  // the server-channel `message.update` / `message.delete` handlers (only the
+  // original author may edit / delete their own DM in Phase 5; moderator
+  // overrides are a Phase 7 problem), but the membership invariant is the
+  // capability gate on `dms` rather than the channel federation mode (DMs
+  // don't have a per-channel federationMode flag).
+  //
+  // Same wire shape as `message.update` / `message.delete` for actor naming:
+  //   - update payload carries `authorRemoteUserId`
+  //   - delete payload carries `actorRemoteUserId`
+  //
+  // Each handler extracts from its own field; the post-Phase-7 moderator
+  // delete will reuse `actorRemoteUserId` without a schema change.
+  'dm.message.update': {
+    payloadSchema: dmMessageUpdatePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { authorRemoteUserId?: unknown } | null)
+        ?.authorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmMessageUpdate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'dm.message.delete': {
+    payloadSchema: dmMessageDeletePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmMessageDelete as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -3180,6 +3215,277 @@ async function handleDmMessageCreate(input: {
         type: 'DM_MESSAGE_CREATE',
         dmChannelId,
         data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- dm.message.update handler ---------------------------------------------
+
+/**
+ * P5-8: inbound DM message edit. Symmetric with `handleMessageUpdate` for
+ * server channels, but the membership invariant lives in the capability gate
+ * (`dms`) rather than a per-channel federation mode — DMs have no
+ * federationMode flag because the gate is "is this peer allowed to federate
+ * DMs at all?", checked at receive time on every envelope.
+ *
+ * The pre-edit content is preserved as a `MessageEdit` row so the local
+ * edit-history surface reads consistently with locally-authored edits, and
+ * so a failure mid-write rolls everything back together (same shape as the
+ * channel handler).
+ */
+async function handleDmMessageUpdate(input: {
+  envelope: TwoLayerSignedEnvelope<DmMessageUpdatePayload>;
+  payload: DmMessageUpdatePayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx } = input;
+
+  // 1) Capability gate. Same posture as dm.create / dm.message.create — a
+  //    peer that's dropped the `dms` capability must NOT be able to mutate
+  //    DM rows even when an earlier envelope succeeded under the prior
+  //    capability set. This is the inbound-side mirror of the outbound
+  //    `fanOutDmMessageUpdate` capability check.
+  if (!peer.capabilities.includes('dms')) {
+    throw new FederationInboundError(
+      'dms_capability_missing',
+      `peer ${peer.host} does not advertise the 'dms' capability`,
+    );
+  }
+
+  // 2) Look up the target message. Must exist, must be in a DmChannel, must
+  //    not already be tombstoned (editing a deleted row makes no sense — the
+  //    local PATCH handler gates on `!deletedAt` for the same reason).
+  const existing = await tx.message.findUnique({
+    where: { id: payload.messageId },
+    select: {
+      id: true,
+      dmChannelId: true,
+      authorId: true,
+      content: true,
+      deletedAt: true,
+      author: { select: { remoteUserId: true } },
+    },
+  });
+  if (!existing || existing.deletedAt) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} not found on this instance`,
+    );
+  }
+  // 3) Defence-in-depth: this MUST be a DM message, and it must live in the
+  //    DmChannel the payload names. Cross-channel edits are a protocol
+  //    violation.
+  if (!existing.dmChannelId || existing.dmChannelId !== payload.dmChannelId) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} is not in dm channel ${payload.dmChannelId}`,
+    );
+  }
+
+  // 4) Author-only check. The signature already proved the actor IS who
+  //    they claim to be (user-layer sig against author's public key,
+  //    verified upstream by verifyTwoLayerMessageEnvelope); this check
+  //    enforces "actor must equal author" — only the original author may
+  //    edit their own DM message. There is no moderator concept for DMs.
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
+  // 5) Append a MessageEdit history row BEFORE the content overwrite so a
+  //    failure rolls back the edit history along with the content change.
+  //    Mirrors the local PATCH handler at routes/messages.ts. The
+  //    `editedBy` field stores the local User row id mirroring the remote
+  //    author — same row that owns the message.
+  if (existing.content !== payload.content) {
+    await tx.messageEdit.create({
+      data: {
+        id: ulid(),
+        messageId: existing.id,
+        content: existing.content,
+        editedBy: existing.authorId,
+      },
+    });
+  }
+
+  // 6) Trust the envelope's editedAt — the home instance signed it and the
+  //    envelope replay window keeps it close to now.
+  const editedAt = new Date(payload.editedAt);
+  await tx.message.update({
+    where: { id: existing.id },
+    data: { content: payload.content, editedAt },
+  });
+
+  // 7) Reload the full row for the gateway broadcast — same include shape
+  //    `serializeMessage` expects (mirrors handleDmMessageCreate).
+  const fullRow = await tx.message.findUniqueOrThrow({
+    where: { id: existing.id },
+    include: {
+      attachments: { select: { id: true } },
+      reactions: { select: { emoji: true, userId: true } },
+      author: { select: { id: true, displayName: true, username: true } },
+      poll: { select: { id: true } },
+      replyTo: {
+        select: {
+          id: true,
+          content: true,
+          deletedAt: true,
+          author: { select: { displayName: true } },
+        },
+      },
+      forwardedFrom: {
+        select: {
+          id: true,
+          channelId: true,
+          author: { select: { displayName: true } },
+        },
+      },
+    },
+  });
+
+  const dto = serializeMessage(fullRow, '');
+  const dmChannelId = existing.dmChannelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: existing.id } } },
+    postCommit: async (prisma) => {
+      // Match the LOCAL DM edit route's broadcast type so subscribed clients
+      // handle it identically whether the edit was authored locally or
+      // federated in.
+      gatewayBroker.publish({
+        type: 'DM_MESSAGE_UPDATE',
+        dmChannelId,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- dm.message.delete handler ---------------------------------------------
+
+/**
+ * P5-8: inbound DM message delete. Symmetric with `handleMessageDelete` for
+ * server channels, but:
+ *   - capability gate on `dms` instead of channel federation mode
+ *   - no pinned-message cleanup (DMs don't have pins in Tavern)
+ *   - reactions + mentions still cleaned (soft-delete doesn't cascade)
+ *
+ * Idempotent on already-deleted rows (returns 200 with `deduplicated:true`).
+ * The replay log keys on `(peerInstanceId, nonce)`, so a DIFFERENT envelope
+ * can still arrive after the first delete committed — the handler must be
+ * a no-op for that case rather than 404 / 409.
+ */
+async function handleDmMessageDelete(input: {
+  envelope: TwoLayerSignedEnvelope<DmMessageDeletePayload>;
+  payload: DmMessageDeletePayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx } = input;
+
+  // 1) Capability gate. Same as the update handler.
+  if (!peer.capabilities.includes('dms')) {
+    throw new FederationInboundError(
+      'dms_capability_missing',
+      `peer ${peer.host} does not advertise the 'dms' capability`,
+    );
+  }
+
+  // 2) Look up the target message.
+  const existing = await tx.message.findUnique({
+    where: { id: payload.messageId },
+    select: {
+      id: true,
+      dmChannelId: true,
+      authorId: true,
+      deletedAt: true,
+      author: { select: { remoteUserId: true } },
+    },
+  });
+  if (!existing) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} not found on this instance`,
+    );
+  }
+  if (!existing.dmChannelId || existing.dmChannelId !== payload.dmChannelId) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${payload.messageId} is not in dm channel ${payload.dmChannelId}`,
+    );
+  }
+
+  // 3) Idempotent delete: if the row is already soft-deleted, return 200
+  //    without touching anything. See handleMessageDelete for the full
+  //    rationale; same pattern here.
+  if (existing.deletedAt) {
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { id: existing.id, deduplicated: true } },
+      },
+      postCommit: async (prisma) => {
+        await prisma.remoteUser.update({
+          where: { id: remoteUser.id },
+          data: { lastSeenAt: new Date() },
+        });
+      },
+    };
+  }
+
+  // 4) Author-only check. Phase 5 only accepts deletes signed by the
+  //    original author — DMs have no moderator concept, so any actor !=
+  //    author is forbidden.
+  if (existing.author.remoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'forbidden',
+      `actor ${remoteUser.remoteUserId} is not the author of message ${payload.messageId}`,
+    );
+  }
+
+  // 5) Soft-delete + cleanup, mirroring the LOCAL DM delete path:
+  //      - tombstone the row (deletedAt + empty content)
+  //      - drop reactions + mentions
+  //    No `pinnedMessage.deleteMany` — DMs don't support pins.
+  const deletedAt = new Date(payload.deletedAt);
+  await tx.message.update({
+    where: { id: existing.id },
+    data: { deletedAt, content: '' },
+  });
+  await tx.messageReaction.deleteMany({ where: { messageId: existing.id } });
+  await tx.userMention.deleteMany({ where: { messageId: existing.id } });
+
+  const dmChannelId = existing.dmChannelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { id: existing.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'DM_MESSAGE_DELETE',
+        dmChannelId,
+        data: {
+          id: existing.id,
+          dmChannelId,
+          deletedAt: deletedAt.toISOString(),
+        },
       });
       await prisma.remoteUser.update({
         where: { id: remoteUser.id },
