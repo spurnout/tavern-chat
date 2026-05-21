@@ -65,6 +65,8 @@ import {
   dmMessageCreatePayloadSchema,
   dmMessageDeletePayloadSchema,
   dmMessageUpdatePayloadSchema,
+  dmReactionAddPayloadSchema,
+  dmReactionRemovePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   memberAddPayloadSchema,
@@ -85,6 +87,8 @@ import {
   type DmMessageCreatePayload,
   type DmMessageDeletePayload,
   type DmMessageUpdatePayload,
+  type DmReactionAddPayload,
+  type DmReactionRemovePayload,
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
@@ -839,6 +843,30 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleDmMessageDelete as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P5-10 — inbound DM reaction add/remove. Same posture as the server-channel
+  // reactions (P3-9) but the membership invariant is the `dms` capability gate
+  // + DmChannelMember check rather than channel federation mode + ServerMember.
+  // Each payload carries the reactor under `actorRemoteUserId` — anyone in the
+  // DM may react, not just the message author. Custom-emoji rejection mirrors
+  // the channel handler (case-insensitive `custom:` prefix check).
+  'dm.reaction.add': {
+    payloadSchema: dmReactionAddPayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmReactionAdd as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  'dm.reaction.remove': {
+    payloadSchema: dmReactionRemovePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { actorRemoteUserId?: unknown } | null)
+        ?.actorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmReactionRemove as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -3485,6 +3513,284 @@ async function handleDmMessageDelete(input: {
           id: existing.id,
           dmChannelId,
           deletedAt: deletedAt.toISOString(),
+        },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- dm.reaction.add / dm.reaction.remove handlers -------------------------
+
+/**
+ * P5-10: shared validation for inbound DM reactions. Symmetric with
+ * `validateInboundReaction` for server-channel reactions but the membership
+ * invariant lives in the `dms` capability gate + DmChannelMember check rather
+ * than channel federation mode + ServerMember.
+ *
+ * Returns the resolved Message row + the actor's local User id, so the caller
+ * just has to do the upsert/delete + broadcast.
+ *
+ * Keeping this as a separate helper from `validateInboundReaction` (rather
+ * than parameterising one shared helper) keeps the membership invariants
+ * legible: server reactions check ServerMember keyed on
+ * (serverId, userId) and care about effective channel federation; DM
+ * reactions check DmChannelMember keyed on (dmChannelId, userId) and care
+ * about the peer's `dms` capability. Trying to share a single helper would
+ * mean carrying both shape variants through the parameter list and a Union
+ * return type — net more code, less readable. The two helpers share the
+ * custom-emoji rejection idiom literally line-for-line, which is the only
+ * piece that's actually duplicated.
+ */
+async function validateInboundDmReaction(input: {
+  dmChannelId: string;
+  messageId: string;
+  emoji: string;
+  peer: { host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<{
+  message: { id: string; dmChannelId: string };
+  actor: { id: string };
+}> {
+  const { dmChannelId, messageId, emoji, peer, remoteUser, tx } = input;
+
+  // 1) Capability gate. Same posture as dm.message.*: a peer that no longer
+  //    advertises `dms` must not be able to mutate DM state even when an
+  //    earlier envelope succeeded under the prior capability set.
+  if (!peer.capabilities.includes('dms')) {
+    throw new FederationInboundError(
+      'dms_capability_missing',
+      `peer ${peer.host} does not advertise the 'dms' capability`,
+    );
+  }
+
+  // 2) Custom emoji rejection. Same defence-in-depth case-insensitive check
+  //    as `validateInboundReaction` — the schema validates emoji as a
+  //    free-form string, so an attacker could send `CUSTOM:abc` to slip
+  //    past a case-sensitive check.
+  if (emoji.toLowerCase().startsWith('custom:')) {
+    throw new FederationInboundError(
+      'forbidden',
+      'custom emojis do not cross federation yet (unicode only)',
+    );
+  }
+
+  // 3) Look up the target Message. Must exist, must not be tombstoned, must
+  //    live in the DmChannel the payload names (defence-in-depth — a peer
+  //    sending a reaction with a mismatched (dmChannelId, messageId) pair is
+  //    a protocol violation).
+  const existing = await tx.message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true,
+      dmChannelId: true,
+      deletedAt: true,
+    },
+  });
+  if (!existing || existing.deletedAt) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${messageId} not found on this instance`,
+    );
+  }
+  if (!existing.dmChannelId || existing.dmChannelId !== dmChannelId) {
+    throw new FederationInboundError(
+      'unknown_message',
+      `message ${messageId} is not in dm channel ${dmChannelId}`,
+    );
+  }
+
+  // 4) Resolve the actor's local mirror User row. Unlike server reactions
+  //    (which can lazily materialise a User via `ensureUserForRemoteUser`),
+  //    DMs require the prior `dm.create` to have run — that's the envelope
+  //    that establishes the participant set. If no User row exists, the
+  //    peer is sending into a DM they aren't part of (or the ordering is
+  //    wrong); 404 lets them retry.
+  const actor = await tx.user.findUnique({
+    where: { remoteUserId: remoteUser.remoteUserId },
+    select: { id: true },
+  });
+  if (!actor) {
+    throw new FederationInboundError(
+      'unknown_dm_member',
+      `no local user matches actor ${remoteUser.remoteUserId}`,
+    );
+  }
+
+  // 5) DM membership check. The actor MUST be a DmChannelMember of the
+  //    target channel — symmetric with `handleDmMessageCreate` /
+  //    `handleDmMessageUpdate`. A reaction from a non-member is a protocol
+  //    violation by the peer.
+  const membership = await tx.dmChannelMember.findUnique({
+    where: {
+      dmChannelId_userId: {
+        dmChannelId,
+        userId: actor.id,
+      },
+    },
+    select: { userId: true },
+  });
+  if (!membership) {
+    throw new FederationInboundError(
+      'not_dm_member',
+      `user ${remoteUser.remoteUserId} is not a member of dm channel ${dmChannelId}`,
+    );
+  }
+
+  return {
+    message: { id: existing.id, dmChannelId: existing.dmChannelId },
+    actor: { id: actor.id },
+  };
+}
+
+/**
+ * P5-10: inbound DM reaction add. Symmetric with `handleReactionAdd` for
+ * server channels but the membership invariant is the `dms` capability gate
+ * + DmChannelMember check rather than channel federation mode + ServerMember.
+ *
+ * Idempotent on the (messageId, userId, emoji) composite key — a duplicate
+ * envelope (different nonce, same emoji/actor/message) is a no-op rather
+ * than a 409. The broadcast still fires so any client that missed the prior
+ * delivery catches up.
+ *
+ * The local DM reaction route uses the same `REACTION_ADD` gateway event
+ * type (routed by `dmChannelId` rather than `channelId`) — see
+ * `routes/reactions.ts#reactionEvent`. Mirroring that here keeps the
+ * subscribed-clients path uniform whether the reaction was authored locally
+ * or federated in.
+ */
+async function handleDmReactionAdd(input: {
+  envelope: TwoLayerSignedEnvelope<DmReactionAddPayload>;
+  payload: DmReactionAddPayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx } = input;
+
+  const { message, actor } = await validateInboundDmReaction({
+    dmChannelId: payload.dmChannelId,
+    messageId: payload.messageId,
+    emoji: payload.emoji,
+    peer,
+    remoteUser,
+    tx,
+  });
+
+  // Idempotent upsert — same shape as the local PUT route and the server
+  // reaction handler. A duplicate (same messageId+userId+emoji) is a no-op.
+  await tx.messageReaction.upsert({
+    where: {
+      messageId_userId_emoji: {
+        messageId: message.id,
+        userId: actor.id,
+        emoji: payload.emoji,
+      },
+    },
+    create: {
+      messageId: message.id,
+      userId: actor.id,
+      emoji: payload.emoji,
+    },
+    update: {},
+  });
+
+  const dmChannelId = message.dmChannelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { messageId: message.id } } },
+    postCommit: async (prisma) => {
+      // Match the LOCAL DM reaction route's broadcast shape: REACTION_ADD
+      // keyed on dmChannelId (no serverId / channelId for DMs).
+      gatewayBroker.publish({
+        type: 'REACTION_ADD',
+        dmChannelId,
+        data: {
+          messageId: message.id,
+          userId: actor.id,
+          emoji: payload.emoji,
+        },
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+/**
+ * P5-10: inbound DM reaction remove. Symmetric with `handleReactionRemove`
+ * for server channels. Idempotent on P2025 (missing row) — a peer that
+ * retries a remove after the row is already gone gets 200, mirroring the
+ * local DELETE route's blanket try/catch.
+ */
+async function handleDmReactionRemove(input: {
+  envelope: TwoLayerSignedEnvelope<DmReactionRemovePayload>;
+  payload: DmReactionRemovePayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { payload, peer, remoteUser, tx } = input;
+
+  const { message, actor } = await validateInboundDmReaction({
+    dmChannelId: payload.dmChannelId,
+    messageId: payload.messageId,
+    emoji: payload.emoji,
+    peer,
+    remoteUser,
+    tx,
+  });
+
+  // Idempotent delete — same shape as the local DELETE route and the
+  // server reaction handler. A missing row is swallowed; the broadcast
+  // still fires so any client that has the (already-removed) reaction in
+  // local cache catches up.
+  try {
+    await tx.messageReaction.delete({
+      where: {
+        messageId_userId_emoji: {
+          messageId: message.id,
+          userId: actor.id,
+          emoji: payload.emoji,
+        },
+      },
+    });
+  } catch (err: unknown) {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2025'
+    ) {
+      // P2025 = "Record to delete does not exist". Idempotent — matches the
+      // local DELETE handler's blanket try/catch.
+    } else {
+      throw err;
+    }
+  }
+
+  const dmChannelId = message.dmChannelId;
+
+  return {
+    result: { status: 200, body: { ok: true, data: { messageId: message.id } } },
+    postCommit: async (prisma) => {
+      gatewayBroker.publish({
+        type: 'REACTION_REMOVE',
+        dmChannelId,
+        data: {
+          messageId: message.id,
+          userId: actor.id,
+          emoji: payload.emoji,
         },
       });
       await prisma.remoteUser.update({
