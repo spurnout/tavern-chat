@@ -6,6 +6,7 @@ import sensible from '@fastify/sensible';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { APP_NAME } from '@tavern/shared';
+import { prisma } from '@tavern/db';
 import { ClamAVScanner } from '@tavern/media';
 import { describeConfig, type Config } from './config.js';
 import { createLogger } from './lib/logger.js';
@@ -116,6 +117,7 @@ import { FederationPeeringService } from './services/federation-peering.js';
 import { FederationProfileService } from './services/federation-profile.js';
 import { FederationInboundService } from './services/federation-inbound.js';
 import { UserKeyStore } from './services/user-keys.js';
+import { configurePresenceFederation } from './services/presence-service.js';
 import { loadDataKey } from './lib/data-key.js';
 
 export interface BuildAppOptions {
@@ -437,6 +439,23 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         userKeys: userKeys!,
         selfHost,
       };
+      // P6-6: wire the presence-service so local user presence transitions
+      // (and the P6-8 custom-status changes) emit `presence.update` fan-outs
+      // to every peer that shares a federated Tavern or DM with the user.
+      // The setter pattern lets the module load before the federation block
+      // has bootstrapped — federation-off boots just leave the slot null and
+      // `scheduleFanOut` becomes a no-op.
+      configurePresenceFederation({
+        queues,
+        selfHost,
+        federationPresenceEnabledOnInstance: opts.config.FEDERATION_PRESENCE_ENABLED,
+        prisma,
+        log: app.log,
+      });
+    } else {
+      // Federation off: defensively null out the slot in case a previous
+      // call set it (factory reuse in tests).
+      configurePresenceFederation(null);
     }
 
     await registerServerRoutes(app, {

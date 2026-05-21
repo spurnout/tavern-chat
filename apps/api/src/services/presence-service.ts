@@ -23,14 +23,154 @@
  * `clientActive` lives in-memory only — we don't persist it. If the server
  * restarts mid-session, presence resets to the user's last persisted state
  * and corrects on the next heartbeat.
+ *
+ * --- Federation (P6-6) ----------------------------------------------------
+ *
+ * When `configurePresenceFederation` has been called at app startup,
+ * `persistAndBroadcast` schedules a federation fan-out alongside the local
+ * gateway broadcast. The fan-out is debounced per-user for 5s so active⇄idle
+ * flaps don't thrash the outbox queue. The exception is offline transitions
+ * (and custom-status changes in P6-8): those fire IMMEDIATELY because they're
+ * rare and important.
+ *
+ * Federation deps are wired via a setter rather than a constructor argument
+ * because the presence-service module is imported by route handlers that
+ * land before app.ts has booted the federation block. Keep the
+ * single-process state in this file — the debounce map is per-process.
  */
 
 import { prisma } from '@tavern/db';
 import type { Presence } from '@tavern/shared';
+import type { FastifyBaseLogger } from 'fastify';
+import type { PrismaClient } from '@prisma/client';
 import { gatewayBroker } from './gateway-broker.js';
+import type { QueueClient } from './queues.js';
+import { fanOutPresenceUpdate } from './federation-outbox.js';
+import { findPresenceFanOutPeers } from './federation-presence-targets.js';
 
 const clientActiveByUser = new Map<string, boolean>();
 const openSocketsByUser = new Map<string, number>();
+
+// --- Federation wiring -----------------------------------------------------
+
+interface FederationDeps {
+  queues: QueueClient;
+  selfHost: string;
+  federationPresenceEnabledOnInstance: boolean;
+  prisma: PrismaClient;
+  log: FastifyBaseLogger;
+}
+
+let federationDeps: FederationDeps | null = null;
+
+/**
+ * Called once at app startup by `app.ts` after the federation block has
+ * bootstrapped. Subsequent presence transitions will schedule a fan-out
+ * for federation peers that share a surface with the user.
+ *
+ * Pass `null` to fully disable fan-out (used by tests + the federation-off
+ * boot path).
+ */
+export function configurePresenceFederation(deps: FederationDeps | null): void {
+  federationDeps = deps;
+}
+
+/** Per-user debounce timer for active⇄idle/dnd flaps. Offline fires immediately. */
+const debouncedFanOut = new Map<string, NodeJS.Timeout>();
+
+const FAN_OUT_DEBOUNCE_MS = 5_000;
+
+/**
+ * Schedule a federation fan-out for `userId`. When `immediate` is true,
+ * fire now (offline transitions, custom-status changes). Otherwise coalesce
+ * with any pending timer in the 5s window so a burst of active⇄idle flaps
+ * emits a single envelope at the window's end with the LATEST state.
+ *
+ * No-op when federation is not configured.
+ */
+export function scheduleFanOut(userId: string, immediate: boolean): void {
+  if (!federationDeps) return;
+  if (immediate) {
+    // Cancel any pending debounced fan-out; the immediate path supersedes it.
+    const pending = debouncedFanOut.get(userId);
+    if (pending) {
+      clearTimeout(pending);
+      debouncedFanOut.delete(userId);
+    }
+    void emitFanOut(userId);
+    return;
+  }
+  if (debouncedFanOut.has(userId)) return; // a fan-out is already scheduled
+  const handle = setTimeout(() => {
+    debouncedFanOut.delete(userId);
+    void emitFanOut(userId);
+  }, FAN_OUT_DEBOUNCE_MS);
+  debouncedFanOut.set(userId, handle);
+}
+
+/**
+ * Read the user's CURRENT state from Postgres and dispatch a presence.update
+ * envelope to every peer that shares a federated surface with them. Skips:
+ *   - federation not configured (no-op).
+ *   - user row not found (defensive).
+ *   - user is a remote-user mirror (`remoteInstanceId != null`) — only the
+ *     home instance authoritatively reports its own users' presence.
+ *
+ * All errors caught + logged. Federation failures MUST NOT bubble into the
+ * local presence write path.
+ */
+async function emitFanOut(userId: string): Promise<void> {
+  if (!federationDeps) return;
+  const deps = federationDeps;
+  try {
+    const user = await deps.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        remoteInstanceId: true,
+        presence: true,
+        presenceUpdatedAt: true,
+        customStatus: true,
+        customStatusExpiresAt: true,
+      },
+    });
+    if (!user) return;
+    // Home-only fan-out: a mirror's presence is asserted by its home, not by us.
+    if (user.remoteInstanceId !== null) return;
+
+    const peers = await findPresenceFanOutPeers(deps.prisma, userId);
+    if (peers.length === 0) return;
+
+    const userRemoteUserId = `${user.username}@${deps.selfHost}`;
+    for (const peer of peers) {
+      try {
+        await fanOutPresenceUpdate({
+          queues: deps.queues,
+          selfHost: deps.selfHost,
+          log: deps.log,
+          federationPresenceEnabledOnInstance: deps.federationPresenceEnabledOnInstance,
+          peerInstanceId: peer.peerInstanceId,
+          peerHost: peer.host,
+          userRemoteUserId,
+          presence: user.presence as 'active' | 'idle' | 'dnd' | 'offline',
+          customStatus: user.customStatus,
+          customStatusExpiresAt: user.customStatusExpiresAt,
+          updatedAt: user.presenceUpdatedAt,
+        });
+      } catch (err: unknown) {
+        deps.log.warn(
+          { err, userId, peerInstanceId: peer.peerInstanceId },
+          'federation presence fan-out failed for peer',
+        );
+      }
+    }
+  } catch (err: unknown) {
+    deps.log.warn({ err, userId }, 'federation presence fan-out failed');
+  }
+}
+
+// --- Local presence -------------------------------------------------------
 
 function broadcast(userId: string, presence: Presence): void {
   gatewayBroker.publish({
@@ -60,6 +200,9 @@ async function persistAndBroadcast(userId: string, next: Presence): Promise<void
     data: { presence: next, presenceUpdatedAt: new Date() },
   });
   broadcast(userId, next);
+  // Federation fan-out: offline transitions fire immediately; active⇄idle
+  // and dnd flaps go through the 5s debounce so we don't thrash the outbox.
+  scheduleFanOut(userId, next === 'offline');
 }
 
 /**
@@ -139,4 +282,30 @@ export async function getPresenceForUser(
     presence: (row?.presence as Presence | undefined) ?? 'offline',
     manualDnd: row?.manualDnd ?? false,
   };
+}
+
+// --- Test-only helpers ----------------------------------------------------
+
+/**
+ * Drain all pending debounced fan-outs. Used by tests to deterministically
+ * trigger debounced timers without waiting wall-clock seconds. Never call
+ * from production code.
+ */
+export function __testFlushDebouncedFanOuts(): void {
+  for (const [userId, handle] of debouncedFanOut.entries()) {
+    clearTimeout(handle);
+    debouncedFanOut.delete(userId);
+    void emitFanOut(userId);
+  }
+}
+
+/**
+ * Reset the in-memory presence state. Tests use this between cases to
+ * isolate runs.
+ */
+export function __testResetPresenceState(): void {
+  for (const handle of debouncedFanOut.values()) clearTimeout(handle);
+  debouncedFanOut.clear();
+  clientActiveByUser.clear();
+  openSocketsByUser.clear();
 }

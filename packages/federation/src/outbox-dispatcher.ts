@@ -1,10 +1,17 @@
 import type { PrismaClient } from '@prisma/client';
 import { prisma as defaultPrisma } from '@tavern/db';
-import type { EnvelopeEventType } from '@tavern/shared';
+import {
+  PROTOCOL_VERSION,
+  ENVELOPE_DEFAULT_LIFETIME_S,
+  ulid,
+  type EnvelopeEventType,
+} from '@tavern/shared';
+import { canonicalize } from './canonical-json.js';
 import { buildTwoLayerMessageEnvelope } from './federation-message-signing.js';
 import type { FederationKeyStore } from './federation-keys.js';
 import type { UserKeyStore } from './user-keys.js';
 import { assertValidPeerHost } from './ssrf-guard.js';
+import type { SingleLayerSignedEnvelope } from './sync-dispatch.js';
 
 /**
  * One federation-outbox job: deliver a single signed event envelope to a single peer.
@@ -48,6 +55,21 @@ export interface FederationOutboxJob {
    * payload through unchanged for that reason.
    */
   preservedUserSignature?: string;
+  /**
+   * P6-6 SINGLE-LAYER MARKER. When set, the dispatcher builds a single-layer
+   * signed envelope (instance signature only — no user signature) instead of
+   * a two-layer envelope.
+   *
+   * Used for envelopes that are not user-authored content events but rather
+   * the home instance reporting authoritative state about its users — e.g.
+   * `presence.update`. Presence is not a user-attested action: a compromised
+   * user key on its own cannot fake it. We sign with the instance key only,
+   * mirroring how `peering.*` envelopes are signed.
+   *
+   * Incompatible with `preservedUserSignature` (which is a two-layer-only
+   * concept). The dispatcher throws synchronously if both are set.
+   */
+  singleLayer?: boolean;
 }
 
 export interface DispatcherDeps {
@@ -129,12 +151,28 @@ export async function dispatchOutboxJob(
   // (or future restore from a peer that was renamed) could put junk here.
   assertValidPeerHost(peer.host);
 
-  // Relay path (P4-13): the home of T is forwarding an inbound envelope to
-  // another peer. We don't (and can't) re-sign on the original author's
-  // behalf — pass their preserved user signature straight through and only
-  // re-sign the outer envelope with this instance's key.
-  const envelope =
-    job.preservedUserSignature !== undefined
+  // Three signing variants:
+  //   1. Single-layer (P6-6): presence and other home-instance-asserted events.
+  //      Instance signature only — no user signature is part of the wire shape.
+  //   2. Relay (P4-13): the home of T is forwarding an inbound envelope to
+  //      another peer. Pass the original author's signature straight through
+  //      and only re-sign the outer envelope with this instance's key.
+  //   3. Default two-layer: user signs the payload, instance signs the
+  //      envelope. Used for all user-authored content events.
+  if (job.singleLayer && job.preservedUserSignature !== undefined) {
+    throw new Error(
+      'dispatchOutboxJob: singleLayer and preservedUserSignature are mutually exclusive',
+    );
+  }
+  const envelope: unknown = job.singleLayer
+    ? buildSingleLayerEnvelope({
+        eventType: job.eventType,
+        fromInstance: deps.selfHost,
+        toInstance: peer.host,
+        payload: job.payload,
+        signInstance: (bytes) => deps.federationKeys.sign(bytes),
+      })
+    : job.preservedUserSignature !== undefined
       ? buildTwoLayerMessageEnvelope({
           eventType: job.eventType,
           fromInstance: deps.selfHost,
@@ -212,4 +250,41 @@ export async function dispatchOutboxJob(
     'outbox: retryable failure',
   );
   throw new Error(`outbox dispatch retryable failure to ${peer.host}: HTTP ${res.status} ${snippet}`);
+}
+
+/**
+ * Build a single-layer signed envelope — instance signature only. Mirrors
+ * `buildSignedEnvelope` in `apps/api/src/services/federation-envelopes.ts`
+ * but lives here so the dispatcher can build it without crossing the
+ * package boundary.
+ *
+ * Used for envelopes that aren't user-authored content events. Today
+ * `presence.update` (P6-6). The peering envelopes use the same wire shape
+ * but go through their own synchronous send path in
+ * `services/federation-peering.ts`, not the outbox queue — they don't share
+ * this helper.
+ */
+function buildSingleLayerEnvelope<T>(input: {
+  eventType: EnvelopeEventType;
+  fromInstance: string;
+  toInstance: string;
+  payload: T;
+  signInstance: (bytes: Buffer) => Buffer;
+}): SingleLayerSignedEnvelope<T> {
+  const now = Date.now();
+  const notBefore = new Date(now);
+  const notAfter = new Date(now + ENVELOPE_DEFAULT_LIFETIME_S * 1000);
+  const unsigned = {
+    version: PROTOCOL_VERSION,
+    eventType: input.eventType,
+    nonce: ulid(),
+    notBefore: notBefore.toISOString(),
+    notAfter: notAfter.toISOString(),
+    fromInstance: input.fromInstance,
+    toInstance: input.toInstance,
+    payload: input.payload,
+  } as const;
+  const envelopeBytes = Buffer.from(canonicalize(unsigned as unknown), 'utf8');
+  const signature = input.signInstance(envelopeBytes).toString('base64');
+  return { ...unsigned, signature };
 }

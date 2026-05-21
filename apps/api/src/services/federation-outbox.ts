@@ -29,6 +29,7 @@ import {
   dmMessageUpdatePayloadSchema,
   dmReactionAddPayloadSchema,
   dmReactionRemovePayloadSchema,
+  federatedPresenceUpdatePayloadSchema,
   memberAddPayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
@@ -2102,6 +2103,165 @@ export async function fanOutDmReactionRemove(
         peerInstanceId: input.peerInstanceId,
         dmChannelId: input.dmChannelId,
         messageId: input.messageId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+// --- P6-6 — presence.update fan-out -----------------------------------------
+//
+// Local user's effective presence transitioned (active⇄idle⇄dnd⇄offline) or
+// their custom-status string changed. The caller (presence-service.ts) has
+// already persisted the new state, broadcast PRESENCE_UPDATE locally, and
+// found the set of peers that share a federated Tavern or DM with the user.
+// This helper enqueues ONE outbound envelope per peer.
+//
+// Wire shape: SINGLE-LAYER signed envelope (instance signature only — no
+// user signature). Presence is not user-authored content; it's the home
+// instance reporting authoritative state about its user. The job carries
+// `singleLayer: true` so the outbox dispatcher signs with the instance key
+// only, mirroring how `peering.*` envelopes are signed (see decision #6 in
+// the Phase 6 plan).
+//
+// Capability gate: peer must advertise `presence` (negotiated at peering).
+// Instance-level gate: `FEDERATION_PRESENCE_ENABLED=false` short-circuits
+// the helper as defence-in-depth. Both skip with a structured warn log —
+// the local presence broadcast is unaffected.
+
+export interface FanOutPresenceUpdateInput {
+  queues: QueueClient;
+  selfHost: string;
+  log: FastifyBaseLogger;
+  /**
+   * Defence-in-depth — caller has typically already short-circuited above
+   * this helper when the env flag is off, but if a future call site forgets
+   * the outer guard the helper still does the right thing.
+   */
+  federationPresenceEnabledOnInstance: boolean;
+  /** Target peer's RemoteInstance.id. */
+  peerInstanceId: string;
+  /** Target peer's host (used only for log context; the dispatcher re-looks it up). */
+  peerHost: string;
+  /** Qualified author id — `<localpart>@<selfHost>`, e.g. `alice@a.example`. */
+  userRemoteUserId: string;
+  presence: 'active' | 'idle' | 'dnd' | 'offline';
+  customStatus: string | null;
+  customStatusExpiresAt: Date | null;
+  /** Home's `presenceUpdatedAt` watermark — receiver uses for last-write-wins. */
+  updatedAt: Date;
+}
+
+/**
+ * Fan out a `presence.update` envelope to one peer's home instance.
+ *
+ * Defence-in-depth checks (in order):
+ *   1. `federationPresenceEnabledOnInstance=false` → skip + warn.
+ *   2. Peer not `peered` → skip + warn.
+ *   3. Peer lacks `presence` capability → skip + warn.
+ *
+ * Otherwise enqueue ONE outbox job. The job carries `singleLayer: true` so
+ * the dispatcher signs with the instance key only (presence is not user-
+ * authored; see decision #6).
+ *
+ * Errors from the enqueue are caught + logged — peer-side failures must NOT
+ * bubble into the local presence broadcast path. The caller has already
+ * committed the local state by the time we reach here.
+ */
+export async function fanOutPresenceUpdate(input: FanOutPresenceUpdateInput): Promise<void> {
+  if (input.federationPresenceEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        userRemoteUserId: input.userRemoteUserId,
+        peerInstanceId: input.peerInstanceId,
+        peerHost: input.peerHost,
+        eventType: 'presence.update',
+      },
+      'federation fan-out skipped — instance has FEDERATION_PRESENCE_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        userRemoteUserId: input.userRemoteUserId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'presence.update',
+      },
+      'presence.update fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        userRemoteUserId: input.userRemoteUserId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'presence.update',
+      },
+      'presence.update fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('presence')) {
+    input.log.warn(
+      {
+        userRemoteUserId: input.userRemoteUserId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'presence.update',
+      },
+      'presence.update fan-out skipped — peer does not advertise the `presence` capability',
+    );
+    return;
+  }
+
+  const payload = federatedPresenceUpdatePayloadSchema.parse({
+    userRemoteUserId: input.userRemoteUserId,
+    presence: input.presence,
+    customStatus: input.customStatus,
+    customStatusExpiresAt: input.customStatusExpiresAt
+      ? input.customStatusExpiresAt.toISOString()
+      : null,
+    updatedAt: input.updatedAt.toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'presence.update';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      // BullMQ jobId dedupe: nonce is fresh per fan-out so consecutive
+      // transitions don't collapse to a single job. The "messageId" field
+      // is repurposed as the user id for log routing (the dispatcher uses
+      // it only for log context; the payload's userRemoteUserId is what
+      // matters on the wire).
+      messageId: input.userRemoteUserId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      nonce: ulid(),
+      // Single-layer presence has no user signature; authorUserId is unused
+      // by the dispatcher when singleLayer=true, but the type requires it.
+      // Pass empty string — the dispatcher's userKeys.loadKeyFor branch is
+      // skipped entirely on the singleLayer path.
+      authorUserId: '',
+      singleLayer: true,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        userRemoteUserId: input.userRemoteUserId,
         eventType,
       },
       'federation fan-out enqueue failed for peer',
