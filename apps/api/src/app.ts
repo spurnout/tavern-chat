@@ -100,7 +100,7 @@ import { registerUserRoutes } from './routes/users.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
-import { registerWellKnownRoutes } from './routes/well-known.js';
+import { advertisedCapabilities, registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
 import { registerAdminServerRemoteMembersRoutes } from './routes/admin-server-remote-members.js';
@@ -332,7 +332,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         config: opts.config,
         softwareVersion: 'tavern/0.0.0',
       });
-      const peering = new FederationPeeringService();
+      // P5-11: pass the locally-advertised capability set so the peering
+      // handshake stores the intersection of (local, peer) in
+      // `RemoteInstance.capabilities`. This is the same list the
+      // .well-known route serves, so flipping FEDERATION_DMS_ENABLED to
+      // false on this instance immediately rejects future peer requests
+      // that ask for `dms`.
+      const peering = new FederationPeeringService({
+        localCapabilities: advertisedCapabilities(opts.config),
+      });
       registerFederationPeeringRoutes(app, { service: peering });
       registerAdminFederationRoutes(app, {
         service: peering,
@@ -366,6 +374,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         selfHost,
         queues,
         federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+        federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
         log: app.log,
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
@@ -440,6 +449,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       queues,
       selfHost,
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+      federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
     });
     await registerRoleRoutes(app);
     await registerOverwriteRoutes(app);
@@ -463,6 +473,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       queues,
       selfHost,
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+      federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
     });
     await registerEmojiRoutes(app);
     await registerVoiceRoutes(app, opts.config);
@@ -546,6 +557,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       selfHost,
       queues,
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+      federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
     });
     await registerUserRoutes(app);
     registerGateway(app, jwt);

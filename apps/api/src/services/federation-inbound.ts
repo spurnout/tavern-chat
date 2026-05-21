@@ -197,6 +197,15 @@ export interface FederationInboundServiceOptions {
    */
   federationEnabledOnInstance?: boolean;
   /**
+   * P5-11 — operator-level opt-out for federated DMs. When `false` the
+   * dispatcher rejects every `dm.*` envelope with `dms_capability_missing`
+   * BEFORE checking the peer's stored capability set, because the peer's
+   * row could carry a stale `'dms'` advert from when this instance still
+   * supported DMs. Defaults to `true` so older callers (Phase 3/4 tests
+   * that pre-date this flag) get the historical behaviour.
+   */
+  federationDmsEnabledOnInstance?: boolean;
+  /**
    * Optional structured logger for handler-side fan-out failures (P4-10).
    * The dispatcher itself never logs — failures are thrown as
    * `FederationInboundError` and rendered by the route. The fan-out
@@ -250,6 +259,10 @@ export class FederationInboundService {
    */
   private readonly queues: QueueClient | null;
   private readonly federationEnabledOnInstance: boolean;
+  /**
+   * P5-11 — operator opt-out for federated DMs. See option doc.
+   */
+  private readonly federationDmsEnabledOnInstance: boolean;
   private readonly log: FastifyBaseLogger;
 
   constructor(opts: FederationInboundServiceOptions) {
@@ -259,6 +272,8 @@ export class FederationInboundService {
     this.selfHost = opts.selfHost ?? null;
     this.queues = opts.queues ?? null;
     this.federationEnabledOnInstance = opts.federationEnabledOnInstance ?? false;
+    this.federationDmsEnabledOnInstance =
+      opts.federationDmsEnabledOnInstance ?? true;
     this.log = opts.log ?? noopLogger;
   }
 
@@ -295,6 +310,37 @@ export class FederationInboundService {
       throw new FederationInboundError(
         'not_implemented',
         `event type ${preCheck.eventType} is not implemented yet`,
+      );
+    }
+
+    // P5-11 — instance-level DM opt-out. When the operator has flipped
+    // FEDERATION_DMS_ENABLED to `false`, reject every `dm.*` envelope BEFORE
+    // signature verification. Done here (not in each handler) for two
+    // reasons:
+    //   1. Defence in depth — the per-handler `peer.capabilities.includes(
+    //      'dms')` check reads stored peer state that could be stale (the
+    //      peer was peered while we still advertised `dms`, then the
+    //      operator flipped the flag — the RemoteInstance row carries the
+    //      old, stale capability set until re-handshake);
+    //   2. Symmetry with the well-known doc: if we stop advertising `dms`,
+    //      we should also stop accepting `dm.*` envelopes, even from a peer
+    //      whose stored capability snapshot still claims we do.
+    // Same error code as the per-handler check so the HTTP status (403) is
+    // identical and the log line tells the operator which side opted out.
+    if (
+      !this.federationDmsEnabledOnInstance &&
+      preCheck.eventType.startsWith('dm.')
+    ) {
+      this.log.warn(
+        {
+          eventType: preCheck.eventType,
+          fromInstance: preCheck.fromInstance,
+        },
+        'inbound dm.* envelope rejected — this instance has FEDERATION_DMS_ENABLED=false',
+      );
+      throw new FederationInboundError(
+        'dms_capability_missing',
+        `this instance does not advertise the 'dms' capability`,
       );
     }
 

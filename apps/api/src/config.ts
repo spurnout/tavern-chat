@@ -228,6 +228,24 @@ const envSchema = z.object({
    * Required when FEDERATION_ENABLED=true in production.
    */
   TAVERN_DATA_KEY: optionalString,
+  /**
+   * Phase 5 — federated DMs (P5-11). When true (the default), the instance
+   * advertises `'dms'` in its .well-known capability list, accepts inbound
+   * `dm.*` envelopes, and fans out DM events to peers that also advertise
+   * `dms`. When false:
+   *   - `'dms'` is filtered out of the well-known capabilities array;
+   *   - inbound `dm.*` handlers reject with 403 `dms_capability_missing`
+   *     BEFORE checking the peer's stored capability set (defence-in-depth);
+   *   - every outbound `fanOutDm*` call short-circuits at the route layer
+   *     (no enqueue, no warning spam — DMs are opted out by THIS operator,
+   *     not by an unreachable peer).
+   * Requires FEDERATION_ENABLED=true to have any effect; with federation
+   * fully off this flag is meaningless.
+   */
+  FEDERATION_DMS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export type Config = z.infer<typeof envSchema>;

@@ -44,4 +44,18 @@ describe('config — federation flags', () => {
       } as NodeJS.ProcessEnv),
     ).toThrow(/TAVERN_DATA_KEY/);
   });
+
+  // P5-11 — per-instance DM federation opt-out.
+  it('defaults FEDERATION_DMS_ENABLED to true', () => {
+    const cfg = loadConfig({ ...BASE_ENV } as NodeJS.ProcessEnv);
+    expect(cfg.FEDERATION_DMS_ENABLED).toBe(true);
+  });
+
+  it('parses FEDERATION_DMS_ENABLED=false', () => {
+    const cfg = loadConfig({
+      ...BASE_ENV,
+      FEDERATION_DMS_ENABLED: 'false',
+    } as NodeJS.ProcessEnv);
+    expect(cfg.FEDERATION_DMS_ENABLED).toBe(false);
+  });
 });

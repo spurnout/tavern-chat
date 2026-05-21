@@ -132,7 +132,36 @@ Peers exchange a capability set at peering time:
 - `moderation` — accept ban / block propagation
 
 A peer may advertise a subset; the local operator accepts or rejects
-per capability.
+per capability. The handshake stores the **intersection** of (what we
+advertise, what the peer advertises/requests) in
+`RemoteInstance.capabilities`, and every outbound fan-out and inbound
+handler reads that stored set to decide whether to act.
+
+#### Per-capability operator opt-out
+
+Each capability has a corresponding env-var switch the operator can
+flip without re-peering:
+
+| Capability | Env var                  | Default |
+|------------|--------------------------|---------|
+| `dms`      | `FEDERATION_DMS_ENABLED` | `true`  |
+
+When set to `false`:
+
+- The instance does NOT advertise that capability in its
+  `.well-known/tavern-federation` doc, so future peer handshakes
+  intersect it out automatically.
+- Every outbound fan-out helper for that capability short-circuits at
+  the route layer before touching the queue.
+- Every inbound handler for that capability rejects with HTTP 403
+  `dms_capability_missing` (or the capability-equivalent code) BEFORE
+  consulting the peer's stored capability set. This protects against a
+  peer whose `RemoteInstance.capabilities` row still carries the old
+  advert from when this instance still supported the capability.
+
+`FEDERATION_DMS_ENABLED=false` requires `FEDERATION_ENABLED=true` to
+have any effect; with federation fully off the per-capability flags
+are meaningless.
 
 ### Trust does not transit
 

@@ -1,4 +1,5 @@
 import {
+  CAPABILITIES,
   ulid,
   peeringRequestPayloadSchema,
   type PeeringRequestPayload,
@@ -11,6 +12,24 @@ import type { PrismaClient } from '@prisma/client';
 import { canonicalize } from '../lib/canonical-json.js';
 import { verifyEnvelopeShape, buildSignedEnvelope, type SignedEnvelope } from './federation-envelopes.js';
 import { discoverInstance, postPeeringEnvelope } from './federation-client.js';
+
+/**
+ * P5-11 — intersect the capabilities advertised by THIS instance with the
+ * capabilities advertised (or requested) by a peer, preserving the order from
+ * the static `CAPABILITIES` constant so two peers running the same software
+ * always produce identical arrays.
+ *
+ * Used at peering time to produce the `RemoteInstance.capabilities` row, which
+ * is the single source of truth every fan-out helper and inbound handler reads
+ * later (`peer.capabilities.includes('dms')`, etc).
+ */
+export function intersectCapabilities(
+  local: readonly Capability[],
+  peer: readonly Capability[],
+): Capability[] {
+  const peerSet = new Set<Capability>(peer);
+  return CAPABILITIES.filter((c) => local.includes(c) && peerSet.has(c));
+}
 
 /**
  * Validates a peer hostname before any outbound discovery fetch. Prevents SSRF
@@ -44,6 +63,14 @@ export function assertValidPeerHost(host: string): void {
 
 export interface FederationPeeringServiceOptions {
   prisma?: PrismaClient;
+  /**
+   * P5-11 — what THIS instance advertises in its .well-known doc. Threaded
+   * through so the peering handshake can store the INTERSECTION of (what we
+   * advertise, what the peer advertises/requests) into
+   * `RemoteInstance.capabilities`. Defaults to the static full set when not
+   * provided (older callers / tests that don't care about gating).
+   */
+  localCapabilities?: readonly Capability[];
 }
 
 export interface RecordInboundResult {
@@ -62,9 +89,11 @@ export class PeeringError extends Error {
 
 export class FederationPeeringService {
   private readonly prisma: PrismaClient;
+  private readonly localCapabilities: readonly Capability[];
 
   constructor(opts: FederationPeeringServiceOptions = {}) {
     this.prisma = opts.prisma ?? defaultPrisma;
+    this.localCapabilities = opts.localCapabilities ?? [...CAPABILITIES];
   }
 
   /**
@@ -93,7 +122,21 @@ export class FederationPeeringService {
     if (!verified.ok) throw new PeeringError('signature', verified.reason);
     const env = verified.envelope as SignedEnvelope<PeeringRequestPayload>;
 
-    // 4. upsert the RemoteInstance row (pending_inbound)
+    // 4. upsert the RemoteInstance row (pending_inbound).
+    //
+    // P5-11: store the INTERSECTION of what the peer asked for and what we
+    // advertise locally. This is the single source of truth every later
+    // fan-out helper and inbound handler reads (`peer.capabilities.includes(
+    // 'dms')`, etc), so the intersection MUST happen at storage time — not at
+    // every read site. If we ever stop advertising `dms` (operator flipped
+    // FEDERATION_DMS_ENABLED to false), an already-peered RemoteInstance row
+    // still carries the old, stale capability set; the inbound-side defence-
+    // in-depth check on `env.FEDERATION_DMS_ENABLED` (see federation-inbound)
+    // is what plugs that gap.
+    const negotiated = intersectCapabilities(
+      this.localCapabilities,
+      env.payload.requestedCapabilities,
+    );
     const existing = await this.prisma.remoteInstance.findUnique({ where: { host: env.fromInstance } });
     let remoteId: string;
     if (!existing) {
@@ -104,7 +147,7 @@ export class FederationPeeringService {
           host: env.fromInstance,
           instanceKey: pubRaw,
           status: 'pending_inbound',
-          capabilities: env.payload.requestedCapabilities,
+          capabilities: negotiated,
           contactEmail: env.payload.contactEmail,
           note: env.payload.note,
         },
@@ -118,7 +161,7 @@ export class FederationPeeringService {
         where: { id: existing.id },
         data: {
           instanceKey: pubRaw,
-          capabilities: env.payload.requestedCapabilities,
+          capabilities: negotiated,
           note: env.payload.note,
         },
       });
@@ -174,6 +217,24 @@ export class FederationPeeringService {
     const discovery = await discoverInstance(input.host);
     const pubRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
 
+    // P5-11: the locally-stored capability set is the intersection of
+    //   (a) what we advertise locally,
+    //   (b) what the peer advertises in their .well-known doc,
+    //   (c) what the admin requested at peering time.
+    // The envelope we send still carries (c) — the peer applies its own
+    // intersection on the inbound side, so a missing peer-side capability
+    // surfaces as a one-sided gap (we asked, they didn't accept) rather than
+    // a hard error here. Capabilities the peer's discovery doc doesn't list
+    // are stripped from OUR view so we never enqueue events the peer would
+    // reject anyway.
+    const peerAdvertised: Capability[] = (discovery.capabilities ?? []).filter(
+      (c): c is Capability => CAPABILITIES.includes(c as Capability),
+    );
+    const negotiated = intersectCapabilities(
+      this.localCapabilities,
+      intersectCapabilities(input.requestedCapabilities, peerAdvertised),
+    );
+
     const existing = await this.prisma.remoteInstance.findUnique({ where: { host: input.host } });
     let remoteInstanceId: string;
     if (!existing) {
@@ -184,7 +245,7 @@ export class FederationPeeringService {
           host: input.host,
           instanceKey: pubRaw,
           status: 'pending_outbound',
-          capabilities: input.requestedCapabilities,
+          capabilities: negotiated,
           note: input.note,
           peeredByUserId: input.adminUserId,
         },
@@ -196,7 +257,7 @@ export class FederationPeeringService {
         data: {
           instanceKey: pubRaw,
           status: 'pending_outbound',
-          capabilities: input.requestedCapabilities,
+          capabilities: negotiated,
           note: input.note,
           peeredByUserId: input.adminUserId,
         },

@@ -54,6 +54,15 @@ export interface DmRouteDeps {
    * route module.
    */
   federationEnabledOnInstance?: boolean;
+  /**
+   * P5-11 — operator-level opt-out for federated DMs. When false this
+   * instance does NOT advertise `dms` in its .well-known capability list
+   * AND skips every outbound `fanOutDm*` call before it touches the queue
+   * (`dm.*` envelopes from peers are rejected by the inbound dispatcher,
+   * not here). Independent of `federationEnabledOnInstance`: with
+   * federation fully off this flag is meaningless.
+   */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 export async function registerDmRoutes(
@@ -143,11 +152,21 @@ export async function registerDmRoutes(
       // P5-3 — federation fan-out. Best-effort: wrapped in try/catch so a
       // federation hiccup never breaks the local DM open. Gated on (a)
       // `selfHost` being known (we can't build qualified ids without it),
-      // (b) `queues` being wired, and (c) the OTHER member being a remote
-      // user (User.remoteInstanceId set + remoteUserId qualified id).
+      // (b) `queues` being wired, (c) the OTHER member being a remote
+      // user (User.remoteInstanceId set + remoteUserId qualified id), and
+      // (d) P5-11 — the operator hasn't opted this instance out of
+      // federated DMs entirely via `FEDERATION_DMS_ENABLED=false`. We gate
+      // at the route level (a single early-return) rather than inside the
+      // helper because the helper-level federation flag and per-peer
+      // capability check are still useful when the operator is opted in
+      // but a particular peer isn't.
       // Re-creates of the same DM channel re-fire `dm.create` — that's
       // fine: the inbound handler is idempotent on (pairKey).
-      if (deps?.selfHost && deps?.queues) {
+      if (
+        deps?.selfHost &&
+        deps?.queues &&
+        deps?.federationDmsEnabledOnInstance !== false
+      ) {
         try {
           const initiator = await prisma.user.findUnique({
             where: { id: ctx.userId },
@@ -393,18 +412,22 @@ export async function registerDmRoutes(
       //   (a) federation deps wired in (`queues` + `selfHost`),
       //   (b) instance-level FEDERATION_ENABLED is not explicitly off
       //       (defence-in-depth also enforced inside the helper),
-      //   (c) the DM is 1:1 (`kind === 'direct'`) — group DM federation is
+      //   (c) P5-11 — FEDERATION_DMS_ENABLED hasn't been flipped off (the
+      //       operator-level opt-out for federated DMs is independent of the
+      //       global federation flag),
+      //   (d) the DM is 1:1 (`kind === 'direct'`) — group DM federation is
       //       out of scope for Phase 5,
-      //   (d) the OTHER member is a remote user (User.remoteInstanceId set).
+      //   (e) the OTHER member is a remote user (User.remoteInstanceId set).
       //
-      // For (c) + (d) we need to know who the other member is and what
+      // For (d) + (e) we need to know who the other member is and what
       // kind of channel this is. One extra query against DmChannel pulls
       // both in a single round-trip rather than chasing the existing
       // `fullRow` (which doesn't carry membership info).
       if (
         deps?.queues &&
         deps.selfHost &&
-        deps.federationEnabledOnInstance !== false
+        deps.federationEnabledOnInstance !== false &&
+        deps.federationDmsEnabledOnInstance !== false
       ) {
         try {
           const channel = await prisma.dmChannel.findUnique({

@@ -72,6 +72,13 @@ export interface ReactionRouteDeps {
    * forgets the gate), the helper short-circuits when this is `false`.
    */
   federationEnabledOnInstance?: boolean;
+  /**
+   * P5-11 — operator-level opt-out for federated DMs. When false the
+   * `dm.reaction.add` and `dm.reaction.remove` fan-out branches in this
+   * router short-circuit before touching the queue. Server-channel
+   * reaction fan-outs are unaffected.
+   */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 export async function registerReactionRoutes(
@@ -166,11 +173,14 @@ export async function registerReactionRoutes(
       // (the other member's home), capability-gated inside the helper. A
       // reaction's actor is the reactor (NOT necessarily the message
       // author), so we sign + qualify with `ctx.userId`'s username here.
+      //
+      // P5-11 — also gated on `federationDmsEnabledOnInstance`.
       if (
         deps?.queues &&
         deps.selfHost &&
         message.dmChannelId &&
-        deps.federationEnabledOnInstance !== false
+        deps.federationEnabledOnInstance !== false &&
+        deps.federationDmsEnabledOnInstance !== false
       ) {
         try {
           const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
@@ -300,11 +310,14 @@ export async function registerReactionRoutes(
     // the PUT handler above; the DELETE is naturally idempotent on the
     // receiver, mirroring the local DELETE here (the prisma.delete is
     // wrapped in a try/catch to swallow the missing-row case).
+    //
+    // P5-11 — also gated on `federationDmsEnabledOnInstance`.
     if (
       deps?.queues &&
       deps.selfHost &&
       message.dmChannelId &&
-      deps.federationEnabledOnInstance !== false
+      deps.federationEnabledOnInstance !== false &&
+      deps.federationDmsEnabledOnInstance !== false
     ) {
       try {
         const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);

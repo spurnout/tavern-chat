@@ -70,6 +70,14 @@ interface MessageRouteDeps {
    * forgets the gate), the helper short-circuits when this is `false`.
    */
   federationEnabledOnInstance?: boolean;
+  /**
+   * P5-11 — operator-level opt-out for federated DMs. When false the
+   * `dm.message.update` and `dm.message.delete` fan-out branches in this
+   * router short-circuit before touching the queue. Server-message fan-outs
+   * are unaffected (this is a DM-only gate). Independent of
+   * `federationEnabledOnInstance`.
+   */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {
@@ -686,11 +694,15 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     // check above already rejected non-author edits, which guarantees we
     // never relay an inbound message back to its origin: if alice tries to
     // edit a message bob (remote) sent, the 403 fired before we got here.
+    //
+    // P5-11 — additionally gated on `federationDmsEnabledOnInstance` so the
+    // operator can disable DM federation independently of the global flag.
     if (
       deps?.queues &&
       deps.selfHost &&
       message.dmChannelId &&
-      deps.federationEnabledOnInstance !== false
+      deps.federationEnabledOnInstance !== false &&
+      deps.federationDmsEnabledOnInstance !== false
     ) {
       try {
         const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
@@ -860,11 +872,14 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     // so by the time we reach this point `message.authorId === ctx.userId`
     // for the DM case — the same actor-equals-author invariant the server
     // path checks below. Same one-peer-only path as the PATCH branch.
+    //
+    // P5-11 — also gated on `federationDmsEnabledOnInstance`.
     if (
       deps?.queues &&
       deps.selfHost &&
       message.dmChannelId &&
-      deps.federationEnabledOnInstance !== false
+      deps.federationEnabledOnInstance !== false &&
+      deps.federationDmsEnabledOnInstance !== false
     ) {
       try {
         const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
