@@ -259,26 +259,6 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   initiator-side check before fan-out, receiver-side 403 with
   `recipient_refuses_federated_dms` on the inbound handler.
 
-### 29. `peering.accept` envelope inbound handler missing
-
-- **Phase:** 5 (P5-11 review; reaffirmed by Phase 5 whole-phase review as
-  Important #2)
-- **Trigger:** before relying on capability re-intersection after a peer
-  reconfigures its advertised set
-- **What:** P5-11 added capability intersection on the **inbound** peering
-  handshake (B intersects A's advertised caps with B's own when accepting),
-  but the **initiator** side (A) never reconciles the peer's accepted
-  capabilities. If B drops `dms` from its advertisement after the initial
-  peering, A's `RemoteInstance.capabilities` row for B still lists `dms`
-  until A re-handshakes manually. Add a `peering.accept` inbound handler
-  (or extend the existing accept ack) that lets B push its current
-  capability set back to A on every handshake, including post-config
-  changes triggered by a re-handshake request. **Phase 5 makes the
-  consequence worse**: the new capability-intersection logic on accept
-  never reaches the initiator, so A may keep enqueueing `dms` envelopes
-  that B's inbound handler will reject on capability grounds. Phase 6
-  scope.
-
 ### 30. Existing pre-Phase-5 `RemoteInstance` rows hold un-intersected capability sets
 
 - **Phase:** 5 (P5-11 review)
@@ -295,25 +275,70 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   `capabilities` on all rows + forces a re-fetch on next contact (code
   change). Document the operator path in the Phase 5 release notes.
 
-### 31. Idempotent-delete short-circuit ordering leaks soft-delete state
+### 32. `PRESENCE_UPDATE` WS event doesn't carry customStatus
 
-- **Phase:** 5 (whole-phase review, Minor)
-- **Trigger:** before any threat model assumes inbound author-only checks
-  are not also a state-existence oracle
-- **What:** `handleDmMessageDelete` in `apps/api/src/services/federation-inbound.ts`
-  (and the parallel `handleMessageDelete` for server messages) checks
-  `existing.deletedAt` BEFORE the author-only check. A peer holding a
-  stolen / replayed envelope for a non-author can post it; if the message
-  was previously deleted by anyone, the handler returns 200
-  (`deduplicated: true`); otherwise it returns 403 (`forbidden`). The
-  status difference probes whether the message was previously soft-deleted
-  — a minor info leak, no data-integrity impact (the second branch still
-  rejects the non-author mutation). Fix: reorder so the author check
-  fires first, then the idempotent short-circuit. Both DM and server
-  handlers share the pattern and should be fixed together.
+- **Phase:** 6 (P6-9 verification)
+- **Trigger:** when live custom-status updates need to surface without a
+  profile re-fetch
+- **What:** The gateway broadcast for a presence change is currently
+  `{ userId, presence }` only. When a user's `customStatus` changes —
+  locally via `PATCH /api/me/presence` OR via a federated `presence.update`
+  mirror write — the new value is persisted to the `User` row but the live
+  UI does not pick it up until the next profile re-fetch (hover card open,
+  tab focus, periodic refresh). Presence dot changes remain live; custom
+  status string and expiry do not. Affects both local and federated paths;
+  surfaced during P6-9 verification. Fix options: extend the
+  `PRESENCE_UPDATE` payload with `customStatus` +
+  `customStatusExpiresAt`, or emit a separate `CUSTOM_STATUS_UPDATE`
+  event for clarity.
+
+### 33. Per-user "invisible to federated peers" presence opt-out
+
+- **Phase:** 6 (whole-phase review)
+- **Trigger:** when user-level federation preferences are added
+- **What:** Phase 6 gates federated presence at the instance level via the
+  `presence` capability advertisement + the `FEDERATION_PRESENCE_ENABLED`
+  env var. There is no per-user opt-out — if both peers advertise
+  `presence`, any local user's presence (and custom status) is shared with
+  peers they share a federated Tavern or DM with. Some users may want to
+  refuse federated presence even when their instance supports it. Add a
+  `User.acceptsFederatedPresence` preference + UI toggle in account
+  settings; outbound fan-out checks the flag before enqueue. Parallels
+  follow-up #28 (the equivalent for DMs).
 
 ## Resolved
 
 ### Phase 2 post-review fix-up
 
 - **SSRF guard on outbound profile fetch.** `assertValidPeerHost` is now exported from `federation-peering.ts` and applied in `FederationProfileService.fetchRemoteProfile` immediately after `parseRemoteUserId`. The inbound `respondToProfileRequest` handler intentionally skips the guard (no outbound fetch on that path) — documented inline.
+
+### 29. `peering.accept` envelope inbound handler missing — resolved in Phase 6 (P6-3)
+
+- **Resolution:** P6-3 added `FederationPeeringService.recordInboundAccept` and
+  event-type dispatch on `POST /_federation/peering`. The route now routes
+  `peering.request` → `recordInboundRequest` (existing) and `peering.accept`
+  → `recordInboundAccept` (new); unknown event types return 400. The new
+  handler verifies the envelope against a fresh discovery-doc public key
+  (supports peer key rotation), intersects the peer's accepted capabilities
+  with the local advertised set, flips a `pending_outbound` row to `peered`,
+  and handles re-handshake on an already-`peered` row by refreshing
+  capabilities + key. Rejects unknown peers (`bad_envelope`),
+  revoked/blocked rows (`blocked`), bad signatures (`signature`), and
+  nonce replays (`replay`). Closes the asymmetric-capability gap that
+  could keep the initiator believing a peer still supports a capability
+  the peer has dropped — relevant for the new Phase 6 `presence`
+  capability as well as the existing `dms`.
+
+### 31. Idempotent-delete short-circuit ordering leaks soft-delete state — resolved in Phase 6 (P6-4)
+
+- **Resolution:** P6-4 reordered `handleMessageDelete` and
+  `handleDmMessageDelete` in `apps/api/src/services/federation-inbound.ts`
+  so the author-only check fires BEFORE the
+  `existing.deletedAt → deduplicated: true` short-circuit. A non-author
+  replaying a delete envelope now consistently receives 403 `forbidden`
+  whether or not the target message was previously soft-deleted, closing
+  the status-difference oracle that could probe soft-delete state.
+  Legitimate authors are unaffected: a redeleting author still gets
+  `200 deduplicated: true` on an already-deleted message. Both DM and
+  server-message handlers were updated together; integration tests
+  cover the non-author-on-deleted-message branch returning 403.

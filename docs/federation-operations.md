@@ -1,14 +1,17 @@
 # Federation operations guide
 
-Phases 1–5 of Tavern federation are now in place: peering, remote-user identity,
+Phases 1–6 of Tavern federation are now in place: peering, remote-user identity,
 channel-message federation (create / edit / delete / reactions), **federated invites
 plus Tavern mirroring** (members on one instance can join Taverns hosted on another, with
-live server/channel/membership sync and home-instance message relay), and **federated
-1:1 direct messages** (DMs cross peers when both advertise the `dms` capability).
-Federated presence and moderation propagation are still pending. Operators can safely
-enable peering, exchange channel messages with peered instances at the per-Tavern and
-per-channel opt-in level, federate invites end-to-end, exchange 1:1 DMs with remote
-users, and verify everything via the admin UI.
+live server/channel/membership sync and home-instance message relay), **federated
+1:1 direct messages** (DMs cross peers when both advertise the `dms` capability), and
+**federated presence + custom status** (presence transitions and custom-status changes
+propagate to peers sharing ≥ 1 federated Tavern or DM with the user, gated on the
+`presence` capability and the `FEDERATION_PRESENCE_ENABLED` env var). Moderation
+propagation and voice are still pending. Operators can safely enable peering, exchange
+channel messages with peered instances at the per-Tavern and per-channel opt-in level,
+federate invites end-to-end, exchange 1:1 DMs with remote users, surface live presence
+across peers, and verify everything via the admin UI.
 
 See `docs/federation.md` for the full design, protocol spec, and rollout phases.
 
@@ -554,3 +557,143 @@ Federated DMs leak the same metadata as federated channel messages:
 - This is by design — federation IS the leak. Users who require strict
   locality should pick an instance that disables `dms`.
 - End-to-end encryption is deferred to Phase 8+.
+
+---
+
+## Phase 6 — federated presence and custom status
+
+Phase 6 puts user presence and custom status on the wire. When a local user
+transitions between `active` / `idle` / `dnd` / `offline`, or sets / clears
+their custom status, the change propagates to peers that share at least one
+federated Tavern or DM with that user. The peer's UI updates live — presence
+dot, hover card, member list, and DM list.
+
+### How presence federates
+
+- **Home instance is authoritative.** A user's home is the only instance that
+  emits presence envelopes for that user. Peers receiving an envelope from any
+  instance other than the user's home are rejected with 403 `not_home_instance`.
+- **Single envelope kind: `presence.update`.** Carries the user's effective
+  `presence`, optional `customStatus` string + `customStatusExpiresAt` ISO
+  timestamp, and the home's `updatedAt` watermark for last-write-wins on the
+  receiver.
+- **Single-layer signing (instance only).** Unlike message envelopes, presence
+  is not user-authored content — it's the home instance reporting what it
+  currently knows about its user. The envelope is signed with the instance
+  key only; no user-layer signature.
+- **Fan-out scope.** When a local user's presence or custom status changes, the
+  presence service queries for peers where the user shares ≥ 1 federated
+  Tavern OR federated DM. Peers with zero shared surfaces are not notified.
+- **Last-write-wins.** The receiver compares the envelope's `updatedAt` to
+  the existing `User.presenceUpdatedAt` watermark and drops stale envelopes
+  silently (out-of-order delivery is possible with BullMQ retries).
+
+### The `presence` capability gate
+
+The `presence` capability is negotiated at peering. Each side advertises it in
+`.well-known/tavern-federation`; the handshake intersects the two lists and
+stores the result on `RemoteInstance.capabilities`. Both ends must advertise
+`presence` for the capability to be active for the pair.
+
+If `presence` is missing from a peer's stored capability set, the outbound
+fan-out short-circuits before enqueue (no envelope is sent to that peer) and
+the inbound handler returns 403 `presence_capability_missing` if invoked.
+
+### `FEDERATION_PRESENCE_ENABLED`
+
+Controls whether this instance participates in presence federation. Default
+`true`. Behaviour matches `FEDERATION_DMS_ENABLED`:
+
+| Value | Effect |
+|-------|--------|
+| `true` (default) | The instance advertises `presence` in `.well-known/tavern-federation`. Outbound presence fan-out is active; inbound `presence.update` envelopes are accepted. |
+| `false` | The instance drops `presence` from the well-known advertisement. Outbound fan-out short-circuits before enqueue. Inbound `presence.update` envelopes are rejected with 403 `presence_capability_missing`. |
+
+Existing federated presence state persists locally on each side but stops
+updating.
+
+### Custom status mechanics
+
+Set / clear via `PATCH /api/me/presence` with the body:
+
+```json
+{
+  "customStatus": "🎲 In a session, back at 9pm",
+  "customStatusExpiresAt": "2026-05-21T21:00:00Z"
+}
+```
+
+- `customStatus`: string, **max 128 chars**. `null` clears the status (and the
+  expiry).
+- `customStatusExpiresAt`: ISO datetime, nullable. **Past-expiry values are
+  rejected 400** (`custom_status_expires_in_past`) — clients must compute the
+  expiry server-side or validate before posting. The receiver respects the
+  same wall-clock expiry; no clock-skew handling is applied beyond the
+  watermark.
+- Once set, the custom status is included in the next `presence.update`
+  envelope emitted for that user. Custom-status changes always fire fan-out
+  immediately (they bypass the 5-second debounce — see below).
+
+Custom status on a remote-user mirror is overwritten by inbound envelopes
+only. The local `PATCH /api/me/presence` route only operates on the
+logged-in user's own row, which is always local.
+
+### 5-second debounce on active⇄idle / DND flaps
+
+Presence transitions flap frequently — a user toggling tab focus generates
+multiple `active`⇄`idle` transitions in seconds. To avoid thrashing the
+outbox, presence fan-out passes through a per-user 5-second debounce window
+that emits the LAST observed state for that user at the end of the window.
+
+**Exceptions that bypass the debounce and fire immediately:**
+
+- Transitions to `offline` (rare, noteworthy — peers should see them now,
+  not after a 5-second wait).
+- Custom-status set / clear operations.
+
+The debounce only buffers `active`⇄`idle` flips and manual DND toggles.
+Local gateway broadcast (to the user's own browser tabs and other local
+clients) is always synchronous — the debounce affects federation fan-out
+only.
+
+### What stays local
+
+The following are **not** federated by Phase 6:
+
+- **Typing indicators** — local-only by design (high-frequency, low-value
+  cross-instance).
+- **Read state** (`DmChannelMember.lastReadAt`, channel last-read marks).
+- **Drafts** (browser-local).
+- **Notification preferences** — per-user and per-Tavern notification config
+  never leaves the instance.
+
+These match the locality stance from Phase 5 DMs: the federated content is
+the user-visible "what's happening" surface; the UX state around it is
+local.
+
+### Known live-UI gap
+
+The `PRESENCE_UPDATE` WebSocket event broadcast by the gateway today carries
+only `{ userId, presence }`. When a user's custom status changes (locally OR
+via federated mirror update), the new `customStatus` and
+`customStatusExpiresAt` values are persisted to the `User` row but the live
+UI does not pick them up until the next profile re-fetch (e.g. opening the
+hover card, switching tabs, or the periodic refresh). Presence dot changes
+remain live in real time.
+
+Tracked as follow-up #32 in `docs/federation-followups.md`. The proposed fix
+is to extend the `PRESENCE_UPDATE` payload with `customStatus` +
+`customStatusExpiresAt`, or to emit a separate `CUSTOM_STATUS_UPDATE` event.
+
+### Privacy considerations
+
+Federated presence leaks online/offline patterns and custom-status content
+to every peer the user shares a federated surface with. This is by design —
+federation IS the leak. Mitigations:
+
+- Operators who want strict locality can set `FEDERATION_PRESENCE_ENABLED=false`
+  without affecting messaging or DMs.
+- The `presence` capability is opt-in per instance.
+- A per-user "invisible to federated peers" opt-out (refuse federated
+  presence even when the instance advertises it) is tracked as follow-up
+  #33 — not in Phase 6 scope.

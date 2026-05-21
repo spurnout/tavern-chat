@@ -4,7 +4,7 @@ Project conventions for any agent working in this repo. Keep terse. Read once, r
 
 ## What this is
 
-Tavern is a self-hosted, web-first, Discord-shaped community app for small private communities, tabletop RPG groups, and board gamers. Self-hosted with opt-in federation (Phases 1-5: peering + remote-user identity + federated channel messages/edits/deletes/reactions + federated invites and Tavern mirroring + federated 1:1 DMs (gated on the `dms` capability) via `FEDERATION_ENABLED`, off by default — presence and voice still local). No public discovery, no monetization, no paid AI dependencies. A local Trust & Safety Core handles moderation.
+Tavern is a self-hosted, web-first, Discord-shaped community app for small private communities, tabletop RPG groups, and board gamers. Self-hosted with opt-in federation (Phases 1-6: peering + remote-user identity + federated channel messages/edits/deletes/reactions + federated invites and Tavern mirroring + federated 1:1 DMs (gated on the `dms` capability) + federated presence and custom status (gated on the `presence` capability + `FEDERATION_PRESENCE_ENABLED`) via `FEDERATION_ENABLED`, off by default — voice still local). No public discovery, no monetization, no paid AI dependencies. A local Trust & Safety Core handles moderation.
 
 ## Layout
 
