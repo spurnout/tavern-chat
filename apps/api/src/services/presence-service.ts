@@ -133,11 +133,25 @@ async function emitFanOut(userId: string): Promise<void> {
         presenceUpdatedAt: true,
         customStatus: true,
         customStatusExpiresAt: true,
+        acceptsFederatedPresence: true,
       },
     });
     if (!user) return;
     // Home-only fan-out: a mirror's presence is asserted by its home, not by us.
     if (user.remoteInstanceId !== null) return;
+    // Per-user opt-out (PF-3 / follow-up #33). The read is in the same SELECT
+    // as the mirror check above, so flipping the pref mid-debounce-window is
+    // race-safe: by the time the debounced timer flushes and re-enters this
+    // function, the fresh row is read and the new value is honoured. The
+    // local broadcast in `persistAndBroadcast` is unaffected — only the
+    // federation envelope is suppressed.
+    if (!user.acceptsFederatedPresence) {
+      deps.log.warn(
+        { userId },
+        'federation presence fan-out skipped — user has acceptsFederatedPresence=false',
+      );
+      return;
+    }
 
     const peers = await findPresenceFanOutPeers(deps.prisma, userId);
     if (peers.length === 0) return;

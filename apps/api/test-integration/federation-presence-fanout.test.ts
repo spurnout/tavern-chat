@@ -537,6 +537,96 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  // ─── PF-3 — per-user opt-out from federated presence fan-out (#33) ──────
+
+  it('PF-3 — does NOT enqueue when the user has acceptsFederatedPresence=false (opt-out)', async () => {
+    const alice = await createLocalUser('alice');
+    // Flip the opt-out preference AFTER creation so we exercise the same
+    // path a real user takes from the settings UI.
+    await prisma.user.update({
+      where: { id: alice.id },
+      data: { acceptsFederatedPresence: false },
+    });
+    const peerB = await seedPeer('b.example');
+    const bobMirror = await createRemoteUserMirror(peerB, 'bob');
+    await createServerWithMembers(alice.id, [bobMirror.localUserId], {
+      federationEnabled: true,
+    });
+
+    const { queue, enqueue } = makeMockQueue();
+    configurePresenceFederation({
+      queues: queue,
+      selfHost: SELF_HOST,
+      federationPresenceEnabledOnInstance: true,
+      prisma,
+      log: capturingLog.log as never,
+    });
+
+    // active → idle inside the debounce window; the debounced flush should
+    // re-read the user row, see acceptsFederatedPresence=false, and skip.
+    await markConnected(alice.id);
+    await reportActivity(alice.id, false);
+    __testFlushDebouncedFanOuts();
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    // Offline transition (immediate path) ALSO short-circuits — the pref
+    // check sits before the peer enumeration, so both paths honour it.
+    await markDisconnected(alice.id);
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    expect(enqueue).not.toHaveBeenCalled();
+    // Structured-log assertion (nice-to-have, optional per the spec).
+    const skipped = capturingLog.warnCalls.find(
+      (w) =>
+        typeof w.msg === 'string' &&
+        w.msg.includes('acceptsFederatedPresence=false'),
+    );
+    expect(skipped).toBeDefined();
+  });
+
+  it('PF-3 — race: flipping acceptsFederatedPresence true→false MID debounce window is honoured at flush time', async () => {
+    const alice = await createLocalUser('alice');
+    // Starts with the default opt-IN (true).
+    const peerB = await seedPeer('b.example');
+    const bobMirror = await createRemoteUserMirror(peerB, 'bob');
+    await createServerWithMembers(alice.id, [bobMirror.localUserId], {
+      federationEnabled: true,
+    });
+
+    const { queue, enqueue } = makeMockQueue();
+    configurePresenceFederation({
+      queues: queue,
+      selfHost: SELF_HOST,
+      federationPresenceEnabledOnInstance: true,
+      prisma,
+      log: capturingLog.log as never,
+    });
+
+    // Step 1: alice transitions to active. This schedules a 5s debounced
+    // fan-out. At schedule time her pref is still true.
+    await markConnected(alice.id);
+    expect(enqueue).not.toHaveBeenCalled();
+
+    // Step 2: inside the debounce window, alice opts out (settings PATCH).
+    await prisma.user.update({
+      where: { id: alice.id },
+      data: { acceptsFederatedPresence: false },
+    });
+
+    // Step 3: trigger the debounced timer. emitFanOut re-reads the row,
+    // sees the freshly-written false, and bails before enumerating peers.
+    __testFlushDebouncedFanOuts();
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const skipped = capturingLog.warnCalls.find(
+      (w) =>
+        typeof w.msg === 'string' &&
+        w.msg.includes('acceptsFederatedPresence=false'),
+    );
+    expect(skipped).toBeDefined();
+  });
+
   it('coalesces multiple active⇄idle flips within the debounce window into a single fan-out with the LATEST state', async () => {
     const alice = await createLocalUser('alice');
     const peerB = await seedPeer('b.example');
