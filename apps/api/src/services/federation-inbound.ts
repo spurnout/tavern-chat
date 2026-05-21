@@ -62,6 +62,7 @@ import {
   channelDeletePayloadSchema,
   channelUpdatePayloadSchema,
   dmCreatePayloadSchema,
+  dmMessageCreatePayloadSchema,
   ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
   memberAddPayloadSchema,
@@ -79,6 +80,7 @@ import {
   type ChannelDeletePayload,
   type ChannelUpdatePayload,
   type DmCreatePayload,
+  type DmMessageCreatePayload,
   type MemberAddPayload,
   type MemberJoinRequestPayload,
   type MemberJoinedPayload,
@@ -146,6 +148,9 @@ export type InboundErrorCode =
   | 'forbidden' // 403 — actor doesn't match expected role (e.g. non-author edit)
   | 'dms_capability_missing' // 403 — peer does not advertise the `dms` capability
   | 'dm_channel_conflict' // 409 — dm.create payload's dmChannelId/pairKey collides with an unrelated DmChannel
+  | 'unknown_dm_channel' // 404 — dm.message.* references a DmChannelId we don't have (likely out-of-order delivery before dm.create landed)
+  | 'unknown_dm_member' // 404 — dm.message.* author User row not materialised locally yet
+  | 'not_dm_member' // 403 — author exists locally but isn't a member of the target DmChannel
   | 'not_implemented'; // 501 — event type recognised by schema, handler is TBD
 
 export class FederationInboundError extends Error {
@@ -775,6 +780,30 @@ const HANDLERS: Partial<Record<EnvelopeEventType, InboundHandler<z.ZodTypeAny>>>
       return typeof v === 'string' ? v : null;
     },
     handle: handleDmCreate as InboundHandler<z.ZodTypeAny>['handle'],
+  },
+  // P5-6 — inbound DM message send. Same posture as `message.create` for
+  // server channels, but the membership invariant is checked against
+  // DmChannelMember instead of ServerMember:
+  //   1. Peer must advertise the `dms` capability (same gate as dm.create).
+  //   2. Target DmChannel must already exist locally — if it doesn't, this
+  //      envelope arrived BEFORE the `dm.create` we'd accept it under, so
+  //      we 404 (`unknown_dm_channel`) and let the peer retry once the
+  //      ordering settles. We do NOT lazily create a DmChannel here; pair
+  //      derivation needs both qualified ids, which this payload doesn't
+  //      carry.
+  //   3. Author's local synthetic User row must exist (materialised by the
+  //      original dm.create) AND must be a DmChannelMember. Anything else
+  //      is a peer-side bug.
+  //   4. Idempotent on Message.id — same posture as the server-message
+  //      handler so a peer's retry never produces duplicate rows.
+  'dm.message.create': {
+    payloadSchema: dmMessageCreatePayloadSchema,
+    extractAuthorRemoteUserId: (payload: unknown): string | null => {
+      const v = (payload as { authorRemoteUserId?: unknown } | null)
+        ?.authorRemoteUserId;
+      return typeof v === 'string' ? v : null;
+    },
+    handle: handleDmMessageCreate as InboundHandler<z.ZodTypeAny>['handle'],
   },
   // Phase 1-2 envelopes (peering.*, profile.*) flow through their own
   // dedicated routes and never reach this handler map. They are intentionally
@@ -2931,6 +2960,225 @@ async function handleDmCreate(input: {
         type: 'DM_CHANNEL_CREATE',
         dmChannelId,
         userId: recipientUserId,
+        data: dto,
+      });
+      await prisma.remoteUser.update({
+        where: { id: remoteUser.id },
+        data: { lastSeenAt: new Date() },
+      });
+    },
+  };
+}
+
+// --- dm.message.create handler -----------------------------------------------
+
+/**
+ * P5-6 — inbound `dm.message.create`.
+ *
+ * Mirrors `handleMessageCreate` (server-channel send) with the
+ * server-membership invariant swapped for DmChannel membership:
+ *
+ *   1. Peer must advertise `dms` — same capability gate as `dm.create`.
+ *   2. DmChannel must exist locally. If not, the peer beat us with a send
+ *      before we accepted their `dm.create` (or that envelope was dropped).
+ *      404 `unknown_dm_channel` rather than lazily creating a channel —
+ *      pair derivation needs both qualified ids, which this payload
+ *      doesn't carry, and inferring the missing side from `peer.host` +
+ *      our local recipient guess would risk a wrong pairing.
+ *   3. Author's local synthetic User row must already exist (materialised
+ *      by `dm.create`'s `ensureUserForRemoteUser` call) AND must be a
+ *      `DmChannelMember` of the target channel. Anything else is a
+ *      peer-side bug.
+ *   4. Idempotent on `Message.id` — the sender's ULID is re-used so a
+ *      retry after a transient receiver failure dedups cleanly. The
+ *      envelope-log replay window catches most retries earlier, but this
+ *      second layer catches replays from outside the window.
+ *
+ * `lastMessageAt` is bumped INSIDE the transaction (atomic with the
+ * Message insert) so the DM list never sorts a row above its committed
+ * message. PostCommit handles the gateway broadcast + `lastSeenAt`
+ * touch — both fire-and-forget by contract.
+ */
+async function handleDmMessageCreate(input: {
+  envelope: TwoLayerSignedEnvelope<DmMessageCreatePayload>;
+  payload: DmMessageCreatePayload;
+  peer: { id: string; host: string; capabilities: string[] };
+  remoteUser: NonNullable<
+    Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
+  >;
+  tx: Prisma.TransactionClient;
+}): Promise<HandlerOutput> {
+  const { envelope, payload, peer, remoteUser, tx } = input;
+
+  // 1) Capability gate. The peer is peered (verified upstream), but must
+  //    also advertise `dms` — same opt-in posture as dm.create.
+  if (!peer.capabilities.includes('dms')) {
+    throw new FederationInboundError(
+      'dms_capability_missing',
+      `peer ${peer.host} does not advertise the 'dms' capability`,
+    );
+  }
+
+  // 2) Defence-in-depth: the user-layer signature already proved the
+  //    payload was signed by `remoteUser.publicKey`. Cross-check that
+  //    the author named in the payload matches the verified RemoteUser
+  //    so a peer can't sign with user A's key and claim user B is the
+  //    author. Same posture as `member.leave` / `dm.create`.
+  if (payload.authorRemoteUserId !== remoteUser.remoteUserId) {
+    throw new FederationInboundError(
+      'bad_envelope',
+      `authorRemoteUserId ${payload.authorRemoteUserId} does not match ` +
+        `verified user ${remoteUser.remoteUserId}`,
+    );
+  }
+
+  // 3) DmChannel must exist. We do NOT lazily create one here — see the
+  //    handler docstring.
+  const dmChannel = await tx.dmChannel.findUnique({
+    where: { id: payload.dmChannelId },
+    select: { id: true },
+  });
+  if (!dmChannel) {
+    throw new FederationInboundError(
+      'unknown_dm_channel',
+      `dm channel ${payload.dmChannelId} not found on this instance`,
+    );
+  }
+
+  // 4) Author's local mirror User must already exist. Unlike server
+  //    channels (where the message-create handler will materialise a
+  //    User row on demand via `ensureUserForRemoteUser`), DMs require
+  //    the prior `dm.create` to have run — that's the envelope that
+  //    establishes the participant set. If we don't have a User row
+  //    for the author, something's wrong with the ordering / state.
+  const author = await tx.user.findUnique({
+    where: { remoteUserId: payload.authorRemoteUserId },
+    select: { id: true },
+  });
+  if (!author) {
+    throw new FederationInboundError(
+      'unknown_dm_member',
+      `no local user matches author ${payload.authorRemoteUserId}`,
+    );
+  }
+
+  // 5) Author must be a member of THIS DmChannel. The dm.create handler
+  //    inserts both members; an author missing here means the peer is
+  //    trying to send into a DM they aren't part of.
+  const membership = await tx.dmChannelMember.findUnique({
+    where: {
+      dmChannelId_userId: {
+        dmChannelId: payload.dmChannelId,
+        userId: author.id,
+      },
+    },
+    select: { userId: true },
+  });
+  if (!membership) {
+    throw new FederationInboundError(
+      'not_dm_member',
+      `user ${payload.authorRemoteUserId} is not a member of dm channel ${payload.dmChannelId}`,
+    );
+  }
+
+  // 6) Idempotent message check. Reuse the sender's ULID so that retries
+  //    after a transient failure dedup against the same row. The
+  //    envelope-log replay window catches most retries earlier, but this
+  //    second layer matters for replays from outside the window — we
+  //    still ACK 200 because we DID accept (and persist) this message.
+  const existingMessage = await tx.message.findUnique({
+    where: { id: payload.messageId },
+    select: { id: true },
+  });
+  if (existingMessage) {
+    return {
+      result: {
+        status: 200,
+        body: { ok: true, data: { id: existingMessage.id, deduplicated: true } },
+      },
+      // Touch lastSeenAt even on idempotent path — the peer DID see this
+      // user active when they signed the envelope. Done post-commit so
+      // it survives any rollback (mirrors handleMessageCreate).
+      postCommit: async (prisma) => {
+        await prisma.remoteUser.update({
+          where: { id: remoteUser.id },
+          data: { lastSeenAt: new Date() },
+        });
+      },
+    };
+  }
+
+  // 7) Persist the Message row. Same envelope.signature retention as the
+  //    server-channel handler — keeps the moderation surface uniform.
+  const signatureBytes = Buffer.from(envelope.signature, 'base64');
+  const createdAt = new Date(payload.createdAt);
+  const messageRow = await tx.message.create({
+    data: {
+      id: payload.messageId,
+      dmChannelId: payload.dmChannelId,
+      authorId: author.id,
+      type: 'default',
+      content: payload.content,
+      replyToMessageId: payload.replyToMessageId ?? null,
+      createdAt,
+      signature: signatureBytes,
+      originInstanceId: peer.id,
+    },
+  });
+
+  // 8) Bump `lastMessageAt` INSIDE the transaction so the DM list never
+  //    sorts a row above its committed message. Mirrors the local DM
+  //    send route's transaction shape.
+  await tx.dmChannel.update({
+    where: { id: payload.dmChannelId },
+    data: { lastMessageAt: createdAt },
+  });
+
+  // 9) Pull the full row shape `serializeMessage` expects. The local DM
+  //    send route uses the same include shape — attachments + reactions +
+  //    author. Reads through `tx` so we see the row we just inserted.
+  const fullRow = await tx.message.findUniqueOrThrow({
+    where: { id: messageRow.id },
+    include: {
+      attachments: { select: { id: true } },
+      reactions: { select: { emoji: true, userId: true } },
+      author: { select: { id: true, displayName: true, username: true } },
+      poll: { select: { id: true } },
+      replyTo: {
+        select: {
+          id: true,
+          content: true,
+          deletedAt: true,
+          author: { select: { displayName: true } },
+        },
+      },
+      forwardedFrom: {
+        select: {
+          id: true,
+          channelId: true,
+          author: { select: { displayName: true } },
+        },
+      },
+    },
+  });
+
+  // viewerId='' — the gateway broker fans this out to many viewers and
+  // any per-viewer state (reactions.me) is recomputed on the client.
+  // Mirrors handleMessageCreate's posture.
+  const dto = serializeMessage(fullRow, '');
+
+  const dmChannelId = payload.dmChannelId;
+  return {
+    result: { status: 200, body: { ok: true, data: { id: messageRow.id } } },
+    postCommit: async (prisma) => {
+      // Match the LOCAL DM send route's broadcast type so subscribed
+      // clients on the receiving instance handle it identically whether
+      // the message was authored locally or federated in. The broker's
+      // GatewayEvent already carries `dmChannelId` as a routing key —
+      // no new event type needed (see gateway-broker.ts).
+      gatewayBroker.publish({
+        type: 'DM_MESSAGE_CREATE',
+        dmChannelId,
         data: dto,
       });
       await prisma.remoteUser.update({

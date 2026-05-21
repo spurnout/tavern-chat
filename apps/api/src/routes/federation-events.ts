@@ -54,6 +54,7 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'not_origin':
     case 'forbidden':
     case 'dms_capability_missing':
+    case 'not_dm_member':
       return 403;
     case 'unknown_channel':
     case 'unknown_message':
@@ -61,6 +62,8 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'unknown_mirror_server':
     case 'unknown_member':
     case 'unknown_recipient':
+    case 'unknown_dm_channel':
+    case 'unknown_dm_member':
       return 404;
     case 'replay':
     case 'dm_channel_conflict':
