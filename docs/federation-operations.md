@@ -1,10 +1,12 @@
 # Federation operations guide
 
-Phases 1–3 of Tavern federation are now in place: peering, remote-user identity, and
-channel-message federation (create / edit / delete / reactions). Federated invites, DMs,
+Phases 1–4 of Tavern federation are now in place: peering, remote-user identity,
+channel-message federation (create / edit / delete / reactions), and **federated invites
+plus Tavern mirroring** (members on one instance can join Taverns hosted on another, with
+live server/channel/membership sync and home-instance message relay). Federated DMs,
 presence, and moderation propagation are still pending. Operators can safely enable peering,
 exchange channel messages with peered instances at the per-Tavern and per-channel opt-in
-level, and verify everything via the admin UI.
+level, federate invites end-to-end, and verify everything via the admin UI.
 
 See `docs/federation.md` for the full design, protocol spec, and rollout phases.
 
@@ -364,3 +366,95 @@ and remain in the BullMQ `failed` ring (default 1000 entries) for
 post-mortem inspection. In single-replica deployments (no `REDIS_URL`), the
 outbox runs in-process via `setImmediate` with no retry — failures log and
 move on.
+
+---
+
+## Phase 4 — federated invites and Tavern mirroring
+
+Phase 4 lets a user on one instance join a Tavern hosted on another. The
+joining instance maintains a **mirror** of the home Tavern's server, channels,
+and member roster, all kept in sync via federation envelopes.
+
+### Creating a federated invite
+
+In the den's settings → Invites tab, when creating an invite for a federated
+den (one with `federationEnabled=true`), the invite form gains three federated
+scope options:
+
+- **Any peer**: any user on any peered instance can use this invite.
+- **Specific instance**: only users on the chosen peer can use it.
+- **Specific user**: a named qualified id (alice@b.example) can use it.
+
+The federated invite URL looks like `https://your-tavern.example/invites/{code}?host={your-tavern.example}`.
+Send the link to the joiner via any out-of-band channel (DM, paste in a chat).
+
+### The joiner's flow
+
+When the joiner pastes the invite link into their instance's UI:
+
+1. The browser hits `GET /api/federation/invite-preview?host={host}&code={code}` on the joiner's
+   API. The API proxies to the home instance's public preview endpoint with the joiner's
+   instance + user identity in headers.
+2. A modal shows the invite preview (host, server name, inviter, channel count).
+3. On accept, the browser hits `POST /api/federation/invites/{code}/accept` on the joiner's API.
+   The API:
+   - Builds a signed `member.join_request` envelope.
+   - Synchronously POSTs to the home's `/_federation/event` endpoint.
+   - Receives a `member.joined` ack with a snapshot of the den (metadata, channels, members).
+   - Mirrors the den locally in a single transaction: creates a mirror Server with
+     `originInstanceId` set, creates mirror Channels, creates ServerMember rows for the joiner
+     and all current members.
+   - Publishes `SERVER_ADD` to the joiner's gateway connection so their UI live-updates.
+
+### Live sync — what flows
+
+After the mirror is set up, the home instance pushes updates to the joining instance via
+federation envelopes:
+
+| Event | When | Inbound effect on the mirror |
+|-------|------|-----------------------------|
+| `server.update` | Den name/description/icon changed | Mirror Server row updated + SERVER_UPDATE broadcast |
+| `channel.create` | New room added | Mirror Channel inserted + CHANNEL_CREATE broadcast |
+| `channel.update` | Room renamed, topic changed, federationMode flipped | Mirror Channel updated + CHANNEL_UPDATE broadcast |
+| `channel.delete` | Room deleted | Mirror Channel deleted + CHANNEL_DELETE broadcast |
+| `member.add` | New member joined the home Tavern | Mirror member roster grows |
+| `member.remove` | Member kicked / banned / left | Mirror member roster shrinks |
+
+### What does NOT flow yet
+
+- **Roles**: every member of a mirror den has a single synthetic `@everyone` role with
+  `PERMISSION_DEFAULT_EVERYONE`. Per-Tavern roles do not federate — "trust does not transit".
+  Phase 7 will revisit moderation roles.
+- **Custom emoji**: still follow-up #15.
+- **Avatar bytes**: the home's URLs are referenced; no mirroring of attachment data.
+- **Voice / stage / category channels**: mirrors only carry text and forum rooms.
+- **Invite revocation**: revoking an invite on the home does not push to peers; in-flight
+  accepts will fail at the home's check.
+
+### Home-instance message relay
+
+When a user on a peer (B) posts a message in a mirror channel, the message flows to the home
+(A) via the regular outbox. A persists it with `originInstanceId = B`, then **relays** it to
+every OTHER peer with members in the channel. The relay envelope preserves the original user
+signature so the receiving peer can verify the author against B's profile — but the outer
+envelope is signed by A.
+
+This means: A is the choke point. If A is down, federated chat in T stops for all peers.
+
+### Leaving a federated den
+
+The joiner clicks "Leave this den" in the Federation tab of the mirror's settings. The browser
+hits `POST /api/federation/mirror-servers/{id}/leave`:
+
+1. The leaver's API builds a signed `member.leave` envelope.
+2. Synchronously POSTs to the home.
+3. Receives `member.removed` ack.
+4. Deletes the local ServerMember row. If no local members remain, the mirror Server is torn
+   down (cascades channels and the synthetic role).
+5. Publishes `SERVER_REMOVE` to the user's gateway connection.
+
+### Admin remote-member endpoint (Phase 3 carryover)
+
+The Phase 3 `POST /api/admin/servers/:id/remote-members` endpoint still exists and bypasses
+the invite flow. Use it for testing or to add a remote member without an invite ceremony. The
+same membership envelopes fire afterward.

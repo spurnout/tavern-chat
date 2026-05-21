@@ -137,6 +137,68 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   instance signature. No action needed until that delivery mode is on the
   roadmap.
 
+### 19. Two-instance integration test infrastructure
+
+- **Phase:** 4 (P4-17)
+- **Trigger:** before relying on federation regression coverage in CI
+- **What:** The P4-17 end-to-end smoke test fell back to a single-instance
+  simulation because the existing test harness has one shared Prisma client and
+  one in-process outbox dispatcher. A faithful two-instance integration test
+  needs per-app Prisma overrides (so instance A and instance B own separate
+  databases) and a per-app outbox dispatcher (so envelopes from A actually
+  cross to B rather than short-circuiting). Without this, every cross-instance
+  envelope path is exercised only by unit tests + manual docker-compose runs.
+  Track as the prerequisite for any future federation integration test that
+  claims to cover both sides of the wire.
+
+### 20. Role mirroring beyond synthetic `@everyone`
+
+- **Phase:** 4 (deferred)
+- **Trigger:** Phase 7 (moderation propagation)
+- **What:** Phase 4 mirrors create a single synthetic `@everyone` role with
+  `PERMISSION_DEFAULT_EVERYONE` for every member of a mirror den. Per-Tavern
+  roles defined on the home instance do not federate, in line with the
+  "trust does not transit" stance. When Phase 7 lands moderation propagation,
+  revisit: at minimum the moderator role probably needs to mirror so that a
+  banned user is banned on every mirror. Likely scope is a narrow "moderator
+  flag" rather than full role-tree mirroring.
+
+### 21. Invite revocation propagation
+
+- **Phase:** 4 (P4-6 review)
+- **Trigger:** when invite revocation needs to be authoritative across peers
+- **What:** Revoking a federated invite on the home instance does not push
+  any envelope to peers. In-flight accepts still fail at the home's check
+  (the home enforces the revocation on `member.join_request`), so the
+  invariant holds, but the joining instance's UI can show a stale "this
+  invite is valid" preview until the user actually clicks accept. Add an
+  `invite.revoked` envelope that pushes to peers known to have previewed
+  the invite, so their preview UIs can update live.
+
+### 22. Federated Tavern owner change
+
+- **Phase:** 4 (deferred)
+- **Trigger:** Phase 7 (moderation / ownership transfer)
+- **What:** Phase 4 mirrors track the home Tavern's owner via the snapshot
+  in `member.joined` plus the live member.* envelopes, but ownership transfer
+  on the home does not emit a dedicated envelope kind. If the home owner
+  changes, mirrors will only learn about it on the next snapshot-bearing
+  envelope (none currently exist outside of join acks). Define an
+  `server.owner_changed` envelope as part of the Phase 7 moderation surface,
+  and have mirrors update the local `Server.ownerId` / synthetic role
+  membership accordingly.
+
+### 23. Avatar / icon byte mirroring
+
+- **Phase:** 4 (related to #7)
+- **Trigger:** when avatar / icon federation is expected to actually render
+- **What:** Phase 4 mirrors reference the home instance's URLs for Tavern
+  icons (and member avatars via #7's existing gap). Browser-side `<img>`
+  fetches will hit the home instance with no session, so they will 401 until
+  the public media proxy / signed-URL / inline-bytes solution from #7 lands.
+  Scope expands from "remote user avatars" to "remote Tavern icons" — same
+  fix, broader surface. Coordinate with #7 and #12 (CSP).
+
 ## Resolved
 
 ### Phase 2 post-review fix-up
