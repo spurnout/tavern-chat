@@ -128,6 +128,10 @@ export async function registerReactionRoutes(
           channel: {
             select: {
               federationMode: true,
+              // P4-14 — mirror provenance. When non-null this is a mirror
+              // channel and the fan-out helper routes to ONLY the home
+              // instance (which relays to other peers via P4-13).
+              originInstanceId: true,
               server: { select: { federationEnabled: true } },
             },
           },
@@ -190,6 +194,7 @@ export async function registerReactionRoutes(
                 queues: deps.queues,
                 selfHost: deps.selfHost,
                 serverId: message.serverId,
+                channelOriginInstanceId: message.channel.originInstanceId,
                 messageId: id,
                 actorUserId: ctx.userId,
                 actorUsername: reactor.username,
@@ -227,6 +232,10 @@ export async function registerReactionRoutes(
         channel: {
           select: {
             federationMode: true,
+            // P4-14 — mirror provenance. When non-null this is a mirror
+            // channel and the fan-out helper routes to ONLY the home
+            // instance (which relays to other peers via P4-13).
+            originInstanceId: true,
             server: { select: { federationEnabled: true } },
           },
         },
@@ -269,6 +278,7 @@ export async function registerReactionRoutes(
               queues: deps.queues,
               selfHost: deps.selfHost,
               serverId: message.serverId,
+              channelOriginInstanceId: message.channel.originInstanceId,
               messageId: id,
               actorUserId: ctx.userId,
               actorUsername: reactor.username,

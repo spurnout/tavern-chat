@@ -171,6 +171,11 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         // Federation Phase 3: per-channel override (`inherit | force_on |
         // force_off`). Combined with Server.federationEnabled at fan-out time.
         federationMode: true,
+        // P4-14 — mirror provenance. When non-null this is a mirror channel
+        // and the create-path fan-out targets ONLY the home instance (which
+        // then relays to other peers via P4-13). When null the channel is
+        // locally owned and fan-out covers every peer with a remote member.
+        originInstanceId: true,
         // P3-6 — pull the server flag in the same round-trip so the fan-out
         // gate below doesn't need a second `server.findUnique` on the hot
         // create path.
@@ -489,6 +494,11 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
             queues: deps.queues,
             selfHost: deps.selfHost,
             serverId: result.serverId,
+            // P4-14 — when this is a mirror channel, the helper routes fan-out
+            // to ONLY the home instance (which relays via P4-13). When null
+            // it's the locally-owned-channel Phase 3 path: every peer with a
+            // remote member.
+            channelOriginInstanceId: channelMeta.originInstanceId,
             channelId,
             messageId: fullRow.id,
             authorUserId: fullRow.authorId,
@@ -686,6 +696,8 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           where: { id: message.channelId },
           select: {
             federationMode: true,
+            // P4-14 — mirror provenance. See create handler for rationale.
+            originInstanceId: true,
             server: { select: { federationEnabled: true } },
           },
         });
@@ -699,6 +711,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
               queues: deps.queues,
               selfHost: deps.selfHost,
               serverId: message.serverId,
+              channelOriginInstanceId: channelMeta.originInstanceId,
               messageId: updated.id,
               authorUserId: updated.authorId,
               authorUsername: updated.author.username,
@@ -827,6 +840,8 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           where: { id: message.channelId },
           select: {
             federationMode: true,
+            // P4-14 — mirror provenance. See create handler for rationale.
+            originInstanceId: true,
             server: { select: { federationEnabled: true } },
           },
         });
@@ -840,6 +855,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
               queues: deps.queues,
               selfHost: deps.selfHost,
               serverId: message.serverId,
+              channelOriginInstanceId: channelMeta.originInstanceId,
               messageId: id,
               actorUserId: message.authorId,
               actorUsername: message.author.username,

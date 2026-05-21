@@ -79,11 +79,62 @@ export async function findPeersWithRemoteMembers(serverId: string): Promise<stri
   return [...seen];
 }
 
+/**
+ * Resolve the set of peer RemoteInstance ids that should receive a per-message
+ * fan-out for THIS channel. Diverges based on the channel's mirror provenance:
+ *
+ *   - HOME channel (`originInstanceId == null`): we own T. Fan out to every
+ *     peered RemoteInstance that has at least one ServerMember in T —
+ *     identical to the Phase 3 behaviour `findPeersWithRemoteMembers` returned
+ *     directly.
+ *
+ *   - MIRROR channel (`originInstanceId != null`): we are a B-side mirror of
+ *     a server homed on another peer. The HOME is the single authoritative
+ *     target — they accept the message, persist it as their canonical copy,
+ *     and then relay it via `fanOutMessageCreateRelay` (P4-13) to every OTHER
+ *     peer of T. Fanning out directly to T's other peers from B would
+ *     duplicate work AT BEST and risk diverging signatures / orderings.
+ *
+ * Mirror branch returns an empty array when the home's `RemoteInstance.status`
+ * is anything other than `peered` (revoked / pending). The message stays
+ * local on this instance; an operator re-peering with A will not retroactively
+ * deliver this message, which is acceptable — at-most-once on the mirror
+ * authoring side, identical to the Phase 3 gate when a peer goes offline.
+ */
+export async function findFanOutTargetsForChannel(channel: {
+  serverId: string;
+  originInstanceId: string | null;
+}): Promise<string[]> {
+  if (channel.originInstanceId) {
+    // Mirror channel — single target: the home instance, only if peered.
+    // A non-peered home (revoked / pending) silently drops the fan-out, in
+    // line with how Phase 3 drops outbound traffic to non-peered remote
+    // members. The local write + broadcast already happened — re-peering
+    // does NOT retroactively replay.
+    const home = await prisma.remoteInstance.findUnique({
+      where: { id: channel.originInstanceId },
+      select: { id: true, status: true },
+    });
+    if (!home || home.status !== 'peered') return [];
+    return [home.id];
+  }
+  return findPeersWithRemoteMembers(channel.serverId);
+}
+
 export interface FanOutMessageCreateInput {
   queues: QueueClient;
   selfHost: string;
   serverId: string;
   channelId: string;
+  /**
+   * P4-14 — the channel's mirror provenance (Channel.originInstanceId). When
+   * non-null this is a MIRROR channel and the fan-out targets ONLY the home
+   * instance; the home then relays to other peers via P4-13. When null (or
+   * omitted) the channel is locally owned and fan-out covers every peer with
+   * a remote member in T, identical to Phase 3 behaviour. Defaults to null
+   * for forward-compat with call sites that haven't been updated yet.
+   */
+  channelOriginInstanceId?: string | null;
   messageId: string;
   authorUserId: string;
   authorUsername: string;
@@ -121,7 +172,13 @@ export async function fanOutMessageCreate(input: FanOutMessageCreateInput): Prom
     );
     return;
   }
-  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  // P4-14 — mirror channels target ONLY the home (which then relays via
+  // P4-13); home channels keep Phase 3's broad fan-out to every peer with a
+  // remote member. `findFanOutTargetsForChannel` encapsulates that split.
+  const peerIds = await findFanOutTargetsForChannel({
+    serverId: input.serverId,
+    originInstanceId: input.channelOriginInstanceId ?? null,
+  });
   if (peerIds.length === 0) return;
 
   // The home instance speaks its OWN ULIDs for channel + message ids. Receiving
@@ -307,6 +364,8 @@ export interface FanOutMessageUpdateInput {
   queues: QueueClient;
   selfHost: string;
   serverId: string;
+  /** P4-14 — see `FanOutMessageCreateInput.channelOriginInstanceId`. */
+  channelOriginInstanceId?: string | null;
   messageId: string;
   authorUserId: string;
   authorUsername: string;
@@ -338,7 +397,11 @@ export async function fanOutMessageUpdate(input: FanOutMessageUpdateInput): Prom
     );
     return;
   }
-  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  // P4-14 — edits in mirror channels go to the home; home relays via P4-13.
+  const peerIds = await findFanOutTargetsForChannel({
+    serverId: input.serverId,
+    originInstanceId: input.channelOriginInstanceId ?? null,
+  });
   if (peerIds.length === 0) return;
 
   const payload = messageUpdatePayloadSchema.parse({
@@ -372,6 +435,8 @@ export interface FanOutMessageDeleteInput {
   queues: QueueClient;
   selfHost: string;
   serverId: string;
+  /** P4-14 — see `FanOutMessageCreateInput.channelOriginInstanceId`. */
+  channelOriginInstanceId?: string | null;
   messageId: string;
   /**
    * The User.id of the actor performing the delete. For P3-8 this MUST be
@@ -405,7 +470,11 @@ export async function fanOutMessageDelete(input: FanOutMessageDeleteInput): Prom
     );
     return;
   }
-  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  // P4-14 — deletes in mirror channels go to the home; home relays via P4-13.
+  const peerIds = await findFanOutTargetsForChannel({
+    serverId: input.serverId,
+    originInstanceId: input.channelOriginInstanceId ?? null,
+  });
   if (peerIds.length === 0) return;
 
   const payload = messageDeletePayloadSchema.parse({
@@ -438,6 +507,8 @@ export interface FanOutReactionAddInput {
   queues: QueueClient;
   selfHost: string;
   serverId: string;
+  /** P4-14 — see `FanOutMessageCreateInput.channelOriginInstanceId`. */
+  channelOriginInstanceId?: string | null;
   messageId: string;
   /**
    * The User.id of the actor who added the reaction. Sign + envelope-author
@@ -476,7 +547,11 @@ export async function fanOutReactionAdd(input: FanOutReactionAddInput): Promise<
     );
     return;
   }
-  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  // P4-14 — reactions in mirror channels go to the home; home relays via P4-13.
+  const peerIds = await findFanOutTargetsForChannel({
+    serverId: input.serverId,
+    originInstanceId: input.channelOriginInstanceId ?? null,
+  });
   if (peerIds.length === 0) return;
 
   const payload = reactionAddPayloadSchema.parse({
@@ -509,6 +584,8 @@ export interface FanOutReactionRemoveInput {
   queues: QueueClient;
   selfHost: string;
   serverId: string;
+  /** P4-14 — see `FanOutMessageCreateInput.channelOriginInstanceId`. */
+  channelOriginInstanceId?: string | null;
   messageId: string;
   actorUserId: string;
   actorUsername: string;
@@ -532,7 +609,11 @@ export async function fanOutReactionRemove(input: FanOutReactionRemoveInput): Pr
     );
     return;
   }
-  const peerIds = await findPeersWithRemoteMembers(input.serverId);
+  // P4-14 — reactions in mirror channels go to the home; home relays via P4-13.
+  const peerIds = await findFanOutTargetsForChannel({
+    serverId: input.serverId,
+    originInstanceId: input.channelOriginInstanceId ?? null,
+  });
   if (peerIds.length === 0) return;
 
   const payload = reactionRemovePayloadSchema.parse({

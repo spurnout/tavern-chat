@@ -30,6 +30,7 @@ import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext
 import {
   computeEffectiveFederation,
   fanOutMessageCreate,
+  findFanOutTargetsForChannel,
   findPeersWithRemoteMembers,
 } from '../src/services/federation-outbox.js';
 import type { QueueClient } from '../src/services/queues.js';
@@ -622,6 +623,370 @@ describe.skipIf(!dockerOk)('P3-6 — route wire-through', () => {
       // channel above is set up only to demonstrate we don't accidentally
       // wire its members into the server fan-out.
       expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/**
+ * P4-14 — mirror-channel post-back.
+ *
+ * When a local user posts in a MIRROR channel (Channel.originInstanceId !=
+ * null), the fan-out must target ONLY the home instance — never the peers
+ * the home will relay to (P4-13 does that). Three angles of coverage:
+ *
+ *   1. The pure helper `findFanOutTargetsForChannel`:
+ *      - home channel (origin null) → same set as `findPeersWithRemoteMembers`
+ *      - mirror channel (origin set) → exactly `[origin]`, only when peered
+ *      - mirror channel + home revoked → `[]` (silent drop, in line with
+ *        Phase 3 "non-peered peers don't receive traffic")
+ *   2. The fan-out helper end-to-end: enqueue exactly once with
+ *      `peerInstanceId = origin`, even when other peered RemoteInstances
+ *      have members in the server (P4-13's job, not ours).
+ *   3. Route wire-through: local user POSTs to a mirror channel and the
+ *      enqueue fires once with peerInstanceId = home. Regression check for
+ *      the original P3-6 home path follows in the existing block above.
+ */
+describe.skipIf(!dockerOk)('P4-14 — findFanOutTargetsForChannel', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await prisma.message.deleteMany({});
+    await prisma.serverMember.deleteMany({});
+    await prisma.permissionOverwrite.deleteMany({});
+    await prisma.role.deleteMany({});
+    await prisma.channel.deleteMany({});
+    await prisma.server.deleteMany({});
+    await prisma.user.deleteMany({});
+    await prisma.remoteInstance.deleteMany({});
+  });
+
+  it('home channel (originInstanceId null) returns the same peers as findPeersWithRemoteMembers', async () => {
+    const fx = await makeServerFixture();
+    const a = await createUser({ remoteInstanceId: fx.peerAId, username: `rema-${ulid().slice(-6).toLowerCase()}` });
+    const b = await createUser({ remoteInstanceId: fx.peerBId, username: `remb-${ulid().slice(-6).toLowerCase()}` });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: a.id } });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: b.id } });
+
+    const targets = await findFanOutTargetsForChannel({
+      serverId: fx.serverId,
+      originInstanceId: null,
+    });
+    expect(targets.slice().sort()).toEqual([fx.peerAId, fx.peerBId].slice().sort());
+  });
+
+  it('mirror channel returns ONLY the home, even when other peers have members', async () => {
+    // Set up T as a mirror of peer A. Peer B also has a member in T (he
+    // joined the mirror via P4-7). The mirror-channel fan-out MUST NOT
+    // include peer B — that's the home's relay job (P4-13).
+    const fx = await makeServerFixture();
+    const b = await createUser({ remoteInstanceId: fx.peerBId, username: `remb-${ulid().slice(-6).toLowerCase()}` });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: b.id } });
+
+    const targets = await findFanOutTargetsForChannel({
+      serverId: fx.serverId,
+      originInstanceId: fx.peerAId,
+    });
+    expect(targets).toEqual([fx.peerAId]);
+  });
+
+  it('mirror channel returns [] when the home is no longer peered', async () => {
+    const fx = await makeServerFixture();
+    // Revoke peer A — even though it's the "home" of T's mirror, an
+    // un-peered home cannot receive envelopes. The Phase 3 contract is
+    // identical: outbound traffic only flows to peered RemoteInstances.
+    await prisma.remoteInstance.update({
+      where: { id: fx.peerAId },
+      data: { status: 'revoked', revokedAt: new Date(), revokedReason: 'test' },
+    });
+
+    const targets = await findFanOutTargetsForChannel({
+      serverId: fx.serverId,
+      originInstanceId: fx.peerAId,
+    });
+    expect(targets).toEqual([]);
+  });
+
+  it('mirror channel returns [] when the home RemoteInstance row is missing', async () => {
+    // Defensive: if a referenced origin is gone (e.g. an admin hard-deleted
+    // it), the SetNull cascade clears Channel.originInstanceId, but a stale
+    // value passed in directly must not throw. The helper falls back to
+    // "no targets" silently.
+    const fx = await makeServerFixture();
+    const targets = await findFanOutTargetsForChannel({
+      serverId: fx.serverId,
+      originInstanceId: 'phantom-instance-id',
+    });
+    expect(targets).toEqual([]);
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-14 — fanOutMessageCreate with mirror channel', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await prisma.message.deleteMany({});
+    await prisma.serverMember.deleteMany({});
+    await prisma.permissionOverwrite.deleteMany({});
+    await prisma.role.deleteMany({});
+    await prisma.channel.deleteMany({});
+    await prisma.server.deleteMany({});
+    await prisma.user.deleteMany({});
+    await prisma.remoteInstance.deleteMany({});
+  });
+
+  it('enqueues ONCE to the home when a local user posts in a mirror channel', async () => {
+    const fx = await makeServerFixture();
+    // Pretend B (this instance) mirrors a server homed on peer A. The
+    // mirror channel carries originInstanceId=peerAId. Peer B's roster
+    // also includes another remote (from peerB) — the helper must NOT
+    // fan out to peerB; that's the home's relay job (P4-13).
+    await prisma.channel.update({
+      where: { id: fx.channelId },
+      data: { originInstanceId: fx.peerAId },
+    });
+    const otherRemote = await createUser({
+      remoteInstanceId: fx.peerBId,
+      username: `remb-${ulid().slice(-6).toLowerCase()}`,
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.serverId, userId: otherRemote.id },
+    });
+
+    const { queue, enqueue, lastJobs } = makeMockQueue();
+    await fanOutMessageCreate({
+      queues: queue,
+      selfHost: 'b.example',
+      serverId: fx.serverId,
+      channelOriginInstanceId: fx.peerAId,
+      channelId: fx.channelId,
+      messageId: ulid(),
+      authorUserId: fx.authorId,
+      authorUsername: fx.authorUsername,
+      content: 'hello home',
+      createdAt: new Date(),
+      replyToMessageId: null,
+      log: silentLogger() as unknown as Parameters<typeof fanOutMessageCreate>[0]['log'],
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(lastJobs[0]?.peerInstanceId).toBe(fx.peerAId);
+  });
+
+  it('does NOT enqueue when the home is no longer peered', async () => {
+    const fx = await makeServerFixture();
+    await prisma.channel.update({
+      where: { id: fx.channelId },
+      data: { originInstanceId: fx.peerAId },
+    });
+    await prisma.remoteInstance.update({
+      where: { id: fx.peerAId },
+      data: { status: 'revoked', revokedAt: new Date(), revokedReason: 'test' },
+    });
+
+    const { queue, enqueue } = makeMockQueue();
+    await fanOutMessageCreate({
+      queues: queue,
+      selfHost: 'b.example',
+      serverId: fx.serverId,
+      channelOriginInstanceId: fx.peerAId,
+      channelId: fx.channelId,
+      messageId: ulid(),
+      authorUserId: fx.authorId,
+      authorUsername: fx.authorUsername,
+      content: 'home is gone',
+      createdAt: new Date(),
+      replyToMessageId: null,
+      log: silentLogger() as unknown as Parameters<typeof fanOutMessageCreate>[0]['log'],
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('home channel path is unchanged when channelOriginInstanceId is null', async () => {
+    // Regression guard for P3-6: passing null preserves the broad
+    // "every peer with a remote member" behaviour. Two remote peers →
+    // two enqueues.
+    const fx = await makeServerFixture();
+    const a = await createUser({ remoteInstanceId: fx.peerAId, username: `rema-${ulid().slice(-6).toLowerCase()}` });
+    const b = await createUser({ remoteInstanceId: fx.peerBId, username: `remb-${ulid().slice(-6).toLowerCase()}` });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: a.id } });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: b.id } });
+
+    const { queue, enqueue, lastJobs } = makeMockQueue();
+    await fanOutMessageCreate({
+      queues: queue,
+      selfHost: 'self.example',
+      serverId: fx.serverId,
+      channelOriginInstanceId: null,
+      channelId: fx.channelId,
+      messageId: ulid(),
+      authorUserId: fx.authorId,
+      authorUsername: fx.authorUsername,
+      content: 'home channel post',
+      createdAt: new Date(),
+      replyToMessageId: null,
+      log: silentLogger() as unknown as Parameters<typeof fanOutMessageCreate>[0]['log'],
+    });
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(lastJobs.map((j) => j.peerInstanceId).sort()).toEqual(
+      [fx.peerAId, fx.peerBId].sort(),
+    );
+  });
+});
+
+describe.skipIf(!dockerOk)('P4-14 — route wire-through for mirror channels', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await prisma.apiToken.deleteMany({});
+    await prisma.message.deleteMany({});
+    await prisma.dmChannelMember.deleteMany({});
+    await prisma.dmChannel.deleteMany({});
+    await prisma.serverMember.deleteMany({});
+    await prisma.permissionOverwrite.deleteMany({});
+    await prisma.role.deleteMany({});
+    await prisma.channel.deleteMany({});
+    await prisma.server.deleteMany({});
+    await prisma.user.deleteMany({});
+    await prisma.remoteInstance.deleteMany({});
+  });
+
+  async function mintTokenFor(userId: string): Promise<string> {
+    const raw = `tvn_pat_${randomBytes(24).toString('hex')}`;
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+    await prisma.apiToken.create({
+      data: {
+        id: ulid(),
+        userId,
+        label: 'test',
+        tokenHash: hash,
+      },
+    });
+    return raw;
+  }
+
+  function envFor(dbUrl: string, federationEnabled: boolean): NodeJS.ProcessEnv {
+    return {
+      DATABASE_URL: dbUrl,
+      JWT_ACCESS_SECRET: 'a'.repeat(48),
+      JWT_REFRESH_SECRET: 'b'.repeat(48),
+      NODE_ENV: 'test',
+      FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
+      TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+      PUBLIC_BASE_URL: 'https://b.example',
+    } as NodeJS.ProcessEnv;
+  }
+
+  it('local post in a mirror channel enqueues exactly once for the home', async () => {
+    // Mirror configuration on B:
+    //   - Server T has originInstanceId = peerA (the home).
+    //   - Channel "general" has originInstanceId = peerA.
+    //   - federationEnabled is on (mirror servers are by definition federated).
+    //   - There's also a third-party remote member from peerB — they MUST
+    //     NOT receive the fan-out from B; peerA's P4-13 relay handles that.
+    const fx = await makeServerFixture();
+    await prisma.server.update({
+      where: { id: fx.serverId },
+      data: { federationEnabled: true, originInstanceId: fx.peerAId },
+    });
+    await prisma.channel.update({
+      where: { id: fx.channelId },
+      data: { originInstanceId: fx.peerAId },
+    });
+    const otherRemote = await createUser({
+      remoteInstanceId: fx.peerBId,
+      username: `remb-${ulid().slice(-6).toLowerCase()}`,
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.serverId, userId: otherRemote.id },
+    });
+
+    const { buildApp } = await import('../src/app.js');
+    const { loadConfig } = await import('../src/config.js');
+    const captured: FederationOutboxJob[] = [];
+    const enqueue = vi.fn(async (job: FederationOutboxJob) => {
+      captured.push(job);
+    });
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl, true)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const token = await mintTokenFor(fx.authorId);
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/channels/${fx.channelId}/messages`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { content: 'mirror-side post' },
+      });
+      expect(res.statusCode).toBe(201);
+      await new Promise<void>((r) => setTimeout(r, 50));
+      // The crux: ONE job, addressed to the home (peerA). PeerB is the
+      // home's responsibility to reach via P4-13.
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(captured[0]?.peerInstanceId).toBe(fx.peerAId);
+      expect(captured[0]?.eventType).toBe('message.create');
+      const parsed = messageCreatePayloadSchema.parse(captured[0]!.payload);
+      expect(parsed.content).toBe('mirror-side post');
+      // Author identity is rendered against THIS instance's host (b.example),
+      // matching the configured PUBLIC_BASE_URL — the home accepts it as a
+      // local-on-B user.
+      expect(parsed.authorRemoteUserId).toBe(`${fx.authorUsername}@b.example`);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('home post still fans out to every peer with remote members (P3-6 regression)', async () => {
+    // Confirms the home path is untouched: T is locally owned
+    // (originInstanceId null on both server + channel), and a remote
+    // member exists. Same expectation as the existing P3-6 wire-through
+    // test, asserted here against the new code path to prove no
+    // regression.
+    const fx = await makeServerFixture();
+    await prisma.server.update({
+      where: { id: fx.serverId },
+      data: { federationEnabled: true },
+    });
+    const remoteA = await createUser({
+      remoteInstanceId: fx.peerAId,
+      username: `rema-${ulid().slice(-6).toLowerCase()}`,
+    });
+    const remoteB = await createUser({
+      remoteInstanceId: fx.peerBId,
+      username: `remb-${ulid().slice(-6).toLowerCase()}`,
+    });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: remoteA.id } });
+    await prisma.serverMember.create({ data: { serverId: fx.serverId, userId: remoteB.id } });
+
+    const { buildApp } = await import('../src/app.js');
+    const { loadConfig } = await import('../src/config.js');
+    const captured: FederationOutboxJob[] = [];
+    const enqueue = vi.fn(async (job: FederationOutboxJob) => {
+      captured.push(job);
+    });
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl, true)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const token = await mintTokenFor(fx.authorId);
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/channels/${fx.channelId}/messages`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { content: 'home-side post' },
+      });
+      expect(res.statusCode).toBe(201);
+      await new Promise<void>((r) => setTimeout(r, 50));
+      expect(enqueue).toHaveBeenCalledTimes(2);
+      const peers = captured.map((j) => j.peerInstanceId).sort();
+      expect(peers).toEqual([fx.peerAId, fx.peerBId].sort());
     } finally {
       await app.close();
     }
