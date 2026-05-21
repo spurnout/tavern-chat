@@ -3296,6 +3296,18 @@ describe.skipIf(!dockerOk)('P4-11 — POST /_federation/event (member.remove)', 
       reason: 'kicked',
     });
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    // PF-6 / follow-up #25 — capture the local gateway broadcast so we can
+    // pin the payload's `userId` field. The follow-up's original concern was
+    // that the broadcast carried `userId: null` for remote-removal events;
+    // the current code resolves the local mirror User id and includes it
+    // here. This subscription locks that behaviour in.
+    const events: Array<{
+      type: string;
+      serverId?: string;
+      userId?: string;
+      data: unknown;
+    }> = [];
+    const unsubscribe = gatewayBroker.subscribe((e) => events.push(e));
     try {
       const res = await app.inject({
         method: 'POST',
@@ -3322,7 +3334,20 @@ describe.skipIf(!dockerOk)('P4-11 — POST /_federation/event (member.remove)', 
         where: { id: subjectLocalId },
       });
       expect(orphanUser).not.toBeNull();
+
+      // PF-6 / follow-up #25 — the gateway broadcast for the removal must
+      // carry the LOCAL mirror user id, not null. Receivers that only know
+      // local ids (channel sidebars, presence stores) rely on this field to
+      // drop the right row.
+      const memberRemoves = events.filter((e) => e.type === 'MEMBER_REMOVE');
+      expect(memberRemoves).toHaveLength(1);
+      expect(memberRemoves[0]!.serverId).toBe(fx.mirrorServerId);
+      const payload = memberRemoves[0]!.data as { serverId: string; userId: string | null };
+      expect(payload.serverId).toBe(fx.mirrorServerId);
+      expect(payload.userId).toBe(subjectLocalId);
+      expect(payload.userId).not.toBeNull();
     } finally {
+      unsubscribe();
       await app.close();
     }
   });

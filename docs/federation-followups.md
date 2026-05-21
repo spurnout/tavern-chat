@@ -55,15 +55,6 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   the `RemoteUserHoverCard` component should surface them. Not urgent — defer until
   those fields are added to the profile envelope schema.
 
-### 9. Member-list integration for remote users (deferred to Phase 4)
-
-- **Phase:** 2 (explicitly deferred)
-- **Trigger:** Phase 4 (federated invites + Tavern joining)
-- **What:** Remote users do not yet appear in Tavern member lists, even if mentioned.
-  Full member-list integration requires the federated invite flow so remote users have
-  a `Member` row on the hosting instance. This is an intentional Phase 4 deferral — noted
-  here for traceability so Phase 4 planning picks it up.
-
 ### 10. Mention-parser deduplication (server vs. web)
 
 - **Phase:** 2 (P2 wrap-up)
@@ -210,18 +201,6 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   needs the origin instance after create has to issue a follow-up GET.
   Fold in when the create endpoint is next touched.
 
-### 25. `MEMBER_REMOVE` broadcast with `userId: null`
-
-- **Phase:** 4 (whole-phase review)
-- **Trigger:** when WS event payload cleanup is on the menu
-- **What:** When a remote member is removed from a mirror Tavern, the
-  `MEMBER_REMOVE` WebSocket broadcast carries `userId: null` (because the
-  remote user doesn't have a local `User` row) alongside the qualified
-  `remoteUserId`. Receivers ignore the null `userId` correctly, but the
-  field is noise — schemas should accept `remoteUserId` as the sole
-  identifier on remote-removal events. Not breakage; clean up when WS
-  payload shapes are next revisited.
-
 ### 26. Group DM federation
 
 - **Phase:** 5 (deferred)
@@ -342,3 +321,35 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   `200 deduplicated: true` on an already-deleted message. Both DM and
   server-message handlers were updated together; integration tests
   cover the non-author-on-deleted-message branch returning 403.
+
+### 9. Member-list integration for remote users — resolved in Phase 4 (verified PF-6)
+
+- **Resolution:** Phase 4's invite + mirror flow materialises a synthetic
+  local `User` row (with `remoteInstanceId` + `remoteUserId` set) plus a
+  `ServerMember` row for every joined remote user. The
+  `GET /api/servers/:id/members` route in `apps/api/src/routes/servers.ts`
+  reads `serverMember` rows blind to whether the joined user is local or
+  remote, so mirror members fall out of the same query and render in the
+  sidebar with the synthetic display name + the `User.presence` value.
+  Confirmed by `apps/api/test-integration/federation-member-list.test.ts`,
+  which seeds a peered `RemoteInstance`, a `RemoteUser` cache, the
+  synthetic local `User`, and a `ServerMember` row, then asserts the
+  endpoint returns the remote member alongside the local owner with the
+  correct id, displayName, and presence.
+
+### 25. `MEMBER_REMOVE` broadcast with `userId: null` — resolved in Phase 4 (verified PF-6)
+
+- **Resolution:** The current `handleMemberRemove` /
+  `handleMemberLeave` paths in `apps/api/src/services/federation-inbound.ts`
+  resolve the local mirror User row via
+  `prisma.user.findUnique({ where: { remoteUserId: payload.memberRemoteUserId } })`
+  BEFORE the mirror service removes the row, and include the local id in
+  the gateway broadcast (`gatewayBroker.publish({ type: 'MEMBER_REMOVE',
+  serverId, data: { serverId, userId: localUserId } })` around lines
+  2809-2811 and 2964-2966). Receivers therefore see the local mirror id —
+  not `null` — and can drop the right row from the sidebar / presence
+  store. Confirmed by an additional assertion in
+  `apps/api/test-integration/federation-inbound.test.ts`'s P4-11
+  `member.remove` happy-path test, which captures the gateway broadcast
+  and asserts `payload.userId === subjectLocalId` (the synthetic mirror
+  User id) and `payload.userId !== null`.
