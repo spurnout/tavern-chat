@@ -289,9 +289,13 @@ export async function setCustomStatus(
   status: string,
   expiresAt: Date | null,
 ): Promise<void> {
+  // Single read pulls both the existence-check (`id`) and the `manualDnd`
+  // bit needed for the broadcast — `manualDnd` is a sticky user setting
+  // that this call doesn't mutate, so reading it before the update is
+  // safe and saves a round-trip.
   const existing = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true },
+    select: { id: true, manualDnd: true },
   });
   if (!existing) return;
   await prisma.user.update({
@@ -302,12 +306,7 @@ export async function setCustomStatus(
       presenceUpdatedAt: new Date(),
     },
   });
-  const row = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { manualDnd: true },
-  });
-  if (!row) return;
-  broadcast(userId, compute(userId, row.manualDnd));
+  broadcast(userId, compute(userId, existing.manualDnd));
   scheduleFanOut(userId, /* immediate */ true);
 }
 
@@ -316,9 +315,11 @@ export async function setCustomStatus(
  * fan-out shape as `setCustomStatus`.
  */
 export async function clearCustomStatus(userId: string): Promise<void> {
+  // Same shape as setCustomStatus — pull `manualDnd` in the existence
+  // check so the post-update broadcast doesn't need a second read.
   const existing = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true },
+    select: { id: true, manualDnd: true },
   });
   if (!existing) return;
   await prisma.user.update({
@@ -329,12 +330,7 @@ export async function clearCustomStatus(userId: string): Promise<void> {
       presenceUpdatedAt: new Date(),
     },
   });
-  const row = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { manualDnd: true },
-  });
-  if (!row) return;
-  broadcast(userId, compute(userId, row.manualDnd));
+  broadcast(userId, compute(userId, existing.manualDnd));
   scheduleFanOut(userId, /* immediate */ true);
 }
 
