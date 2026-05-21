@@ -13,9 +13,12 @@ import { requireDmChannelMembership } from '../services/dm-service.js';
 import { gatewayBroker, type GatewayEvent } from '../services/gateway-broker.js';
 import {
   computeEffectiveFederation,
+  fanOutDmReactionAdd,
+  fanOutDmReactionRemove,
   fanOutReactionAdd,
   fanOutReactionRemove,
 } from '../services/federation-outbox.js';
+import { resolveDmFanOutTarget } from '../services/federation-dm.js';
 import type { QueueClient } from '../services/queues.js';
 
 interface MessageRouting {
@@ -158,6 +161,47 @@ export async function registerReactionRoutes(
       gatewayBroker.publish(
         reactionEvent('REACTION_ADD', message, { messageId: id, userId: ctx.userId, emoji }),
       );
+      // P5-9 — DM reaction fan-out. Mirrors the server-message reaction
+      // branch below but takes the simpler 1:1-only path: one peer target
+      // (the other member's home), capability-gated inside the helper. A
+      // reaction's actor is the reactor (NOT necessarily the message
+      // author), so we sign + qualify with `ctx.userId`'s username here.
+      if (
+        deps?.queues &&
+        deps.selfHost &&
+        message.dmChannelId &&
+        deps.federationEnabledOnInstance !== false
+      ) {
+        try {
+          const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
+          if (target) {
+            const reactor = await prisma.user.findUnique({
+              where: { id: ctx.userId },
+              select: { username: true },
+            });
+            if (reactor) {
+              await fanOutDmReactionAdd({
+                queues: deps.queues,
+                selfHost: deps.selfHost,
+                dmChannelId: message.dmChannelId,
+                messageId: id,
+                actorUserId: ctx.userId,
+                actorUsername: reactor.username,
+                emoji,
+                peerInstanceId: target.peerInstanceId,
+                log: app.log,
+                federationEnabledOnInstance: deps.federationEnabledOnInstance,
+              });
+            }
+          }
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          app.log.warn(
+            { err: errObj, messageId: id, dmChannelId: message.dmChannelId },
+            'dm.reaction.add federation fan-out failed (local reaction unaffected)',
+          );
+        }
+      }
       // P3-9 — fan out the reaction to every peered instance with a member in
       // this server. Identical gating to message create / edit / delete:
       //   1. deps wired in (FEDERATION_ENABLED on),
@@ -252,6 +296,46 @@ export async function registerReactionRoutes(
     gatewayBroker.publish(
       reactionEvent('REACTION_REMOVE', message, { messageId: id, userId: ctx.userId, emoji }),
     );
+    // P5-9 — DM reaction remove fan-out. Same one-peer-only contract as
+    // the PUT handler above; the DELETE is naturally idempotent on the
+    // receiver, mirroring the local DELETE here (the prisma.delete is
+    // wrapped in a try/catch to swallow the missing-row case).
+    if (
+      deps?.queues &&
+      deps.selfHost &&
+      message.dmChannelId &&
+      deps.federationEnabledOnInstance !== false
+    ) {
+      try {
+        const target = await resolveDmFanOutTarget(message.dmChannelId, ctx.userId);
+        if (target) {
+          const reactor = await prisma.user.findUnique({
+            where: { id: ctx.userId },
+            select: { username: true },
+          });
+          if (reactor) {
+            await fanOutDmReactionRemove({
+              queues: deps.queues,
+              selfHost: deps.selfHost,
+              dmChannelId: message.dmChannelId,
+              messageId: id,
+              actorUserId: ctx.userId,
+              actorUsername: reactor.username,
+              emoji,
+              peerInstanceId: target.peerInstanceId,
+              log: app.log,
+              federationEnabledOnInstance: deps.federationEnabledOnInstance,
+            });
+          }
+        }
+      } catch (err: unknown) {
+        const errObj = err instanceof Error ? err : new Error(String(err));
+        app.log.warn(
+          { err: errObj, messageId: id, dmChannelId: message.dmChannelId },
+          'dm.reaction.remove federation fan-out failed (local reaction unaffected)',
+        );
+      }
+    }
     // P3-9 — same gating + best-effort contract as reaction.add. See PUT
     // handler above for the rationale on each branch of the gate.
     if (

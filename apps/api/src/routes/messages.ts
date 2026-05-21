@@ -38,6 +38,7 @@ import {
   fanOutMessageUpdate,
 } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
+import { resolveDmFanOutTarget } from '../services/federation-dm.js';
 import { enqueueLinkPreviews } from '../services/link-preview-service.js';
 import { evaluateAutomod } from '../services/automod-service.js';
 
@@ -69,46 +70,6 @@ interface MessageRouteDeps {
    * forgets the gate), the helper short-circuits when this is `false`.
    */
   federationEnabledOnInstance?: boolean;
-}
-
-/**
- * P5-7 — shared DM-side lookup for the PATCH / DELETE federation branches.
- *
- * Returns the OTHER member's `remoteInstanceId` (when set — i.e. the DM is
- * federated) for a 1:1 DM. Returns null for:
- *   - missing channel (defensive — the route already verified the message
- *     exists, but the DmChannel could in principle have been deleted by a
- *     concurrent action),
- *   - group DMs (`kind !== 'direct'`) — Phase 5 only federates 1:1,
- *   - both members local (`other.remoteInstanceId == null`),
- *   - malformed membership (no "other" member, which is a 1:1 invariant
- *     violation — bail rather than throw on a degenerate row).
- *
- * One extra `findUnique` per DM PATCH/DELETE on a federated path. The PATCH
- * and DELETE handlers each call this from inside their own try/catch so a
- * lookup failure logs + skips the fan-out without breaking the local
- * mutation that already committed.
- */
-async function resolveDmFanOutTarget(
-  dmChannelId: string,
-  selfUserId: string,
-): Promise<{ peerInstanceId: string } | null> {
-  const channel = await prisma.dmChannel.findUnique({
-    where: { id: dmChannelId },
-    select: {
-      kind: true,
-      members: {
-        select: {
-          userId: true,
-          user: { select: { id: true, remoteInstanceId: true } },
-        },
-      },
-    },
-  });
-  if (!channel || channel.kind !== 'direct') return null;
-  const other = channel.members.find((m) => m.userId !== selfUserId);
-  if (!other || !other.user.remoteInstanceId) return null;
-  return { peerInstanceId: other.user.remoteInstanceId };
 }
 
 export async function registerMessageRoutes(app: FastifyInstance, deps?: MessageRouteDeps): Promise<void> {

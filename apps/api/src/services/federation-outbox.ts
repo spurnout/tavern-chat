@@ -27,6 +27,8 @@ import {
   dmMessageCreatePayloadSchema,
   dmMessageDeletePayloadSchema,
   dmMessageUpdatePayloadSchema,
+  dmReactionAddPayloadSchema,
+  dmReactionRemovePayloadSchema,
   memberAddPayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
@@ -1736,6 +1738,272 @@ export async function fanOutDmMessageDelete(
       // Delete is naturally idempotent on the receiver, but we still want a
       // fresh nonce so an edit-then-delete on the same messageId doesn't
       // dedupe against the prior edit's BullMQ job.
+      nonce: ulid(),
+      authorUserId: input.actorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+// --- P5-9 — DM reaction fan-out (dm.reaction.add / dm.reaction.remove) -----
+//
+// Same gating story as P5-7 (`fanOutDmMessage{Update,Delete}`):
+//   - exactly ONE peer target (the OTHER DM member's home); no relay,
+//     no multi-peer fan-out.
+//   - 1:1 DMs only (`DmChannel.kind === 'direct'`). The route guard never
+//     reaches this helper for group DMs.
+//   - capability gate: peer must advertise `dms`.
+//   - peer must be `peered`.
+//
+// Author identity: unlike DM message update/delete (where the actor is BY
+// CONSTRUCTION the original author), a reaction's actor is whoever clicked
+// the emoji. That MAY be the message author or it MAY be the other member.
+// Either way, the actor signs the user-layer envelope; the receiver maps
+// `actorRemoteUserId` back to its mirror user row.
+//
+// Custom emoji: DMs only carry unicode emoji on the wire. The route layer
+// already rejects `custom:` reactions on DM messages (no serverId to match
+// the custom emoji against), so by the time we reach this helper the emoji
+// is guaranteed unicode. P5-10 will reject custom emoji on inbound as
+// belt-and-braces.
+
+export interface FanOutDmReactionAddInput {
+  queues: QueueClient;
+  selfHost: string;
+  /** Local DmChannel.id — the originating instance's id for the wire payload. */
+  dmChannelId: string;
+  /** Local Message.id — used both on the wire and as the BullMQ jobId disambiguator. */
+  messageId: string;
+  /** Local User.id used to sign the user-layer envelope (the reactor). */
+  actorUserId: string;
+  /** Reactor's local username — combined with `selfHost` to form `<localpart>@<selfHost>`. */
+  actorUsername: string;
+  emoji: string;
+  /** The remote recipient's home RemoteInstance.id — single fan-out target. */
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.reaction.add` envelope to the recipient's home instance.
+ * Caller has already verified (a) the DM channel is 1:1, (b) the OTHER
+ * member is a remote user, (c) the local MessageReaction row was upserted,
+ * and (d) the REACTION_ADD gateway broadcast already fired. The helper:
+ *   1. Defence-in-depth gate on the instance-level federation flag.
+ *   2. Peer lookup; bail with a warning if not peered or no `dms` capability.
+ *   3. Build + parse the payload through `dmReactionAddPayloadSchema`.
+ *   4. Enqueue ONE outbox job, with a fresh nonce so add-then-remove on
+ *      the same (messageId, emoji) doesn't collapse to a single BullMQ
+ *      jobId (`nonce ?? messageId`).
+ *
+ * Same defensive posture as the rest: peer-side problems never break the
+ * local reaction. The local MessageReaction row has already been written
+ * when we reach this helper.
+ */
+export async function fanOutDmReactionAdd(
+  input: FanOutDmReactionAddInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.add',
+      },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.add',
+      },
+      'dm.reaction.add fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.reaction.add',
+      },
+      'dm.reaction.add fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.reaction.add',
+      },
+      'dm.reaction.add fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmReactionAddPayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    messageId: input.messageId,
+    actorRemoteUserId: `${input.actorUsername}@${input.selfHost}`,
+    emoji: input.emoji,
+  });
+
+  const eventType: EnvelopeEventType = 'dm.reaction.add';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      messageId: input.messageId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      // Fresh nonce — without it, two reactions on the same message would
+      // collapse to a single BullMQ jobId. Add-then-remove on the same emoji
+      // is a common UI flow and must not dedupe.
+      nonce: ulid(),
+      authorUserId: input.actorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
+  }
+}
+
+export interface FanOutDmReactionRemoveInput {
+  queues: QueueClient;
+  selfHost: string;
+  dmChannelId: string;
+  messageId: string;
+  actorUserId: string;
+  actorUsername: string;
+  emoji: string;
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.reaction.remove` envelope. Same shape and gating contract
+ * as `fanOutDmReactionAdd`. The receiving handler treats the remove as
+ * idempotent (mirroring the local DELETE pattern in `routes/reactions.ts`)
+ * so a missing row on the peer is not an error.
+ */
+export async function fanOutDmReactionRemove(
+  input: FanOutDmReactionRemoveInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.remove',
+      },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.remove',
+      },
+      'dm.reaction.remove fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.reaction.remove',
+      },
+      'dm.reaction.remove fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.reaction.remove',
+      },
+      'dm.reaction.remove fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmReactionRemovePayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    messageId: input.messageId,
+    actorRemoteUserId: `${input.actorUsername}@${input.selfHost}`,
+    emoji: input.emoji,
+  });
+
+  const eventType: EnvelopeEventType = 'dm.reaction.remove';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      messageId: input.messageId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
       nonce: ulid(),
       authorUserId: input.actorUserId,
       payload,
