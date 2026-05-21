@@ -57,6 +57,7 @@ function statusForCode(code: FederationInboundError['code']): number {
     case 'presence_capability_missing':
     case 'not_home_instance':
     case 'not_dm_member':
+    case 'recipient_refuses_federated_dms':
       return 403;
     case 'unknown_channel':
     case 'unknown_message':

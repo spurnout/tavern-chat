@@ -152,6 +152,7 @@ export type InboundErrorCode =
   | 'unknown_mirror_server' // 404 — payload.serverId not present as a mirror locally
   | 'unknown_member' // 404 — payload references a leaverRemoteUserId we don't have a User row for
   | 'unknown_recipient' // 404 — dm.create recipient localpart/host doesn't match a local user
+  | 'recipient_refuses_federated_dms' // 403 — dm.create recipient has acceptsFederatedDms=false (PF-4)
   | 'invite_no_longer_valid' // 410 — invite is revoked / expired / exhausted
   | 'federation_off' // 403 — channel federation effective state is OFF
   | 'not_a_member' // 403 — author isn't a member of channel's server
@@ -3137,14 +3138,29 @@ async function handleDmCreate(input: {
     );
   }
 
+  // PF-4 — read `acceptsFederatedDms` in the SAME select as the existence
+  // check so the per-user DM opt-out costs zero extra round-trips. The gate
+  // fires AFTER the recipient is known to exist (otherwise we'd leak a
+  // distinction between "no such user" and "user exists but opted out" to a
+  // probing peer — keep `unknown_recipient` opaque). When the user has
+  // opted out we throw `recipient_refuses_federated_dms` (403). The gate
+  // fires ONLY here on `dm.create`; subsequent `dm.message.*` envelopes for
+  // an EXISTING DmChannel are not gated by this preference (decision #4 in
+  // the federation polish plan — already-open DMs stay open).
   const recipient = await tx.user.findUnique({
     where: { usernameLower: recipientLocalpart.toLowerCase() },
-    select: { id: true },
+    select: { id: true, acceptsFederatedDms: true },
   });
   if (!recipient) {
     throw new FederationInboundError(
       'unknown_recipient',
       `no local user matches ${recipientLocalpart}`,
+    );
+  }
+  if (!recipient.acceptsFederatedDms) {
+    throw new FederationInboundError(
+      'recipient_refuses_federated_dms',
+      'recipient does not accept federated direct messages',
     );
   }
 

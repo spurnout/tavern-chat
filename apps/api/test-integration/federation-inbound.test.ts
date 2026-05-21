@@ -4620,6 +4620,127 @@ describe.skipIf(!dockerOk)('P5-4 — POST /_federation/event (dm.create)', () =>
       await app.close();
     }
   });
+
+  // PF-4 — per-user opt-out from federated DM creation.
+  //
+  // The gate fires AT dm.create only. An already-open federated DmChannel
+  // keeps working for dm.message.* events even if the recipient retroactively
+  // opts out (decision #4 in the polish plan: closing an existing DM
+  // unilaterally is a separate moderation flow, not a privacy toggle).
+  it('PF-4: rejects dm.create with 403 when the recipient has acceptsFederatedDms=false', async () => {
+    const fx = await makeDmFixture();
+    // Opt the recipient out AFTER fixture creation so the default-true row
+    // is what we're explicitly overriding.
+    await prisma.user.update({
+      where: { id: fx.recipientUserId },
+      data: { acceptsFederatedDms: false },
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const dmChannelId = ulid();
+    const envelope = buildDmCreateEnvelope({ fx, dmChannelId });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(403);
+      const body = res.json();
+      expect(body.error).toMatch(/does not accept federated direct messages/i);
+
+      // No DmChannel created on the home.
+      const channels = await prisma.dmChannel.findMany({});
+      expect(channels).toHaveLength(0);
+      // No DmChannelMember rows either.
+      const members = await prisma.dmChannelMember.findMany({});
+      expect(members).toHaveLength(0);
+      // Recipient User row untouched (other than the explicit opt-out we set).
+      const recipient = await prisma.user.findUnique({
+        where: { id: fx.recipientUserId },
+        select: { acceptsFederatedDms: true, displayName: true },
+      });
+      expect(recipient).not.toBeNull();
+      expect(recipient!.acceptsFederatedDms).toBe(false);
+      expect(recipient!.displayName).toBe('Alice (local)');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PF-4: happy path still passes when the recipient has acceptsFederatedDms=true (default)', async () => {
+    const fx = await makeDmFixture();
+    // Explicitly set to true so the assertion is meaningful even if the
+    // migration default ever changes.
+    await prisma.user.update({
+      where: { id: fx.recipientUserId },
+      data: { acceptsFederatedDms: true },
+    });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    const dmChannelId = ulid();
+    const envelope = buildDmCreateEnvelope({ fx, dmChannelId });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data?.dmChannelId).toBe(dmChannelId);
+
+      const channel = await prisma.dmChannel.findUnique({
+        where: { id: dmChannelId },
+        select: { id: true },
+      });
+      expect(channel).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PF-4: an already-open federated DmChannel still accepts dm.message.create even after the recipient opts out', async () => {
+    // Set up: open the DmChannel via the happy-path dm.create handler while
+    // the recipient is still opted IN (default true).
+    const fx = await makeDmMessageFixture();
+    // Flip the preference to false AFTER the DM is established. Subsequent
+    // dm.message.* envelopes for this DmChannel must NOT be gated by this
+    // preference — the gate fires at dm.create only.
+    await prisma.user.update({
+      where: { id: fx.recipientUserId },
+      data: { acceptsFederatedDms: false },
+    });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const messageId = ulid();
+    const envelope = buildDmMessageCreateEnvelope({
+      fx,
+      dmChannelId: fx.dmChannelId,
+      messageId,
+      content: 'still talking',
+    });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Message landed on the existing DmChannel.
+      const row = await prisma.message.findUnique({ where: { id: messageId } });
+      expect(row).not.toBeNull();
+      expect(row!.dmChannelId).toBe(fx.dmChannelId);
+      expect(row!.content).toBe('still talking');
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
