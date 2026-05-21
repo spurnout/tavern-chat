@@ -24,7 +24,9 @@ import {
   serializeDmChannelRow,
   usersShareServer,
 } from '../services/dm-service.js';
+import { fanOutDmCreate } from '../services/federation-outbox.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+import type { QueueClient } from '../services/queues.js';
 
 function sanitizeContent(content: string): string {
   return sanitizeHtml(content, { allowedTags: [], allowedAttributes: {} });
@@ -39,6 +41,19 @@ export interface DmRouteDeps {
    * match the one the remote instance computes).
    */
   selfHost?: string | null;
+  /**
+   * Queue client used by P5-3 to enqueue `dm.create` envelopes when the
+   * other party in a 1:1 DM is a remote user. Optional — omitting it
+   * (e.g. on a non-federated instance) disables the fan-out branch
+   * entirely; the local DM still works.
+   */
+  queues?: QueueClient;
+  /**
+   * Instance-level federation gate, threaded into `fanOutDmCreate` as
+   * defence-in-depth. Matches the shape used by every other federated
+   * route module.
+   */
+  federationEnabledOnInstance?: boolean;
 }
 
 export async function registerDmRoutes(
@@ -124,6 +139,51 @@ export async function registerDmRoutes(
         dmChannelId: id,
         data: dto,
       });
+
+      // P5-3 — federation fan-out. Best-effort: wrapped in try/catch so a
+      // federation hiccup never breaks the local DM open. Gated on (a)
+      // `selfHost` being known (we can't build qualified ids without it),
+      // (b) `queues` being wired, and (c) the OTHER member being a remote
+      // user (User.remoteInstanceId set + remoteUserId qualified id).
+      // Re-creates of the same DM channel re-fire `dm.create` — that's
+      // fine: the inbound handler is idempotent on (pairKey).
+      if (deps?.selfHost && deps?.queues) {
+        try {
+          const initiator = await prisma.user.findUnique({
+            where: { id: ctx.userId },
+            select: { username: true },
+          });
+          const other = await prisma.user.findUnique({
+            where: { id: body.userId },
+            select: { remoteInstanceId: true, remoteUserId: true },
+          });
+          if (
+            initiator &&
+            other &&
+            other.remoteInstanceId &&
+            other.remoteUserId
+          ) {
+            await fanOutDmCreate({
+              queues: deps.queues,
+              selfHost: deps.selfHost,
+              dmChannelId: id,
+              initiatorUserId: ctx.userId,
+              initiatorUsername: initiator.username,
+              recipientRemoteUserId: other.remoteUserId,
+              peerInstanceId: other.remoteInstanceId,
+              log: req.log,
+              federationEnabledOnInstance: deps.federationEnabledOnInstance,
+            });
+          }
+        } catch (err: unknown) {
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          req.log.warn(
+            { err: errObj, dmChannelId: id },
+            'dm.create federation fan-out failed (local DM unaffected)',
+          );
+        }
+      }
+
       reply.send(ok(dto));
     },
   });

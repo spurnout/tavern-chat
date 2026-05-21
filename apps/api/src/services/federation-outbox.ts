@@ -23,6 +23,7 @@ import {
   channelCreatePayloadSchema,
   channelDeletePayloadSchema,
   channelUpdatePayloadSchema,
+  dmCreatePayloadSchema,
   memberAddPayloadSchema,
   memberRemovePayloadSchema,
   messageCreatePayloadSchema,
@@ -1166,5 +1167,136 @@ export async function fanOutMemberRemove(input: FanOutMemberRemoveInput): Promis
         'federation fan-out enqueue failed for peer',
       );
     }
+  }
+}
+
+// --- P5-3 — DM creation fan-out ---------------------------------------------
+//
+// When a local user opens a 1:1 DM with a remote user, we tell that user's
+// home instance about the new DM channel. Unlike server-message fan-out there
+// is exactly ONE peer involved (the other party's home) — no roster lookup,
+// no relay. DM events don't relay in Phase 5; both sides talk directly to the
+// shared DM channel from their respective homes.
+//
+// Capability gate: the peer must advertise the `dms` capability in their
+// `RemoteInstance.capabilities` set (negotiated at peering time). A peer
+// that's peered for server messaging but hasn't opted into DM federation
+// gets a no-op + a warning log — the local DmChannel still exists, the user
+// just can't receive remote messages on it until the peer opts in. We do
+// NOT roll back the local DM: same defensive posture as the rest of the
+// fan-out helpers, where peer-side problems never break the local write.
+
+export interface FanOutDmCreateInput {
+  queues: QueueClient;
+  selfHost: string;
+  /** Local DmChannel.id — the originating instance's id for the wire payload. */
+  dmChannelId: string;
+  /** Local User.id used to sign the user-layer envelope (the DM initiator). */
+  initiatorUserId: string;
+  /** Initiator's local username — combined with `selfHost` to form `<localpart>@<selfHost>`. */
+  initiatorUsername: string;
+  /** Recipient's qualified id — the remote user's `<localpart>@<host>` from RemoteUser. */
+  recipientRemoteUserId: string;
+  /** The remote user's home RemoteInstance.id — single fan-out target. */
+  peerInstanceId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a `dm.create` envelope to the recipient's home instance. Caller has
+ * already verified (a) the recipient is a remote user (User.remoteInstanceId
+ * is set) and (b) the local DmChannel row was successfully created. The
+ * helper itself:
+ *   1. Defence-in-depth gate on the instance-level federation flag.
+ *   2. Look up the peer; bail with a warning when the peer is not peered or
+ *      does not advertise the `dms` capability. The local DM is unaffected.
+ *   3. Build the wire payload and parse it through `dmCreatePayloadSchema`
+ *      so a schema drift surfaces at the source instance.
+ *   4. Enqueue ONE outbox job, keyed by `dmChannelId` so duplicate
+ *      `findOrCreateDirectDm` calls (idempotent re-create) collapse to a
+ *      single BullMQ jobId via the default `nonce ?? messageId` rule.
+ */
+export async function fanOutDmCreate(input: FanOutDmCreateInput): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { dmChannelId: input.dmChannelId, peerInstanceId: input.peerInstanceId, eventType: 'dm.create' },
+      'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+
+  // Peer must be peered AND advertise the `dms` capability. Either gate
+  // failing is a no-op + warning (not a hard error) — the local DmChannel
+  // stays valid, the user just doesn't get federated delivery yet.
+  const peer = await prisma.remoteInstance.findUnique({
+    where: { id: input.peerInstanceId },
+    select: { id: true, status: true, capabilities: true, host: true },
+  });
+  if (!peer) {
+    input.log.warn(
+      { dmChannelId: input.dmChannelId, peerInstanceId: input.peerInstanceId, eventType: 'dm.create' },
+      'dm.create fan-out skipped — peer RemoteInstance not found',
+    );
+    return;
+  }
+  if (peer.status !== 'peered') {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerStatus: peer.status,
+        eventType: 'dm.create',
+      },
+      'dm.create fan-out skipped — peer is not peered',
+    );
+    return;
+  }
+  if (!peer.capabilities.includes('dms')) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        peerInstanceId: peer.id,
+        peerHost: peer.host,
+        peerCapabilities: peer.capabilities,
+        eventType: 'dm.create',
+      },
+      'dm.create fan-out skipped — peer does not advertise the `dms` capability',
+    );
+    return;
+  }
+
+  const payload = dmCreatePayloadSchema.parse({
+    dmChannelId: input.dmChannelId,
+    initiatorRemoteUserId: `${input.initiatorUsername}@${input.selfHost}`,
+    recipientRemoteUserId: input.recipientRemoteUserId,
+    createdAt: new Date().toISOString(),
+  });
+
+  const eventType: EnvelopeEventType = 'dm.create';
+  try {
+    await input.queues.enqueueFederationOutbox({
+      // Use dmChannelId as the BullMQ jobId-dedupe key so an idempotent
+      // re-create (alice clicks "open DM with bob" twice) collapses to a
+      // single job per (dmChannel, peer) pair.
+      messageId: input.dmChannelId,
+      peerInstanceId: input.peerInstanceId,
+      eventType,
+      authorUserId: input.initiatorUserId,
+      payload,
+    });
+  } catch (err: unknown) {
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    input.log.warn(
+      {
+        err: errObj,
+        peerInstanceId: input.peerInstanceId,
+        dmChannelId: input.dmChannelId,
+        eventType,
+      },
+      'federation fan-out enqueue failed for peer',
+    );
   }
 }

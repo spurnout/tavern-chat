@@ -542,7 +542,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerSearchRoutes(app);
     await registerPresenceRoutes(app);
     await registerNotificationRoutes(app);
-    await registerDmRoutes(app, { selfHost });
+    await registerDmRoutes(app, {
+      selfHost,
+      queues,
+      federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
+    });
     await registerUserRoutes(app);
     registerGateway(app, jwt);
 
