@@ -328,17 +328,6 @@ export class FederationInboundService {
       );
     }
 
-    // Reject unimplemented event types BEFORE we do signature work. We still
-    // need the peer + envelope-shape check above so a bogus envelope from an
-    // unknown peer can't probe which event types exist on this server.
-    const handler = HANDLERS[preCheck.eventType];
-    if (!handler) {
-      throw new FederationInboundError(
-        'not_implemented',
-        `event type ${preCheck.eventType} is not implemented yet`,
-      );
-    }
-
     // P5-11 — instance-level DM opt-out. When the operator has flipped
     // FEDERATION_DMS_ENABLED to `false`, reject every `dm.*` envelope BEFORE
     // signature verification. Done here (not in each handler) for two
@@ -353,6 +342,10 @@ export class FederationInboundService {
     //      whose stored capability snapshot still claims we do.
     // Same error code as the per-handler check so the HTTP status (403) is
     // identical and the log line tells the operator which side opted out.
+    //
+    // This gate runs BEFORE the HANDLERS lookup so that single-layer event
+    // types (currently only `presence.update`) — which are deliberately
+    // absent from HANDLERS — still get the capability check.
     if (
       !this.federationDmsEnabledOnInstance &&
       preCheck.eventType.startsWith('dm.')
@@ -375,6 +368,10 @@ export class FederationInboundService {
     // reject every `presence.update` envelope BEFORE signature verification.
     // Same defence-in-depth rationale as the dm.* check — the peer's stored
     // capability set may still claim `presence` from a prior negotiation.
+    //
+    // MUST run before the HANDLERS lookup — `presence.update` is NOT in
+    // HANDLERS (single-layer dispatch is a separate code path below), so a
+    // gate placed after the lookup would be unreachable.
     if (
       !this.federationPresenceEnabledOnInstance &&
       preCheck.eventType === 'presence.update'
@@ -399,8 +396,28 @@ export class FederationInboundService {
     // The two-layer verification path below cannot process it (it needs a
     // RemoteUser publicKey it would never find), so we take a separate
     // verification + handler-dispatch path here and return early.
+    //
+    // CRITICAL: this branch MUST fire before the HANDLERS lookup —
+    // `presence.update` is intentionally absent from HANDLERS, so a lookup
+    // here would always throw `not_implemented` and make this branch
+    // unreachable.
     if (preCheck.eventType === 'presence.update') {
       return this.processPresenceEnvelope({ body, peer });
+    }
+
+    // Reject unimplemented event types BEFORE we do signature work. We still
+    // need the peer + envelope-shape check above so a bogus envelope from an
+    // unknown peer can't probe which event types exist on this server.
+    //
+    // At this point all single-layer events (presence.update) have already
+    // been dispatched-and-returned above, so this lookup is purely for
+    // two-layer events with no registered handler.
+    const handler = HANDLERS[preCheck.eventType];
+    if (!handler) {
+      throw new FederationInboundError(
+        'not_implemented',
+        `event type ${preCheck.eventType} is not implemented yet`,
+      );
     }
 
     // Resolve the author's public key. Two-layer verification needs BOTH
