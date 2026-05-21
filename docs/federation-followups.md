@@ -261,7 +261,8 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 
 ### 29. `peering.accept` envelope inbound handler missing
 
-- **Phase:** 5 (P5-11 review)
+- **Phase:** 5 (P5-11 review; reaffirmed by Phase 5 whole-phase review as
+  Important #2)
 - **Trigger:** before relying on capability re-intersection after a peer
   reconfigures its advertised set
 - **What:** P5-11 added capability intersection on the **inbound** peering
@@ -272,7 +273,11 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   until A re-handshakes manually. Add a `peering.accept` inbound handler
   (or extend the existing accept ack) that lets B push its current
   capability set back to A on every handshake, including post-config
-  changes triggered by a re-handshake request.
+  changes triggered by a re-handshake request. **Phase 5 makes the
+  consequence worse**: the new capability-intersection logic on accept
+  never reaches the initiator, so A may keep enqueueing `dms` envelopes
+  that B's inbound handler will reject on capability grounds. Phase 6
+  scope.
 
 ### 30. Existing pre-Phase-5 `RemoteInstance` rows hold un-intersected capability sets
 
@@ -289,6 +294,23 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   runbook (operator action), or add a one-shot migration that nulls
   `capabilities` on all rows + forces a re-fetch on next contact (code
   change). Document the operator path in the Phase 5 release notes.
+
+### 31. Idempotent-delete short-circuit ordering leaks soft-delete state
+
+- **Phase:** 5 (whole-phase review, Minor)
+- **Trigger:** before any threat model assumes inbound author-only checks
+  are not also a state-existence oracle
+- **What:** `handleDmMessageDelete` in `apps/api/src/services/federation-inbound.ts`
+  (and the parallel `handleMessageDelete` for server messages) checks
+  `existing.deletedAt` BEFORE the author-only check. A peer holding a
+  stolen / replayed envelope for a non-author can post it; if the message
+  was previously deleted by anyone, the handler returns 200
+  (`deduplicated: true`); otherwise it returns 403 (`forbidden`). The
+  status difference probes whether the message was previously soft-deleted
+  — a minor info leak, no data-integrity impact (the second branch still
+  rejects the non-author mutation). Fix: reorder so the author check
+  fires first, then the idempotent short-circuit. Both DM and server
+  handlers share the pattern and should be fixed together.
 
 ## Resolved
 

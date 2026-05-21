@@ -1207,6 +1207,15 @@ export interface FanOutDmCreateInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /**
+   * Defence-in-depth mirror of `federationDmsEnabledOnInstance` from the route
+   * layer. The route already short-circuits this helper when the operator has
+   * set `FEDERATION_DMS_ENABLED=false`, but we re-check here so a future caller
+   * that forgets the outer gate still gets the correct behaviour. Same posture
+   * as `federationEnabledOnInstance`: explicit `false` skips, `undefined` /
+   * `true` proceeds.
+   */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1228,6 +1237,13 @@ export async function fanOutDmCreate(input: FanOutDmCreateInput): Promise<void> 
     input.log.warn(
       { dmChannelId: input.dmChannelId, peerInstanceId: input.peerInstanceId, eventType: 'dm.create' },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      { dmChannelId: input.dmChannelId, peerInstanceId: input.peerInstanceId, eventType: 'dm.create' },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }
@@ -1348,6 +1364,8 @@ export interface FanOutDmMessageCreateInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /** Defence-in-depth, see `FanOutDmCreateInput.federationDmsEnabledOnInstance`. */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1379,6 +1397,18 @@ export async function fanOutDmMessageCreate(
         eventType: 'dm.message.create',
       },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.create',
+      },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }
@@ -1516,6 +1546,8 @@ export interface FanOutDmMessageUpdateInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /** Defence-in-depth, see `FanOutDmCreateInput.federationDmsEnabledOnInstance`. */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1545,6 +1577,18 @@ export async function fanOutDmMessageUpdate(
         eventType: 'dm.message.update',
       },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.update',
+      },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }
@@ -1652,6 +1696,8 @@ export interface FanOutDmMessageDeleteInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /** Defence-in-depth, see `FanOutDmCreateInput.federationDmsEnabledOnInstance`. */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1673,6 +1719,18 @@ export async function fanOutDmMessageDelete(
         eventType: 'dm.message.delete',
       },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.message.delete',
+      },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }
@@ -1796,6 +1854,8 @@ export interface FanOutDmReactionAddInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /** Defence-in-depth, see `FanOutDmCreateInput.federationDmsEnabledOnInstance`. */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1826,6 +1886,18 @@ export async function fanOutDmReactionAdd(
         eventType: 'dm.reaction.add',
       },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.add',
+      },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }
@@ -1922,6 +1994,8 @@ export interface FanOutDmReactionRemoveInput {
   log: FastifyBaseLogger;
   /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
   federationEnabledOnInstance?: boolean;
+  /** Defence-in-depth, see `FanOutDmCreateInput.federationDmsEnabledOnInstance`. */
+  federationDmsEnabledOnInstance?: boolean;
 }
 
 /**
@@ -1942,6 +2016,18 @@ export async function fanOutDmReactionRemove(
         eventType: 'dm.reaction.remove',
       },
       'federation fan-out skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  if (input.federationDmsEnabledOnInstance === false) {
+    input.log.warn(
+      {
+        dmChannelId: input.dmChannelId,
+        messageId: input.messageId,
+        peerInstanceId: input.peerInstanceId,
+        eventType: 'dm.reaction.remove',
+      },
+      'federation fan-out skipped — instance has FEDERATION_DMS_ENABLED=false (defence-in-depth)',
     );
     return;
   }

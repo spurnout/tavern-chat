@@ -719,6 +719,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
             peerInstanceId: target.peerInstanceId,
             log: app.log,
             federationEnabledOnInstance: deps.federationEnabledOnInstance,
+            federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
           });
         }
       } catch (err: unknown) {
@@ -895,6 +896,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
             peerInstanceId: target.peerInstanceId,
             log: app.log,
             federationEnabledOnInstance: deps.federationEnabledOnInstance,
+            federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
           });
         }
       } catch (err: unknown) {

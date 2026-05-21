@@ -337,6 +337,38 @@ describe.skipIf(!dockerOk)('P5-3 — fanOutDmCreate helper', () => {
     expect(matched).toBeDefined();
   });
 
+  it('skips fan-out when federationDmsEnabledOnInstance=false (defence-in-depth)', async () => {
+    // The route-level gate at `routes/dms.ts` already short-circuits this
+    // helper when FEDERATION_DMS_ENABLED=false, but if a future caller forgets
+    // the outer guard the helper itself must still refuse to enqueue. Mirror
+    // the FEDERATION_ENABLED=false test above — peer would otherwise accept.
+    const peer = await seedPeer('b.example', ['messages', 'dms']);
+    const bob = await createRemoteUserMirror(peer, 'bob');
+    const { queue, enqueue } = makeMockQueue();
+    const { warnCalls, log } = capturingLogger();
+
+    await fanOutDmCreate({
+      queues: queue,
+      selfHost: SELF_HOST,
+      dmChannelId: ulid(),
+      initiatorUserId: ulid(),
+      initiatorUsername: 'alice',
+      recipientRemoteUserId: bob.remoteUserId,
+      peerInstanceId: peer.id,
+      log: log as unknown as Parameters<typeof fanOutDmCreate>[0]['log'],
+      federationEnabledOnInstance: true,
+      federationDmsEnabledOnInstance: false,
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const matched = warnCalls.find((w) =>
+      typeof w.msg === 'string' &&
+        w.msg.includes('FEDERATION_DMS_ENABLED=false') &&
+        w.msg.includes('defence-in-depth'),
+    );
+    expect(matched).toBeDefined();
+  });
+
   it('enqueues a parseable dm.create payload when the peer advertises `dms`', async () => {
     const peer = await seedPeer('b.example', ['messages', 'dms']);
     const bob = await createRemoteUserMirror(peer, 'bob');

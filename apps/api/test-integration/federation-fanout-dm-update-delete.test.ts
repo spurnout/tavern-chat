@@ -37,6 +37,11 @@ import {
   ulid,
 } from '@tavern/shared';
 import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import {
+  fanOutDmMessageDelete,
+  fanOutDmMessageUpdate,
+} from '../src/services/federation-outbox.js';
+import type { QueueClient } from '../src/services/queues.js';
 import type { FederationOutboxJob } from '@tavern/federation';
 
 let ctx: IntegrationContext | null = null;
@@ -500,5 +505,115 @@ describe.skipIf(!dockerOk)('P5-7 — DELETE /api/messages/:id DM fan-out wiring'
     } finally {
       await app.close();
     }
+  });
+});
+
+// ─── Helper-level defence-in-depth tests ────────────────────────────────────
+//
+// Mirror the test in `federation-fanout-dm-message-create.test.ts`: the route
+// already guards on `FEDERATION_DMS_ENABLED=false`, but the helper must
+// also refuse to enqueue if a future caller forgets the outer gate.
+
+interface CapturingLogger {
+  warnCalls: Array<{ obj: unknown; msg: string }>;
+  log: {
+    trace: () => void;
+    debug: () => void;
+    info: () => void;
+    warn: (obj: unknown, msg: string) => void;
+    error: () => void;
+    fatal: () => void;
+    child: () => unknown;
+    level: string;
+  };
+}
+
+function capturingLogger(): CapturingLogger {
+  const warnCalls: CapturingLogger['warnCalls'] = [];
+  const noop = () => undefined;
+  const log = {
+    trace: noop,
+    debug: noop,
+    info: noop,
+    warn: (obj: unknown, msg: string) => {
+      warnCalls.push({ obj, msg });
+    },
+    error: noop,
+    fatal: noop,
+    child: () => log,
+    level: 'info',
+  };
+  return { warnCalls, log };
+}
+
+function makeMockQueue(): {
+  queue: QueueClient;
+  enqueue: ReturnType<typeof vi.fn>;
+} {
+  const enqueue = vi.fn(async (_job: FederationOutboxJob) => undefined);
+  const queue: QueueClient = {
+    enqueueScan: vi.fn(async () => undefined),
+    enqueueFederationOutbox: enqueue,
+    close: vi.fn(async () => undefined),
+  };
+  return { queue, enqueue };
+}
+
+describe.skipIf(!dockerOk)('P5-7 — helper defence-in-depth (FEDERATION_DMS_ENABLED)', () => {
+  it('fanOutDmMessageUpdate: skips fan-out when federationDmsEnabledOnInstance=false', async () => {
+    const peer = await seedPeer('b.example', ['messages', 'dms']);
+    const { queue, enqueue } = makeMockQueue();
+    const { warnCalls, log } = capturingLogger();
+
+    await fanOutDmMessageUpdate({
+      queues: queue,
+      selfHost: SELF_HOST,
+      dmChannelId: ulid(),
+      messageId: ulid(),
+      authorUserId: ulid(),
+      authorUsername: 'alice',
+      content: 'edited',
+      editedAt: new Date(),
+      peerInstanceId: peer.id,
+      log: log as unknown as Parameters<typeof fanOutDmMessageUpdate>[0]['log'],
+      federationEnabledOnInstance: true,
+      federationDmsEnabledOnInstance: false,
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const matched = warnCalls.find((w) =>
+      typeof w.msg === 'string' &&
+        w.msg.includes('FEDERATION_DMS_ENABLED=false') &&
+        w.msg.includes('defence-in-depth'),
+    );
+    expect(matched).toBeDefined();
+  });
+
+  it('fanOutDmMessageDelete: skips fan-out when federationDmsEnabledOnInstance=false', async () => {
+    const peer = await seedPeer('b.example', ['messages', 'dms']);
+    const { queue, enqueue } = makeMockQueue();
+    const { warnCalls, log } = capturingLogger();
+
+    await fanOutDmMessageDelete({
+      queues: queue,
+      selfHost: SELF_HOST,
+      dmChannelId: ulid(),
+      messageId: ulid(),
+      actorUserId: ulid(),
+      actorUsername: 'alice',
+      deletedAt: new Date(),
+      peerInstanceId: peer.id,
+      log: log as unknown as Parameters<typeof fanOutDmMessageDelete>[0]['log'],
+      federationEnabledOnInstance: true,
+      federationDmsEnabledOnInstance: false,
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const matched = warnCalls.find((w) =>
+      typeof w.msg === 'string' &&
+        w.msg.includes('FEDERATION_DMS_ENABLED=false') &&
+        w.msg.includes('defence-in-depth'),
+    );
+    expect(matched).toBeDefined();
   });
 });

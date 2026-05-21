@@ -201,6 +201,7 @@ export async function registerReactionRoutes(
                 peerInstanceId: target.peerInstanceId,
                 log: app.log,
                 federationEnabledOnInstance: deps.federationEnabledOnInstance,
+                federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
               });
             }
           }
@@ -338,6 +339,7 @@ export async function registerReactionRoutes(
               peerInstanceId: target.peerInstanceId,
               log: app.log,
               federationEnabledOnInstance: deps.federationEnabledOnInstance,
+              federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
             });
           }
         }

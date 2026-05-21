@@ -356,6 +356,40 @@ describe.skipIf(!dockerOk)('P5-5 — fanOutDmMessageCreate helper', () => {
     expect(matched).toBeDefined();
   });
 
+  it('skips fan-out when federationDmsEnabledOnInstance=false (defence-in-depth)', async () => {
+    // Route-level gate already short-circuits this helper when
+    // FEDERATION_DMS_ENABLED=false; this test pins the helper-level
+    // defence-in-depth contract so a future caller that forgets the outer
+    // guard still gets the right behaviour.
+    const peer = await seedPeer('b.example', ['messages', 'dms']);
+    const { queue, enqueue } = makeMockQueue();
+    const { warnCalls, log } = capturingLogger();
+
+    await fanOutDmMessageCreate({
+      queues: queue,
+      selfHost: SELF_HOST,
+      dmChannelId: ulid(),
+      messageId: ulid(),
+      authorUserId: ulid(),
+      authorUsername: 'alice',
+      content: 'hi bob',
+      replyToMessageId: null,
+      createdAt: new Date(),
+      peerInstanceId: peer.id,
+      log: log as unknown as Parameters<typeof fanOutDmMessageCreate>[0]['log'],
+      federationEnabledOnInstance: true,
+      federationDmsEnabledOnInstance: false,
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const matched = warnCalls.find((w) =>
+      typeof w.msg === 'string' &&
+        w.msg.includes('FEDERATION_DMS_ENABLED=false') &&
+        w.msg.includes('defence-in-depth'),
+    );
+    expect(matched).toBeDefined();
+  });
+
   it('enqueues a parseable dm.message.create payload when peer advertises `dms`', async () => {
     const peer = await seedPeer('b.example', ['messages', 'dms']);
     const { queue, enqueue, lastJobs } = makeMockQueue();

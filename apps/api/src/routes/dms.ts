@@ -192,6 +192,7 @@ export async function registerDmRoutes(
               peerInstanceId: other.remoteInstanceId,
               log: req.log,
               federationEnabledOnInstance: deps.federationEnabledOnInstance,
+              federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
             });
           }
         } catch (err: unknown) {
@@ -476,6 +477,7 @@ export async function registerDmRoutes(
                 peerInstanceId: other.user.remoteInstanceId,
                 log: req.log,
                 federationEnabledOnInstance: deps.federationEnabledOnInstance,
+                federationDmsEnabledOnInstance: deps.federationDmsEnabledOnInstance,
               });
             }
           }
