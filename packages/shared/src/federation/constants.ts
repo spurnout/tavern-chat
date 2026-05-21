@@ -37,6 +37,7 @@ export const ENVELOPE_EVENT_TYPES = [
   'dm.message.delete',
   'dm.reaction.add',
   'dm.reaction.remove',
+  'presence.update',
 ] as const;
 export type EnvelopeEventType = (typeof ENVELOPE_EVENT_TYPES)[number];
 

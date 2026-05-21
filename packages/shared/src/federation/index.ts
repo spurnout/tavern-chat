@@ -8,3 +8,4 @@ export * from './dms.js';
 export * from './membership.js';
 export * from './server-mirror.js';
 export * from './invite-preview.js';
+export * from './presence.js';
