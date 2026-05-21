@@ -2,7 +2,9 @@ import {
   CAPABILITIES,
   ulid,
   peeringRequestPayloadSchema,
+  peeringAcceptPayloadSchema,
   type PeeringRequestPayload,
+  type PeeringAcceptPayload,
   type Capability,
 } from '@tavern/shared';
 import { prisma as defaultPrisma } from '@tavern/db';
@@ -193,6 +195,121 @@ export class FederationPeeringService {
     }
 
     return { logId, remoteInstanceId: remoteId };
+  }
+
+  /**
+   * P6-3 (follow-up #29) — handles an inbound `peering.accept` envelope on the
+   * initiator side. The envelope is sent by a peer in response to our prior
+   * `peering.request`, carrying the capability set the peer is willing to
+   * honour. We:
+   *
+   *   1. Validate this is actually a peer we initiated handshake with
+   *      (existing RemoteInstance row in `pending_outbound` or `peered`).
+   *   2. Re-fetch the peer's discovery doc to pick up any key rotation.
+   *   3. Verify the envelope signature against that fresh public key.
+   *   4. Intersect the peer's accepted capabilities with our local advertised
+   *      set so both sides converge on the same symmetric capability list.
+   *   5. Flip the row to `peered` (or refresh capabilities + key if already
+   *      `peered`, supporting re-handshake when the peer reconfigures its
+   *      advertised set).
+   *   6. Write the FederationEnvelopeLog row for replay protection.
+   */
+  async recordInboundAccept(envelopeBody: unknown): Promise<RecordInboundResult> {
+    // 1. Shape-check WITHOUT signature verification first to extract fromInstance.
+    const preCheck = envelopeBody as { fromInstance?: unknown; eventType?: unknown } | null;
+    if (!preCheck || preCheck.eventType !== 'peering.accept') {
+      throw new PeeringError('bad_envelope', 'expected eventType peering.accept');
+    }
+    if (typeof preCheck.fromInstance !== 'string' || preCheck.fromInstance.length === 0) {
+      throw new PeeringError('bad_envelope', 'envelope missing fromInstance');
+    }
+    assertValidPeerHost(preCheck.fromInstance);
+
+    // 2. Look up the existing RemoteInstance row. The accept envelope is only
+    //    valid for a peer we already initiated peering with — otherwise it's a
+    //    spoof attempt.
+    const existing = await this.prisma.remoteInstance.findUnique({
+      where: { host: preCheck.fromInstance },
+    });
+    if (!existing) {
+      throw new PeeringError(
+        'bad_envelope',
+        `received peering.accept from unknown peer ${preCheck.fromInstance}`,
+      );
+    }
+    if (existing.status === 'revoked' || existing.status === 'blocked') {
+      throw new PeeringError('blocked', `peer ${preCheck.fromInstance} is ${existing.status}`);
+    }
+
+    // 3. Re-fetch the peer's discovery doc → public key. The peer key MAY have
+    //    rotated since we initiated; pull fresh so the signature check uses the
+    //    current key. (If the key changed, we also re-store it on the row.)
+    const discovery = await discoverInstance(preCheck.fromInstance);
+    const pubRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
+
+    // 4. Full verify + payload-schema check.
+    const verified = verifyEnvelopeShape({
+      envelope: envelopeBody,
+      peerPublicKeyRaw: pubRaw,
+      payloadSchema: peeringAcceptPayloadSchema,
+    });
+    if (!verified.ok) throw new PeeringError('signature', verified.reason);
+    const env = verified.envelope as SignedEnvelope<PeeringAcceptPayload>;
+
+    // 5. Intersect peer's accepted capabilities with ours. The peer's accept
+    //    represents what they're WILLING to honour; we intersect with what WE
+    //    advertise locally so the stored set is symmetric across both sides.
+    const negotiated = intersectCapabilities(
+      this.localCapabilities,
+      env.payload.acceptedCapabilities,
+    );
+
+    // 6. Update the row. If still `pending_outbound` → flip to `peered`.
+    //    If already `peered` → just refresh capabilities + key (re-handshake
+    //    support, e.g. peer dropped or added a capability). Anything else is
+    //    rejected.
+    if (existing.status !== 'pending_outbound' && existing.status !== 'peered') {
+      throw new PeeringError(
+        'bad_envelope',
+        `peer ${preCheck.fromInstance} is ${existing.status}; cannot accept`,
+      );
+    }
+    await this.prisma.remoteInstance.update({
+      where: { id: existing.id },
+      data: {
+        instanceKey: pubRaw,
+        status: 'peered',
+        capabilities: negotiated,
+        peeredAt: existing.peeredAt ?? new Date(),
+      },
+    });
+
+    // 7. Log envelope — unique(peerInstanceId, nonce) enforces replay protection.
+    const payloadHash = createHash('sha256').update(canonicalize(env.payload)).digest();
+    const logId = ulid();
+    try {
+      await this.prisma.federationEnvelopeLog.create({
+        data: {
+          id: logId,
+          direction: 'inbound',
+          peerInstanceId: existing.id,
+          eventType: env.eventType,
+          payloadHash,
+          nonce: env.nonce,
+          notBefore: new Date(env.notBefore),
+          notAfter: new Date(env.notAfter),
+          status: 'accepted',
+          processedAt: new Date(),
+        },
+      });
+    } catch (err: unknown) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new PeeringError('replay', 'nonce already seen for this peer');
+      }
+      throw err;
+    }
+
+    return { logId, remoteInstanceId: existing.id };
   }
 
   async listPeers() {
