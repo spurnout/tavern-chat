@@ -225,19 +225,6 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   instance" flows are Phase 7 work. Until then, users should rely on
   per-DM mute / leave actions, which stay local.
 
-### 28. Per-user "disable federated DMs" preference
-
-- **Phase:** 5 (whole-phase review)
-- **Trigger:** when user-level federation preferences are added
-- **What:** Phase 5 gates federated DMs at the instance level via the `dms`
-  capability advertisement. There is no per-user opt-out — if both
-  instances advertise `dms`, any local user can be DMed by any remote
-  user (subject to the share-server gate). Some users may want to refuse
-  federated DMs even when their instance supports them. Add a
-  `User.acceptsFederatedDms` preference + UI toggle in account settings;
-  initiator-side check before fan-out, receiver-side 403 with
-  `recipient_refuses_federated_dms` on the inbound handler.
-
 ### 30. Existing pre-Phase-5 `RemoteInstance` rows hold un-intersected capability sets
 
 - **Phase:** 5 (P5-11 review)
@@ -253,37 +240,6 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   runbook (operator action), or add a one-shot migration that nulls
   `capabilities` on all rows + forces a re-fetch on next contact (code
   change). Document the operator path in the Phase 5 release notes.
-
-### 32. `PRESENCE_UPDATE` WS event doesn't carry customStatus
-
-- **Phase:** 6 (P6-9 verification)
-- **Trigger:** when live custom-status updates need to surface without a
-  profile re-fetch
-- **What:** The gateway broadcast for a presence change is currently
-  `{ userId, presence }` only. When a user's `customStatus` changes —
-  locally via `PATCH /api/me/presence` OR via a federated `presence.update`
-  mirror write — the new value is persisted to the `User` row but the live
-  UI does not pick it up until the next profile re-fetch (hover card open,
-  tab focus, periodic refresh). Presence dot changes remain live; custom
-  status string and expiry do not. Affects both local and federated paths;
-  surfaced during P6-9 verification. Fix options: extend the
-  `PRESENCE_UPDATE` payload with `customStatus` +
-  `customStatusExpiresAt`, or emit a separate `CUSTOM_STATUS_UPDATE`
-  event for clarity.
-
-### 33. Per-user "invisible to federated peers" presence opt-out
-
-- **Phase:** 6 (whole-phase review)
-- **Trigger:** when user-level federation preferences are added
-- **What:** Phase 6 gates federated presence at the instance level via the
-  `presence` capability advertisement + the `FEDERATION_PRESENCE_ENABLED`
-  env var. There is no per-user opt-out — if both peers advertise
-  `presence`, any local user's presence (and custom status) is shared with
-  peers they share a federated Tavern or DM with. Some users may want to
-  refuse federated presence even when their instance supports it. Add a
-  `User.acceptsFederatedPresence` preference + UI toggle in account
-  settings; outbound fan-out checks the flag before enqueue. Parallels
-  follow-up #28 (the equivalent for DMs).
 
 ## Resolved
 
@@ -353,3 +309,71 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   `member.remove` happy-path test, which captures the gateway broadcast
   and asserts `payload.userId === subjectLocalId` (the synthetic mirror
   User id) and `payload.userId !== null`.
+
+### 28. Per-user "disable federated DMs" preference — resolved in federation-polish batch (PF-4)
+
+- **Resolution:** PF-1 added `User.acceptsFederatedDms Boolean @default(true)`
+  to the Prisma schema, and PF-4 wired both sides of the gate.
+  Inbound: `handleDmCreate` in
+  `apps/api/src/services/federation-inbound.ts` now reads
+  `acceptsFederatedDms` on the resolved local recipient after
+  `parseLocalPart(payload.recipientRemoteUserId)` and throws
+  `FederationInboundError('recipient_refuses_federated_dms', ...)` when
+  false; the route's `statusForCode` switch maps the new code to HTTP
+  403. Outbound: `POST /api/dms/direct` translates that specific 403
+  response from the peer into a user-facing error code so the UI can
+  render an explanation and roll back the optimistic local DmChannel.
+  PF-5 added the "Accept new direct messages from federated peers"
+  toggle in account settings, rendered only when the instance advertises
+  the `dms` capability. The gate fires at `dm.create` only — existing
+  federated DMs stay open per the architecture decision (closing them
+  unilaterally is a Phase 7 moderation action). Integration tests in
+  `apps/api/test-integration/federation-inbound.test.ts` cover the
+  inbound 403, the happy-path `acceptsFederatedDms=true`, and the
+  "existing DM keeps receiving messages after opt-out" branch.
+
+### 32. `PRESENCE_UPDATE` WS event doesn't carry customStatus — resolved in federation-polish batch (PF-2)
+
+- **Resolution:** PF-1 extended `presenceUpdatePayloadSchema` in
+  `packages/shared/src/schemas/presence.ts` with optional
+  `customStatus: z.string().min(1).max(128).nullable().optional()` and
+  `customStatusExpiresAt: z.string().datetime().nullable().optional()`.
+  PF-2 changed `presence-service.ts::broadcast` to read all three fields
+  (`presence`, `customStatus`, `customStatusExpiresAt`) from the User
+  row in the same `findUnique` already used for fan-out gating, and
+  include them in every `PRESENCE_UPDATE` envelope; the inbound
+  `handlePresenceUpdate` post-commit broadcast in
+  `federation-inbound.ts` does the same for mirror writes. Web:
+  `apps/web/src/lib/realtime.ts` parses the new fields and dispatches a
+  `setCustomStatus(userId, status, expiresAt)` action on the store;
+  absent fields are treated as "no change" so presence-only broadcasts
+  don't clobber the custom-status map. `MemberProfileCard` and
+  `MemberSidebar` resolve the pill as
+  `customStatusByUserId.get(userId)?.status ?? profile.customStatus` so
+  live updates win over cached snapshots. Expiry is wall-clock-evaluated
+  on the receiver, matching the existing profile-fetch path. Coverage:
+  one server integration each for the local-presence-change and
+  inbound-federation paths, plus a web unit test asserting absent fields
+  don't overwrite the customStatus store.
+
+### 33. Per-user "invisible to federated peers" presence opt-out — resolved in federation-polish batch (PF-3)
+
+- **Resolution:** PF-1 added `User.acceptsFederatedPresence Boolean @default(true)`
+  to the Prisma schema, and PF-3 wired the outbound-only gate.
+  `presence-service.ts::emitFanOut` extended the existing `findUnique`
+  (already used to confirm `remoteInstanceId IS NULL` for home-only
+  fan-out) to also read `acceptsFederatedPresence`; when false, the
+  function returns early before any envelope is enqueued and emits a
+  structured log line (`federation presence fan-out skipped — user has
+  acceptsFederatedPresence=false`). Local gateway broadcast still fires
+  — the user's presence still renders for their own tabs and local
+  members; only the federation envelope is suppressed. The check is
+  outbound-only by design: there's no inbound presence opt-out because
+  peers send presence for their own users, and filtering would just
+  leave the UI showing stale dots (architecture decision #2). PF-5
+  added the "Share my presence with federated peers" toggle in account
+  settings, rendered only when the instance advertises the `presence`
+  capability AND `FEDERATION_PRESENCE_ENABLED=true`. Test coverage
+  includes the debounce-window race documented in risk R1: flipping the
+  preference mid-debounce-window causes the pending flush to re-read
+  the User row and short-circuit, so no stale envelope leaks out.

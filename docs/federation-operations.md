@@ -671,19 +671,20 @@ These match the locality stance from Phase 5 DMs: the federated content is
 the user-visible "what's happening" surface; the UX state around it is
 local.
 
-### Known live-UI gap
+### Live custom-status broadcast (PRESENCE_UPDATE)
 
-The `PRESENCE_UPDATE` WebSocket event broadcast by the gateway today carries
-only `{ userId, presence }`. When a user's custom status changes (locally OR
-via federated mirror update), the new `customStatus` and
-`customStatusExpiresAt` values are persisted to the `User` row but the live
-UI does not pick them up until the next profile re-fetch (e.g. opening the
-hover card, switching tabs, or the periodic refresh). Presence dot changes
-remain live in real time.
+`PRESENCE_UPDATE` WebSocket events now carry `customStatus` and
+`customStatusExpiresAt` alongside the presence dot. When a user's custom
+status changes — locally via `PATCH /api/me/presence` OR via a federated
+`presence.update` mirror write — every client subscribed to that user's
+presence updates the pill live without a profile re-fetch. Both fields are
+optional on the payload: emitters that aren't touching custom status (e.g.
+the idle scanner) omit them, and receivers treat absent as "no change" so
+the existing presence-only broadcast path doesn't clobber the custom-status
+store. Expiry is wall-clock-evaluated on the receiver — same model the
+profile-fetch path uses.
 
-Tracked as follow-up #32 in `docs/federation-followups.md`. The proposed fix
-is to extend the `PRESENCE_UPDATE` payload with `customStatus` +
-`customStatusExpiresAt`, or to emit a separate `CUSTOM_STATUS_UPDATE` event.
+Closed follow-up #32; see PF-2 in the federation-polish batch.
 
 ### Privacy considerations
 
@@ -694,6 +695,107 @@ federation IS the leak. Mitigations:
 - Operators who want strict locality can set `FEDERATION_PRESENCE_ENABLED=false`
   without affecting messaging or DMs.
 - The `presence` capability is opt-in per instance.
-- A per-user "invisible to federated peers" opt-out (refuse federated
-  presence even when the instance advertises it) is tracked as follow-up
-  #33 — not in Phase 6 scope.
+- Individual users can opt out of presence federation without operator
+  action — see §Per-user federation privacy below.
+
+---
+
+## Per-user federation privacy
+
+Phase 6 wrapped the instance-level federation gates (`FEDERATION_DMS_ENABLED`,
+`FEDERATION_PRESENCE_ENABLED`, plus per-Tavern / per-room opt-in). The
+federation-polish batch added two **per-user** toggles on top, so individual
+users can refuse federation features even when their instance advertises
+them. Both default to opt-in (existing behaviour pre-migration).
+
+### The two toggles
+
+Users find them at **Account settings → Federation privacy** (the card is
+hidden entirely on instances that don't advertise either of the
+corresponding capabilities). Each row is rendered only when the
+corresponding capability is currently advertised — there's no value in
+showing "share my presence with federated peers" on an instance where the
+operator has set `FEDERATION_PRESENCE_ENABLED=false`.
+
+| Toggle | Column | Default | Effect |
+|--------|--------|---------|--------|
+| Share my presence with federated peers | `User.acceptsFederatedPresence` | `true` | When off: presence + custom-status changes still broadcast to LOCAL clients (own tabs, local members), but no `presence.update` envelope is enqueued to any peer. |
+| Accept new direct messages from federated peers | `User.acceptsFederatedDms` | `true` | When off: inbound `dm.create` envelopes targeting this user are rejected at the home instance with 403 `recipient_refuses_federated_dms`. |
+
+Both columns live on the `User` table with default `true`, so the migration
+preserves existing behaviour. Operators who want to mass-flip the defaults
+(e.g. a private instance that opts every user out of federation by default)
+can run a one-shot SQL update:
+
+```sql
+UPDATE "User" SET "acceptsFederatedPresence" = false WHERE "remoteInstanceId" IS NULL;
+UPDATE "User" SET "acceptsFederatedDms" = false WHERE "remoteInstanceId" IS NULL;
+```
+
+The `remoteInstanceId IS NULL` filter restricts the flip to LOCAL users —
+remote-user mirror rows shouldn't have either flag touched.
+
+### Asymmetric semantics
+
+The two toggles guard their respective features differently:
+
+- **Presence is OUTBOUND ONLY.** A user can only refuse to have THEIR
+  presence broadcast. There's no "I refuse to see remote users' presence"
+  gate — peers send presence envelopes for their own users, not at me, and
+  filtering inbound presence would just leave the UI showing stale
+  "offline" dots for users who are in fact active. When alice has
+  `acceptsFederatedPresence=false`, the fan-out path at her instance
+  short-circuits before enqueue (logged as `federation presence fan-out
+  skipped — user has acceptsFederatedPresence=false`) and peers simply
+  receive nothing for her. They keep showing whatever state they last
+  saw (typically the offline dot from her last cycle).
+- **DMs are gated in BOTH directions.** The teeth are on the receiver side:
+  the home instance's `dm.create` handler reads the local recipient's
+  `acceptsFederatedDms` and rejects with 403 `recipient_refuses_federated_dms`
+  when false. The initiator side surfaces that rejection cleanly through
+  the `POST /api/dms/direct` route so the UI can render a specific error.
+  There's no peer-discovery for the recipient's preference ahead of time —
+  the initiator finds out at create-time when the synchronous federated
+  POST returns 403.
+
+### "Already-open federated DMs stay open"
+
+The DM gate fires at `dm.create` only. Once a federated DmChannel exists,
+subsequent `dm.message.*` envelopes for that DM pass through normally —
+flipping `acceptsFederatedDms` to false does NOT close existing federated
+DMs. The opt-out semantic is "don't let NEW federated DMs land in my
+inbox," not "sever federation on every DM I already had." Closing an
+existing federated DM unilaterally is a moderation action and is deferred
+to Phase 7.
+
+If a user wants to stop receiving messages from a specific existing
+federated DM, the current options are the local mute / leave actions on
+that DM — both stay local to the user's instance.
+
+### The `recipient_refuses_federated_dms` 403 code
+
+A new entry in the inbound-error discriminated union and the route's
+`statusForCode` switch:
+
+- **Where it surfaces:** the receiver's `/_federation/event` route returns
+  HTTP 403 with `{ error: 'recipient_refuses_federated_dms' }` when an
+  inbound `dm.create` targets a local user whose `acceptsFederatedDms` is
+  false.
+- **What operators see in logs:** the initiator's outbound dispatcher
+  converts the 403 into a `FederationOutboxPermanentError` (no retry — the
+  preference is sticky, not transient) and dead-letters the job into
+  BullMQ's `failed` ring. Operators inspecting outbox failures will see
+  a permanent-error entry with the recipient's qualified id; this is
+  expected behaviour, not a bug. The initiator's `POST /api/dms/direct`
+  route also surfaces a user-facing error to the originating browser so
+  the UI can render an explanation.
+- **Known operational gap:** there is no admin UI for inspecting or
+  retrying dead-letter jobs today — see follow-up #16. Operators have to
+  shell into Redis (or use a separate BullMQ dashboard) to enumerate
+  federation failures. The dead-letter UI is on the roadmap; until then,
+  these permanent-error entries are visible but not actionable from the
+  admin surface.
+
+The 403 code is symmetric with the existing `dms_capability_missing` 403
+(instance-level gate) — both are permanent, both dead-letter immediately
+on the initiator, neither retries.
