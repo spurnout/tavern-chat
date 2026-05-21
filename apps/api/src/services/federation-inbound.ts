@@ -98,6 +98,7 @@ import {
   computeEffectiveFederation,
   fanOutMemberAdd,
   fanOutMemberRemove,
+  fanOutMessageCreateRelay,
   type FederationMode,
 } from './federation-outbox.js';
 import type { QueueClient } from './queues.js';
@@ -766,19 +767,39 @@ async function handleMessageCreate(input: {
     Awaited<ReturnType<PrismaClient['remoteUser']['findUnique']>>
   >;
   tx: Prisma.TransactionClient;
+  /**
+   * Wired through from the dispatcher (see `FederationInboundService.processEnvelope`).
+   * The P4-13 relay needs them to enqueue forwarded envelopes to OTHER peers
+   * when this instance is the home of T. All four are optional in the type
+   * (other handlers ignore them), but the relay only fires when ALL of
+   * `selfHost`, `queues`, and `federationEnabledOnInstance === true` are
+   * present — defence-in-depth gates so a partial federation wiring can
+   * never silently start emitting envelopes.
+   */
+  selfHost: string | null;
+  queues: QueueClient | null;
+  federationEnabledOnInstance: boolean;
+  log: FastifyBaseLogger;
 }): Promise<HandlerOutput> {
   const { envelope, payload, peer, remoteUser, tx } = input;
 
   // Channel must exist locally. Phase 3 requires the receiving instance to
   // have a mirror Channel row already; Phase 4 will introduce federated
   // invites that create the row on-demand.
+  //
+  // We also pull `server.originInstanceId` here so the postCommit relay gate
+  // (P4-13) can tell whether THIS instance is the HOME of T (null) or a
+  // mirror (non-null). Only homes relay — mirrors would forward back to the
+  // home and cause a loop / wasted work.
   const channel = await tx.channel.findUnique({
     where: { id: payload.channelId },
     select: {
       id: true,
       serverId: true,
       federationMode: true,
-      server: { select: { federationEnabled: true } },
+      server: {
+        select: { federationEnabled: true, originInstanceId: true },
+      },
     },
   });
   if (!channel) {
@@ -910,10 +931,37 @@ async function handleMessageCreate(input: {
   // viewer to serialise for.
   const dto = serializeMessage(fullRow, '');
 
-  // Critically: do NOT call fanOutMessageCreate here. The originInstanceId
-  // field is the marker — Phase 3 has no relay, the origin home instance
-  // is responsible for delivering to every peer directly. The outbound path
-  // in routes/messages.ts only fires from the local CREATE handler.
+  // P4-13 — home-instance relay gate. Decide BEFORE the postCommit closure
+  // closes over scope so the criteria are explicit:
+  //
+  //   1. We are the HOME of T (`server.originInstanceId === null`). Mirrors
+  //      do NOT relay — they would forward back to the home and waste work
+  //      / risk loops. The receiving peer's mirror has its own
+  //      `originInstanceId != null`, so this gate naturally fires only on
+  //      the home and never propagates further than one hop.
+  //   2. Server-level federation is on (defence in depth — the inbound
+  //      handler already enforced effective federation per CHANNEL above,
+  //      but the relay is about the SERVER's other peers, so we re-check
+  //      the server flag itself).
+  //   3. We have an outbound `queues` + `selfHost` wired (FEDERATION_ENABLED
+  //      at the instance level — same gate the route layer applies).
+  //
+  // The actual relay (peer lookup + per-peer enqueue) lives in
+  // `fanOutMessageCreateRelay`. Computing `shouldRelay` here keeps the
+  // postCommit closure small and the gate visible.
+  const isHome = channel.server?.originInstanceId == null;
+  const serverFederated = channel.server?.federationEnabled === true;
+  const shouldRelay =
+    isHome &&
+    serverFederated &&
+    input.federationEnabledOnInstance &&
+    input.queues != null &&
+    input.selfHost != null;
+
+  // Critically: we still do NOT call the local-author `fanOutMessageCreate`
+  // here — that would re-sign on the original (remote) author's behalf,
+  // which we can't do. The relay helper uses `preservedUserSignature` to
+  // forward the ORIGINAL author signature unchanged.
   return {
     result: { status: 200, body: { ok: true, data: { id: messageRow.id } } },
     // Broadcast + lastSeenAt are post-commit. The broadcast happens only
@@ -930,6 +978,46 @@ async function handleMessageCreate(input: {
         where: { id: remoteUser.id },
         data: { lastSeenAt: new Date() },
       });
+      if (shouldRelay) {
+        try {
+          await fanOutMessageCreateRelay({
+            queues: input.queues!,
+            selfHost: input.selfHost!,
+            serverId: channel.serverId,
+            messageId: messageRow.id,
+            // Pass the verified envelope's payload UNCHANGED. The user
+            // signature was computed over the canonical bytes of THIS
+            // exact payload object — any reformatting would invalidate
+            // it on the receiving peers.
+            originalPayload: envelope.payload,
+            originalUserSignature: envelope.userSignature,
+            // Drop the originating peer from the fan-out so we don't
+            // echo the message back to whoever sent it.
+            excludePeerInstanceId: peer.id,
+            // For log correlation — the dispatcher will NOT call
+            // userKeys.loadKeyFor on this (preservedUserSignature is set),
+            // but operators searching by author id still want to find
+            // the relayed jobs.
+            authorUserId: localUser.id,
+            log: input.log,
+            federationEnabledOnInstance: input.federationEnabledOnInstance,
+          });
+        } catch (err: unknown) {
+          // Best-effort — never let a relay failure break the local commit.
+          // Mirrors the try/catch pattern used at every other federation
+          // fan-out call site.
+          const errObj = err instanceof Error ? err : new Error(String(err));
+          input.log.warn(
+            {
+              err: errObj,
+              messageId: messageRow.id,
+              channelId: channel.id,
+              serverId: channel.serverId,
+            },
+            'federation relay failed for inbound message.create',
+          );
+        }
+      }
     },
   };
 }

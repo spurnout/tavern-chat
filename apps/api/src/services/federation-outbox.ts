@@ -160,6 +160,149 @@ export async function fanOutMessageCreate(input: FanOutMessageCreateInput): Prom
   }
 }
 
+// --- P4-13 — home-instance message relay ------------------------------------
+//
+// When THIS instance is the home of T (Server.originInstanceId IS NULL) and
+// receives an inbound `message.create` from one of T's peers, we are the
+// authoritative hub: we must forward the message to every OTHER peer that has
+// a member in T so they see it too.
+//
+// Two crucial differences from the local-author fan-out above:
+//
+//   1. The user signature is NOT recomputed. The original author (e.g.
+//      bob@b) is a remote user; we don't hold his private key. We pass his
+//      pre-existing signature straight through via `preservedUserSignature`
+//      so each receiving peer can verify "the author really was bob@b"
+//      against bob's published key from his home instance.
+//
+//   2. The relayed payload is byte-identical to the inbound payload. If we
+//      changed any field — even reformatted the JSON differently — bob's
+//      signature would stop verifying because it was computed over the
+//      EXACT canonical bytes of the original payload. The relay helper
+//      threads the original payload through as `unknown` and the dispatcher
+//      re-canonicalises it consistently (same canonicalize routine on both
+//      sides). The receiver verifies against THEIR canonicalisation of
+//      whatever bytes arrive, which round-trips through the same algorithm.
+//
+//   3. We sign the OUTER envelope with this instance's instance key (because
+//      `fromInstance = selfHost` — we're the sender of THIS hop). The
+//      receiver verifies that signature against our published instance key,
+//      establishing "this came from the home of T".
+//
+// `excludePeerInstanceId` is the originating peer's RemoteInstance.id —
+// dropped from the fan-out so we don't echo back the message we just
+// received from them.
+
+export interface FanOutMessageCreateRelayInput {
+  queues: QueueClient;
+  selfHost: string;
+  serverId: string;
+  /**
+   * The Message row that was just persisted on the inbound side — the
+   * helper uses its id as the BullMQ dedupe / log key. The payload itself
+   * is NOT derived from this row (that would canonicalise differently
+   * from the inbound payload and break the preserved user signature);
+   * it's passed in separately as `originalPayload`.
+   */
+  messageId: string;
+  /**
+   * The payload from the verified inbound envelope, threaded through
+   * unchanged. MUST be byte-equivalent (same canonical form) to what the
+   * original author signed; the inbound handler took it straight from
+   * the verified envelope's `payload` field so this invariant holds by
+   * construction.
+   */
+  originalPayload: unknown;
+  /**
+   * The base64 user signature lifted directly off the verified inbound
+   * envelope. Threaded into `preservedUserSignature` on the BullMQ job;
+   * the dispatcher passes it to `buildTwoLayerMessageEnvelope` so each
+   * relay envelope carries the ORIGINAL author signature unchanged.
+   */
+  originalUserSignature: string;
+  /**
+   * The originating peer's RemoteInstance.id — dropped from the fan-out
+   * set so the relay doesn't echo the message back to whoever sent it.
+   * (No double-hop: each peer learns each event exactly once per relay
+   * step.)
+   */
+  excludePeerInstanceId: string;
+  /**
+   * For routing/log keying: the local User.id corresponding to the remote
+   * author. The dispatcher does NOT call `userKeys.loadKeyFor()` on this
+   * (the preserved signature short-circuits it), but the field still
+   * matters for log correlation and BullMQ job inspection.
+   */
+  authorUserId: string;
+  log: FastifyBaseLogger;
+  /** Defence-in-depth, see `FanOutMessageCreateInput.federationEnabledOnInstance`. */
+  federationEnabledOnInstance?: boolean;
+}
+
+/**
+ * Fan out a relayed `message.create` envelope from the HOME of T to every
+ * peered instance with a remote member in T, EXCLUDING the originating peer.
+ * The caller (inbound `handleMessageCreate` postCommit) has already verified:
+ *   - `server.federationEnabled === true`
+ *   - `server.originInstanceId === null` (we are the home — mirrors don't
+ *     relay, that would re-send back to the home and trigger a loop / waste)
+ *   - the inbound envelope itself was fully verified (two-layer signatures
+ *     OK), so `originalPayload` + `originalUserSignature` form a valid pair
+ *     for every receiving peer.
+ *
+ * Per-peer enqueue is best-effort with try/catch (matches the rest of the
+ * fan-out helpers): one bad peer must not strand the relay to the others.
+ */
+export async function fanOutMessageCreateRelay(
+  input: FanOutMessageCreateRelayInput,
+): Promise<void> {
+  if (input.federationEnabledOnInstance === false) {
+    input.log.warn(
+      { messageId: input.messageId, serverId: input.serverId, eventType: 'message.create', relay: true },
+      'federation relay skipped — instance has FEDERATION_ENABLED=false (defence-in-depth)',
+    );
+    return;
+  }
+  const allPeerIds = await findPeersWithRemoteMembers(input.serverId);
+  const peerIds = allPeerIds.filter((id) => id !== input.excludePeerInstanceId);
+  if (peerIds.length === 0) return;
+
+  // Parse the payload through the wire schema to fail loudly if the inbound
+  // shape ever drifts from what the create handler expects — better to
+  // explode here at the relay site than at every receiving peer. The parse
+  // result is discarded (we relay `originalPayload` unchanged so the
+  // preserved user signature still verifies against the canonical bytes the
+  // author actually signed; reusing `parsed` could subtly reorder fields).
+  messageCreatePayloadSchema.parse(input.originalPayload);
+
+  const eventType: EnvelopeEventType = 'message.create';
+  for (const peerInstanceId of peerIds) {
+    try {
+      await input.queues.enqueueFederationOutbox({
+        messageId: input.messageId,
+        peerInstanceId,
+        eventType,
+        // Fresh nonce per peer — the inbound envelope's nonce was scoped to
+        // the originating peer's replay log on US; each relay envelope is
+        // a NEW envelope from US to each target peer and needs its own
+        // identifier. (BullMQ jobId defaults to `nonce ?? messageId`, so
+        // without this two peers' relays of the same message would
+        // collapse to one job.)
+        nonce: ulid(),
+        authorUserId: input.authorUserId,
+        payload: input.originalPayload,
+        preservedUserSignature: input.originalUserSignature,
+      });
+    } catch (err: unknown) {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      input.log.warn(
+        { err: errObj, peerInstanceId, messageId: input.messageId, eventType, relay: true },
+        'federation relay enqueue failed for peer',
+      );
+    }
+  }
+}
+
 export interface FanOutMessageUpdateInput {
   queues: QueueClient;
   selfHost: string;

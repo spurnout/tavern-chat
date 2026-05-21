@@ -44,11 +44,13 @@ import {
   sign as edSign,
   verify as edVerify,
   buildTwoLayerMessageEnvelope,
+  verifyTwoLayerMessageEnvelope,
   type FederationOutboxJob,
   type TwoLayerSignedEnvelope,
 } from '@tavern/federation';
 import {
   PROTOCOL_VERSION,
+  messageCreatePayloadSchema,
   type MemberJoinedPayload,
 } from '@tavern/shared';
 
@@ -3690,3 +3692,361 @@ describe.skipIf(!dockerOk)('P4-12 — POST /_federation/event (member.leave)', (
     }
   });
 });
+
+/**
+ * P4-13 — Home-instance message relay.
+ *
+ * When this instance is the HOME of a federated server T and receives a
+ * `message.create` envelope from one of T's peers, it MUST forward the
+ * message to every OTHER peer that has a member in T — with the original
+ * author's user signature PRESERVED (not re-signed; we don't hold the
+ * remote author's private key) and the outer envelope signed by THIS
+ * instance.
+ *
+ * Coverage matrix:
+ *   1. Happy path: A (this instance, home of T) receives a message from B;
+ *      C is another peer in T → one relay envelope enqueued to C, original
+ *      user sig preserved, `fromInstance = selfHost`, target = C's host.
+ *   2. No relay when the receiving peer is the only peer in T (nobody else
+ *      to forward to).
+ *   3. No relay when THIS instance is a mirror of T (originInstanceId is
+ *      set). Mirrors do not relay — that would loop back to the home.
+ *   4. Verifies the relay envelope structure on the wire — `userSignature`
+ *      equals the inbound envelope's signature, the relayed payload still
+ *      verifies against the original author's public key under the
+ *      `verifyTwoLayerMessageEnvelope` helper.
+ */
+describe.skipIf(!dockerOk)('P4-13 — home-instance relay on inbound message.create', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
+  it('relays to OTHER peers when this instance is the home of T', async () => {
+    // Default fixture: T is a LOCAL server (originInstanceId = null) on this
+    // instance, with author alice@b.example as a remote member. This makes
+    // THIS instance the home of T from the relay's perspective.
+    const fx = await makeFixture();
+
+    // Seed peer C with its own remote member in T so the relay has a
+    // non-empty audience (excluding B, who is the originating peer).
+    const peerC = await seedSecondPeer();
+    const cLocalUserId = ulid();
+    const cLocalpart = `charlie-${cLocalUserId.slice(-6).toLowerCase()}`;
+    const cQualifiedId = `${cLocalpart}@${peerC.peerHost}`;
+    await prisma.remoteUser.create({
+      data: {
+        id: ulid(),
+        remoteInstanceId: peerC.peerInstanceId,
+        remoteUserId: cQualifiedId,
+        displayNameCache: 'Charlie from C',
+        avatarUrlCache: null,
+        publicKey: randomBytes(32),
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: cLocalUserId,
+        username: `__rem_${cLocalUserId.toLowerCase()}`,
+        usernameLower: `__rem_${cLocalUserId.toLowerCase()}`,
+        displayName: 'Charlie from C',
+        email: `${cQualifiedId}.federated.local`,
+        emailLower: `${cQualifiedId}.federated.local`,
+        passwordHash: null,
+        remoteUserId: cQualifiedId,
+        remoteInstanceId: peerC.peerInstanceId,
+      },
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.serverId, userId: cLocalUserId },
+    });
+
+    const messageId = ulid();
+    const envelope = buildMsgCreateEnvelope({ fx, messageId, content: 'hi everyone' });
+
+    const captured: FederationOutboxJob[] = [];
+    const enqueue = vi.fn(async (job: FederationOutboxJob) => {
+      captured.push(job);
+    });
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+
+      // Exactly one relay enqueue — only peer C is in T's audience after
+      // excluding the originating peer B. There may be no further calls
+      // even if the test environment happened to seed extra membership.
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      const job = captured[0]!;
+      expect(job.eventType).toBe('message.create');
+      expect(job.messageId).toBe(messageId);
+      expect(job.peerInstanceId).toBe(peerC.peerInstanceId);
+      // Defence-in-depth: NEVER echo back to the originating peer.
+      expect(job.peerInstanceId).not.toBe(fx.peerInstanceId);
+
+      // The preserved user signature MUST be the byte-identical signature
+      // off the inbound envelope. If anything has touched it the receiver
+      // would 401 with `user signature does not verify`.
+      expect(job.preservedUserSignature).toBe(envelope.userSignature);
+
+      // The relayed payload must include the ORIGINAL author identifier
+      // (alice@b.example), not a re-qualified id pointing at THIS instance.
+      // The receiving peer verifies the user signature against alice's
+      // known public key from her home (b.example).
+      const payload = job.payload as { authorRemoteUserId: string; messageId: string; content: string };
+      expect(payload.authorRemoteUserId).toBe(fx.authorRemoteUserId);
+      expect(payload.messageId).toBe(messageId);
+      expect(payload.content).toBe('hi everyone');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does NOT relay when the originating peer is the only peer in T', async () => {
+    // No second peer seeded — B is the only one with a member in T.
+    // After excluding B (the originator), the relay set is empty and the
+    // helper short-circuits without enqueueing.
+    const fx = await makeFixture();
+    const envelope = buildMsgCreateEnvelope({ fx });
+
+    const enqueue = vi.fn(async () => undefined);
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does NOT relay when this instance is a mirror of T (not the home)', async () => {
+    // A mirror fixture sets `Server.originInstanceId = peerInstanceId` —
+    // T's home is on the other side. If this instance also forwarded
+    // inbound message.create envelopes, the relay would echo back to the
+    // home and waste round trips (or worse, loop if guards regress).
+    const fx = await makeMirrorFixture();
+    // Seed a second peer with a member in the MIRROR server so we'd have
+    // somebody to relay to IF the gate were broken — proves the gate is
+    // what stops the enqueue, not an empty audience.
+    const otherPeer = await seedSecondPeer();
+    const otherLocalUserId = ulid();
+    const otherLocalpart = `dora-${otherLocalUserId.slice(-6).toLowerCase()}`;
+    const otherQualifiedId = `${otherLocalpart}@${otherPeer.peerHost}`;
+    await prisma.remoteUser.create({
+      data: {
+        id: ulid(),
+        remoteInstanceId: otherPeer.peerInstanceId,
+        remoteUserId: otherQualifiedId,
+        displayNameCache: 'Dora',
+        avatarUrlCache: null,
+        publicKey: randomBytes(32),
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: otherLocalUserId,
+        username: `__rem_${otherLocalUserId.toLowerCase()}`,
+        usernameLower: `__rem_${otherLocalUserId.toLowerCase()}`,
+        displayName: 'Dora',
+        email: `${otherQualifiedId}.federated.local`,
+        emailLower: `${otherQualifiedId}.federated.local`,
+        passwordHash: null,
+        remoteUserId: otherQualifiedId,
+        remoteInstanceId: otherPeer.peerInstanceId,
+      },
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.mirrorServerId, userId: otherLocalUserId },
+    });
+
+    // Build a message.create envelope targeting the MIRROR channel. The
+    // inbound handler accepts it (mirror channel + federation on) but
+    // the relay gate sees originInstanceId != null and skips the fan-out.
+    const envelope = buildTwoLayerMessageEnvelope({
+      eventType: 'message.create',
+      fromInstance: PEER_HOST,
+      toInstance: SELF_HOST,
+      payload: {
+        authorRemoteUserId: fx.authorRemoteUserId,
+        channelId: fx.mirrorChannelId,
+        messageId: ulid(),
+        content: 'should not be relayed by a mirror',
+        replyToMessageId: null,
+        createdAt: new Date().toISOString(),
+      },
+      signUser: (b: Buffer) => edSign(b, fx.authorKp.privateKey),
+      signInstance: (b: Buffer) => edSign(b, fx.peerKp.privateKey),
+    });
+
+    const enqueue = vi.fn(async () => undefined);
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      expect(res.statusCode).toBe(200);
+      // No relay — mirrors don't forward; the originating peer (the home)
+      // is responsible for fanning out to every other peer directly.
+      expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('relay envelope verifies on the receiving peer: original user sig + this-instance sig', async () => {
+    // End-to-end signature check: take the captured relay job, build the
+    // would-be wire envelope the dispatcher would produce, and verify it
+    // with the original author key (alice@b) + a stand-in instance key for
+    // THIS instance. The dispatcher signs with `deps.federationKeys`; in
+    // this test we substitute a known keypair and verify against its public
+    // half. Proves: the receiver's verifier accepts both layers when fed
+    // the relayed payload + preserved user sig.
+    const fx = await makeFixture();
+    const peerC = await seedSecondPeer();
+    const cLocalUserId = ulid();
+    const cLocalpart = `eve-${cLocalUserId.slice(-6).toLowerCase()}`;
+    const cQualifiedId = `${cLocalpart}@${peerC.peerHost}`;
+    await prisma.remoteUser.create({
+      data: {
+        id: ulid(),
+        remoteInstanceId: peerC.peerInstanceId,
+        remoteUserId: cQualifiedId,
+        displayNameCache: 'Eve from C',
+        avatarUrlCache: null,
+        publicKey: randomBytes(32),
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: cLocalUserId,
+        username: `__rem_${cLocalUserId.toLowerCase()}`,
+        usernameLower: `__rem_${cLocalUserId.toLowerCase()}`,
+        displayName: 'Eve from C',
+        email: `${cQualifiedId}.federated.local`,
+        emailLower: `${cQualifiedId}.federated.local`,
+        passwordHash: null,
+        remoteUserId: cQualifiedId,
+        remoteInstanceId: peerC.peerInstanceId,
+      },
+    });
+    await prisma.serverMember.create({
+      data: { serverId: fx.serverId, userId: cLocalUserId },
+    });
+
+    const inboundEnv = buildMsgCreateEnvelope({ fx, messageId: ulid(), content: 'verifiable relay' });
+    const captured: FederationOutboxJob[] = [];
+    const enqueue = vi.fn(async (job: FederationOutboxJob) => {
+      captured.push(job);
+    });
+    const app = await buildApp({
+      config: loadConfig(envFor(ctx!.databaseUrl)),
+      queuesOverride: {
+        enqueueScan: vi.fn(async () => undefined),
+        enqueueFederationOutbox: enqueue,
+        close: vi.fn(async () => undefined),
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: inboundEnv,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(captured.length).toBe(1);
+      const job = captured[0]!;
+
+      // Reconstruct what the dispatcher would put on the wire: same payload,
+      // preserved user signature, instance signature from THIS instance.
+      const thisInstanceKp = generateKeyPair();
+      const wireEnvelope = buildTwoLayerMessageEnvelope({
+        eventType: job.eventType,
+        fromInstance: SELF_HOST,
+        toInstance: peerC.peerHost,
+        payload: job.payload,
+        preservedUserSignature: job.preservedUserSignature!,
+        signInstance: (b: Buffer) => edSign(b, thisInstanceKp.privateKey),
+      });
+
+      // The receiving peer C would verify with:
+      //   - peer instance key = this instance's published key (the relay
+      //     envelope's `fromInstance = SELF_HOST`, so the verifier looks up
+      //     OUR RemoteInstance row on its side)
+      //   - author public key = alice@b's public key, looked up via
+      //     RemoteUser cache (or fetched from b.example's well-known)
+      // We can simulate both by passing the raw keys directly.
+      const userPubRaw = exportPublicKeyRaw(fx.authorKp.publicKey);
+      const instancePubRaw = exportPublicKeyRaw(thisInstanceKp.publicKey);
+
+      const verifyResult = verifyTwoLayerMessageEnvelope({
+        envelope: wireEnvelope,
+        peerInstancePublicKeyRaw: Buffer.from(instancePubRaw),
+        authorPublicKeyRaw: Buffer.from(userPubRaw),
+        payloadSchema: messageCreatePayloadSchema,
+      });
+      expect(verifyResult.ok).toBe(true);
+      if (verifyResult.ok) {
+        // Author identity on the wire is still alice — the relay does NOT
+        // rewrite the author to look like the relay-er.
+        expect(verifyResult.payload.authorRemoteUserId).toBe(fx.authorRemoteUserId);
+      }
+
+      // Belt-and-braces: a tampered payload (anything that changes the
+      // canonical bytes) must fail user-signature verification, proving
+      // the preserved signature is genuinely the original author's sig
+      // and not silently re-derived.
+      const tampered = {
+        ...wireEnvelope,
+        payload: { ...(wireEnvelope.payload as object), content: 'evil edit' },
+      };
+      const tamperResult = verifyTwoLayerMessageEnvelope({
+        envelope: tampered,
+        peerInstancePublicKeyRaw: Buffer.from(instancePubRaw),
+        authorPublicKeyRaw: Buffer.from(userPubRaw),
+        payloadSchema: messageCreatePayloadSchema,
+      });
+      expect(tamperResult.ok).toBe(false);
+      if (!tamperResult.ok) {
+        // Either layer can complain depending on whether the canonical-
+        // signed surface changed — for a payload edit the user-sig
+        // verification fails because the canonical bytes change.
+        expect(tamperResult.reason).toMatch(/user signature|instance signature/i);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+

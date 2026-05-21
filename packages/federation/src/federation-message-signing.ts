@@ -37,8 +37,28 @@ export interface BuildTwoLayerInput<T> {
   payload: T;
   lifetimeSeconds?: number;
   notBefore?: Date;
-  /** Caller-supplied user signer (typically userKeys.loadKeyFor(userId).sign) */
-  signUser: (canonicalPayloadBytes: Buffer) => Buffer;
+  /**
+   * Caller-supplied user signer (typically `userKeys.loadKeyFor(userId).sign`).
+   * EITHER `signUser` OR `preservedUserSignature` must be supplied — exactly one,
+   * never both. The builder throws synchronously if the invariant is violated.
+   */
+  signUser?: (canonicalPayloadBytes: Buffer) => Buffer;
+  /**
+   * Pre-computed base64 user signature to reuse instead of signing the payload
+   * again. Used by the P4-13 home-instance relay path: when this instance is
+   * the home of T and receives a message from peer B authored by bob@b, we
+   * cannot re-sign on bob's behalf (we don't hold his private key). Instead we
+   * pass bob's ORIGINAL user signature straight through, and only re-sign the
+   * outer envelope with our own instance key so each target peer can verify
+   * "this came from the home of T" while still cryptographically checking
+   * "the author really was bob@b".
+   *
+   * The caller is responsible for ensuring the signature actually verifies
+   * against the author's known public key for the given payload — this builder
+   * does no verification of its own. (The dispatcher gets a verified envelope
+   * from the inbound side, so the signature is trustworthy by construction.)
+   */
+  preservedUserSignature?: string;
   /** Caller-supplied instance signer (typically federationKeys.sign) */
   signInstance: (canonicalEnvelopeBytes: Buffer) => Buffer;
 }
@@ -51,9 +71,28 @@ export function buildTwoLayerMessageEnvelope<T>(
   const lifetime = input.lifetimeSeconds ?? ENVELOPE_DEFAULT_LIFETIME_S;
   const notAfter = new Date(notBefore.getTime() + lifetime * 1000);
 
-  // Layer 1: user signs canonical(payload)
-  const payloadBytes = Buffer.from(canonicalize(input.payload as unknown), 'utf8');
-  const userSignature = input.signUser(payloadBytes).toString('base64');
+  // Layer 1: user signature. Either we sign with the user's key now, or the
+  // caller hands us a pre-computed signature from an upstream envelope we
+  // can't re-sign (the relay path). Enforce exactly-one so a bug at the call
+  // site can't silently fall through to "no user signature at all" or worse
+  // "two divergent signatures, second one wins".
+  if (input.signUser && input.preservedUserSignature !== undefined) {
+    throw new Error(
+      'buildTwoLayerMessageEnvelope: pass exactly one of signUser / preservedUserSignature, not both',
+    );
+  }
+  if (!input.signUser && input.preservedUserSignature === undefined) {
+    throw new Error(
+      'buildTwoLayerMessageEnvelope: must provide either signUser or preservedUserSignature',
+    );
+  }
+  let userSignature: string;
+  if (input.preservedUserSignature !== undefined) {
+    userSignature = input.preservedUserSignature;
+  } else {
+    const payloadBytes = Buffer.from(canonicalize(input.payload as unknown), 'utf8');
+    userSignature = input.signUser!(payloadBytes).toString('base64');
+  }
 
   // Layer 2: instance signs canonical(envelope-minus-instance-signature),
   // which DOES include userSignature so a peer can't strip it.

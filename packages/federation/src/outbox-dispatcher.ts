@@ -23,8 +23,31 @@ export interface FederationOutboxJob {
   /** Optional caller-supplied nonce — defaults to the message id so duplicate
    * enqueues get deduplicated by the BullMQ jobId. */
   nonce?: string;
-  /** Author's User.id — used to load the user-key signer. */
+  /**
+   * Author's User.id — used to load the user-key signer for envelopes signed
+   * by a local user. For RELAY jobs (P4-13 — home instance forwarding an
+   * inbound envelope to other peers), this is still set for log/audit
+   * routing, but no user-key lookup happens: the dispatcher uses
+   * `preservedUserSignature` instead.
+   */
   authorUserId: string;
+  /**
+   * P4-13 RELAY MARKER. When set, the dispatcher skips
+   * `userKeys.loadKeyFor(authorUserId)` and threads this base64 string
+   * straight into `buildTwoLayerMessageEnvelope` as `preservedUserSignature`.
+   * The job represents "the home of T is relaying bob@b's message to peer C"
+   * — we cannot re-sign on bob's behalf (we don't hold his private key), so
+   * we forward his original signature unchanged and only re-sign the outer
+   * envelope with this instance's key. The receiver verifies bob's signature
+   * against bob's known public key from his home instance, and our envelope
+   * signature against our published instance key.
+   *
+   * The relayed payload MUST be byte-identical to what bob originally signed
+   * (same canonical bytes), otherwise his signature won't verify. The relay
+   * helper (`fanOutMessageCreateRelay`) passes the original envelope's
+   * payload through unchanged for that reason.
+   */
+  preservedUserSignature?: string;
 }
 
 export interface DispatcherDeps {
@@ -106,16 +129,31 @@ export async function dispatchOutboxJob(
   // (or future restore from a peer that was renamed) could put junk here.
   assertValidPeerHost(peer.host);
 
-  const userKey = await deps.userKeys.loadKeyFor(job.authorUserId);
-
-  const envelope = buildTwoLayerMessageEnvelope({
-    eventType: job.eventType,
-    fromInstance: deps.selfHost,
-    toInstance: peer.host,
-    payload: job.payload,
-    signUser: userKey.sign,
-    signInstance: (bytes) => deps.federationKeys.sign(bytes),
-  });
+  // Relay path (P4-13): the home of T is forwarding an inbound envelope to
+  // another peer. We don't (and can't) re-sign on the original author's
+  // behalf — pass their preserved user signature straight through and only
+  // re-sign the outer envelope with this instance's key.
+  const envelope =
+    job.preservedUserSignature !== undefined
+      ? buildTwoLayerMessageEnvelope({
+          eventType: job.eventType,
+          fromInstance: deps.selfHost,
+          toInstance: peer.host,
+          payload: job.payload,
+          preservedUserSignature: job.preservedUserSignature,
+          signInstance: (bytes) => deps.federationKeys.sign(bytes),
+        })
+      : await (async () => {
+          const userKey = await deps.userKeys.loadKeyFor(job.authorUserId);
+          return buildTwoLayerMessageEnvelope({
+            eventType: job.eventType,
+            fromInstance: deps.selfHost,
+            toInstance: peer.host,
+            payload: job.payload,
+            signUser: userKey.sign,
+            signInstance: (bytes) => deps.federationKeys.sign(bytes),
+          });
+        })();
 
   // Phase 3 dispatches over HTTPS even though the .well-known reserves
   // `endpoints.events` for WSS (Phase 5). Re-fetching discovery on every
