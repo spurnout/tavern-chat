@@ -31,6 +31,12 @@ export const ENVELOPE_EVENT_TYPES = [
   'channel.create',
   'channel.update',
   'channel.delete',
+  'dm.create',
+  'dm.message.create',
+  'dm.message.update',
+  'dm.message.delete',
+  'dm.reaction.add',
+  'dm.reaction.remove',
 ] as const;
 export type EnvelopeEventType = (typeof ENVELOPE_EVENT_TYPES)[number];
 
