@@ -162,6 +162,28 @@ export async function registerDmRoutes(
       // but a particular peer isn't.
       // Re-creates of the same DM channel re-fire `dm.create` — that's
       // fine: the inbound handler is idempotent on (pairKey).
+      //
+      // KNOWN UX GAP — silent dead-letter on permanent rejection.
+      // The BullMQ outbox dispatcher converts permanent (4xx) responses
+      // from the peer's inbound `/_federation/inbox` into
+      // `FederationOutboxPermanentError` and dead-letters the job. The
+      // catch block below only fires for SYNCHRONOUS errors during the
+      // enqueue (Prisma lookup failures, queue-not-ready, etc.); it does
+      // NOT fire for async delivery failures. The user-visible
+      // consequence: the local DmChannel exists, the initiator can write
+      // messages, no messages reach the remote recipient, and the UI
+      // shows no error. Scenarios that hit this today:
+      //   - PF-4 `recipient_refuses_federated_dms` — recipient has the
+      //     per-user "accept federated DMs" toggle off on their home
+      //     instance, peer's inbound handler returns 403.
+      //   - Peer dropped the `dms` capability since last handshake.
+      //   - Peer revoked the peering relationship.
+      //   - Recipient deleted / suspended on the peer instance.
+      // The operator-visible signal in all cases is the dead-letter ring
+      // in BullMQ. There is no UI feedback path back to the initiator
+      // TODAY — tracked in `docs/federation-followups.md` #34, blocked
+      // on dead-letter visibility (#16) or a gateway-publish path that
+      // emits `DM_FEDERATION_REFUSED` back to the originator.
       if (
         deps?.selfHost &&
         deps?.queues &&
@@ -197,9 +219,18 @@ export async function registerDmRoutes(
           }
         } catch (err: unknown) {
           const errObj = err instanceof Error ? err : new Error(String(err));
+          // Synchronous enqueue failures only — async delivery failures
+          // (peer 403, peer 410, capability mismatch, dead-letter) do
+          // NOT come through here, they surface in the BullMQ
+          // dead-letter ring. See the block comment above + follow-up
+          // #34 for the user-feedback gap.
           req.log.warn(
-            { err: errObj, dmChannelId: id },
-            'dm.create federation fan-out failed (local DM unaffected)',
+            {
+              err: errObj,
+              eventType: 'dm.create',
+              dmChannelId: id,
+            },
+            'dm.create federation fan-out enqueue failed (local DM unaffected; async delivery failures land in the outbox dead-letter ring, not here)',
           );
         }
       }

@@ -198,12 +198,18 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
       store.setPresence(parsed.data.userId, parsed.data.presence);
       // PF-2 / follow-up #32: the broadcast OPTIONALLY carries the user's
       // live customStatus. "Absent" and "null" mean different things on the
-      // wire — `null` is an explicit clear, missing means "this broadcast
-      // didn't touch customStatus". The Zod schema strips unknown keys but
-      // preserves the absent-vs-null distinction on declared optional+nullable
-      // fields, so `'customStatus' in parsed.data` is the right gate. Without
-      // this guard, idle/active flaps (which don't include customStatus)
-      // would clobber a previously-set status to undefined on every flap.
+      // wire — `null` is an explicit clear (the user cleared their status),
+      // missing means "this broadcast didn't touch customStatus" (e.g. an
+      // idle/active flap that should leave any existing status alone).
+      //
+      // We MUST check the raw wire object (`data`) here, not `parsed.data`:
+      // Zod's `.optional().nullable()` on `customStatus` may strip the key
+      // entirely from the parsed output when it's absent, collapsing the
+      // absent-vs-undefined-vs-null cases on the parsed side. The raw
+      // payload is the only place the absent-vs-null distinction is
+      // reliably preserved. Without this guard, idle/active flaps (which
+      // don't include customStatus) would clobber a previously-set status
+      // to null on every flap.
       if (
         typeof data === 'object' &&
         data !== null &&

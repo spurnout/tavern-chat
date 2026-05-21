@@ -241,6 +241,30 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   `capabilities` on all rows + forces a re-fetch on next contact (code
   change). Document the operator path in the Phase 5 release notes.
 
+### 34. Silent dead-letter on outbound `dm.create` rejection (`recipient_refuses_federated_dms`)
+
+- **Phase:** PF / Federation polish (post-Phase 6)
+- **Trigger:** when federation outbox dead-letter visibility (#16) lands
+- **What:** When a local user starts a federated DM with a remote user
+  whose home instance returns 403 `recipient_refuses_federated_dms`
+  (because the recipient opted out via PF-4's account-settings toggle),
+  the BullMQ dispatcher converts the 403 into a
+  `FederationOutboxPermanentError` and dead-letters the job silently.
+  The initiator's local `DmChannel` exists; the initiator can write
+  messages into it; no messages ever reach the remote recipient; the
+  UI shows no error. The plan's R4 risk note accepted this as a
+  limitation, but it remains a real UX gap until either (a) the
+  dead-letter UI from follow-up #16 lands so operators can surface
+  failed jobs to the user, or (b) the worker grows a gateway-publish
+  path that emits a `DM_FEDERATION_REFUSED` event back to the
+  originating user's client. Choice (b) is the cleaner UX — it routes
+  the signal to the person who needs it (the initiator) rather than
+  to the operator. Severity: medium — no data integrity issue, but a
+  user-confusion bug. The same dead-letter path also covers
+  capability-dropped, peering-revoked, and recipient-deleted cases;
+  the fix should not be specific to the `recipient_refuses_federated_dms`
+  string.
+
 ## Resolved
 
 ### Phase 2 post-review fix-up
