@@ -312,7 +312,8 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     set((s) => {
       const { [channelId]: _gone, ...rest } = s.dmChannelsById;
       const { [channelId]: _msgs, ...restMsgs } = s.messagesByDmChannel;
-      return { dmChannelsById: rest, messagesByDmChannel: restMsgs };
+      const { [channelId]: _refused, ...restRefused } = s.dmFederationRefusedByChannelId;
+      return { dmChannelsById: rest, messagesByDmChannel: restMsgs, dmFederationRefusedByChannelId: restRefused };
     }),
   setDmFederationRefused: (dmChannelId) =>
     set((s) => ({

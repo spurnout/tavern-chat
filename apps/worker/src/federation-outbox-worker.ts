@@ -116,7 +116,7 @@ export async function startFederationOutboxWorker(
     concurrency: CONCURRENCY,
   });
 
-  worker.on('failed', async (job, err) => {
+  worker.on('failed', (job, err) => {
     if (!job) {
       logger.error({ err: err.message }, 'outbox: job failed (no job object)');
       return;
@@ -140,8 +140,8 @@ export async function startFederationOutboxWorker(
     // user so their DMs view can surface a banner. `job.data.messageId` IS
     // the dmChannelId (set by the enqueue side in services/queues.ts).
     if (exhausted && job.data.eventType === 'dm.create' && gatewayPublisher) {
-      try {
-        await gatewayPublisher.publish(
+      void gatewayPublisher
+        .publish(
           'tavern:gateway',
           JSON.stringify({
             type: 'DM_CHANNEL_FEDERATION_REFUSED',
@@ -151,10 +151,10 @@ export async function startFederationOutboxWorker(
               reason: 'permanent_error',
             },
           }),
-        );
-      } catch (publishErr) {
-        logger.warn({ publishErr }, 'failed to notify user of DM federation refused');
-      }
+        )
+        .catch((publishErr) => {
+          logger.warn({ publishErr }, 'failed to notify user of DM federation refused');
+        });
     }
   });
 
