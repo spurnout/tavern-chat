@@ -799,3 +799,17 @@ A new entry in the inbound-error discriminated union and the route's
 The 403 code is symmetric with the existing `dms_capability_missing` 403
 (instance-level gate) — both are permanent, both dead-letter immediately
 on the initiator, neither retries.
+
+---
+
+## Upgrading from pre-Phase-5
+
+The `20260522090000_reset_pre_phase5_peer_capabilities` migration resets the
+`capabilities` column on any `peered` RemoteInstance rows that lack the full
+`messages + dms + presence` capability set. This affects peers that were
+established before Phase 5's capability intersection enforcement.
+
+After applying migrations, affected peers will lose DM and presence capability
+until the next re-handshake. Operators can trigger this manually via the admin
+UI ("Re-initiate peering") or wait for the next outbound federation event to
+prompt an automatic re-handshake.
