@@ -37,6 +37,8 @@ export interface FederationOutboxWorkerDeps {
   connection: IORedis;
   cfg: WorkerConfig;
   logger: Logger;
+  /** Optional gateway publisher so the worker can push user-targeted events. */
+  gatewayPublisher?: IORedis;
 }
 
 export interface FederationOutboxWorkerHandle {
@@ -53,7 +55,7 @@ export interface FederationOutboxWorkerHandle {
 export async function startFederationOutboxWorker(
   deps: FederationOutboxWorkerDeps,
 ): Promise<FederationOutboxWorkerHandle | null> {
-  const { cfg, logger, connection } = deps;
+  const { cfg, logger, connection, gatewayPublisher } = deps;
   if (!cfg.FEDERATION_ENABLED) {
     logger.info('federation outbox: FEDERATION_ENABLED=false, skipping worker');
     return null;
@@ -114,7 +116,7 @@ export async function startFederationOutboxWorker(
     concurrency: CONCURRENCY,
   });
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', async (job, err) => {
     if (!job) {
       logger.error({ err: err.message }, 'outbox: job failed (no job object)');
       return;
@@ -134,6 +136,26 @@ export async function startFederationOutboxWorker(
       },
       exhausted ? 'outbox: job dead-lettered after exhausting attempts' : 'outbox: job failed; will retry',
     );
+    // FO-3: when a dm.create job exhausts all retries, notify the initiating
+    // user so their DMs view can surface a banner. `job.data.messageId` IS
+    // the dmChannelId (set by the enqueue side in services/queues.ts).
+    if (exhausted && job.data.eventType === 'dm.create' && gatewayPublisher) {
+      try {
+        await gatewayPublisher.publish(
+          'tavern:gateway',
+          JSON.stringify({
+            type: 'DM_CHANNEL_FEDERATION_REFUSED',
+            userId: job.data.authorUserId,
+            data: {
+              dmChannelId: job.data.messageId,
+              reason: 'permanent_error',
+            },
+          }),
+        );
+      } catch (publishErr) {
+        logger.warn({ publishErr }, 'failed to notify user of DM federation refused');
+      }
+    }
   });
 
   worker.on('completed', (job) => {

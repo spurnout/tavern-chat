@@ -127,6 +127,13 @@ export const GatewayDispatchEvent = {
   DM_MESSAGE_CREATE: 'DM_MESSAGE_CREATE',
   DM_MESSAGE_UPDATE: 'DM_MESSAGE_UPDATE',
   DM_MESSAGE_DELETE: 'DM_MESSAGE_DELETE',
+  /**
+   * FO-3 — user-targeted event fired when a `dm.create` federation job
+   * exhausts all retries. Delivered only to the initiating user so their
+   * DMs view can show a banner explaining that the remote instance refused
+   * or is unreachable.
+   */
+  DM_CHANNEL_FEDERATION_REFUSED: 'DM_CHANNEL_FEDERATION_REFUSED',
 
   /**
    * Phase 1.3 — activity inbox / unread state. MESSAGE_ACK is sent only

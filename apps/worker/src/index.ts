@@ -190,10 +190,13 @@ async function main(): Promise<void> {
   });
 
   // P3-5: federation outbox consumer — only spins up when FEDERATION_ENABLED.
+  // FO-3: pass gatewayPublisher so the worker can notify the initiating user
+  // when a dm.create job exhausts all retries.
   const federationOutboxHandle = await startFederationOutboxWorker({
     connection,
     cfg,
     logger: log,
+    gatewayPublisher,
   });
 
   // Daily at 03:00 UTC for both. The retention sweep is the heavier of the

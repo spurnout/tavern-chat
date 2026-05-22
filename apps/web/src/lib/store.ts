@@ -136,6 +136,12 @@ interface RealtimeState {
   >;
   /** dmChannelId -> DmChannel; populated by GET /dms and DM_CHANNEL_CREATE. */
   dmChannelsById: Record<string, DmChannel>;
+  /**
+   * FO-3 — tracks DM channels where the federation delivery failed
+   * permanently (all retries exhausted). The DMs view shows a banner for
+   * the active channel when its entry is `true`.
+   */
+  dmFederationRefusedByChannelId: Record<string, boolean>;
   /** dmChannelId -> messages array, kept sorted by id like messagesByChannel. */
   messagesByDmChannel: Record<string, Message[]>;
   /**
@@ -211,6 +217,8 @@ interface RealtimeState {
   ) => void;
   upsertDmChannel: (channel: DmChannel) => void;
   removeDmChannel: (channelId: string) => void;
+  /** FO-3 — mark a DM channel's federation delivery as permanently refused. */
+  setDmFederationRefused: (dmChannelId: string) => void;
   setDmMessages: (dmChannelId: string, messages: Message[]) => void;
   upsertDmMessage: (message: Message) => void;
   removeDmMessage: (dmChannelId: string, id: string) => void;
@@ -271,6 +279,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
   presenceByUserId: {},
   customStatusByUserId: {},
   dmChannelsById: {},
+  dmFederationRefusedByChannelId: {},
   messagesByDmChannel: {},
   profilesByUserId: {},
   rolesByServerId: {},
@@ -305,6 +314,10 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       const { [channelId]: _msgs, ...restMsgs } = s.messagesByDmChannel;
       return { dmChannelsById: rest, messagesByDmChannel: restMsgs };
     }),
+  setDmFederationRefused: (dmChannelId) =>
+    set((s) => ({
+      dmFederationRefusedByChannelId: { ...s.dmFederationRefusedByChannelId, [dmChannelId]: true },
+    })),
   setDmMessages: (dmChannelId, messages) =>
     set((s) => ({
       messagesByDmChannel: {

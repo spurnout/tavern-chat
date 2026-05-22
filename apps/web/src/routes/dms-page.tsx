@@ -52,6 +52,11 @@ export function DmsPage(): JSX.Element {
 
   const active = params.dmChannelId ? dmChannels[params.dmChannelId] : null;
 
+  // FO-3: show a banner when the remote instance permanently refused delivery.
+  const federationRefused = useRealtime(
+    (s) => (active ? s.dmFederationRefusedByChannelId[active.id] === true : false),
+  );
+
   return (
     <div className="flex h-full min-w-0 flex-1">
       <aside className="flex w-64 shrink-0 flex-col border-r border-subtle bg-sunken">
@@ -102,6 +107,11 @@ export function DmsPage(): JSX.Element {
                 {describeDmChannel(active, me?.id ?? null)}
               </span>
             </header>
+            {federationRefused && (
+              <div className="flex items-center gap-2 border-b border-subtle bg-tint-ember px-4 py-2 text-sm text-fg">
+                <span>Your message couldn't be delivered — the remote instance refused or is unreachable.</span>
+              </div>
+            )}
             <DmMessageList dmChannelId={active.id} />
             <DmMessageComposer dmChannelId={active.id} />
           </>
