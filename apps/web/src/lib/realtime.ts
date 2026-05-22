@@ -268,6 +268,13 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
       store.removeDmMessage(d.dmChannelId, d.id);
       return;
     }
+    case 'DM_CHANNEL_FEDERATION_REFUSED': {
+      // FO-3 — permanent delivery failure for a federated dm.create job.
+      // Mark the channel so the DMs view can show an explanatory banner.
+      const d = data as { dmChannelId: string; reason: string };
+      store.setDmFederationRefused(d.dmChannelId);
+      return;
+    }
     case 'MESSAGE_ACK': {
       const d = data as {
         channelId: string;

@@ -141,7 +141,7 @@ export class FederationProfileService {
       throw new Error(`invalid remoteUserId: ${remoteUserId}`);
     }
     const { localpart, host } = parsed;
-    assertValidPeerHost(host); // SSRF guard — same check applied to all outbound fetch paths
+    await assertValidPeerHost(host); // SSRF guard — same check applied to all outbound fetch paths
 
     // Find peered instance for this host.
     const peer = await this.prisma.remoteInstance.findUnique({ where: { host } });

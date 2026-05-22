@@ -109,10 +109,47 @@ export async function startPostgres(): Promise<IntegrationContext> {
   return globalSlot.__tavern_integration_ctx__;
 }
 
-export async function stopPostgres(_ctx: IntegrationContext): Promise<void> {
-  // Owned by the global teardown — no-op so concurrent files don't stop the
-  // container out from under each other. The teardown export below is what
-  // Vitest calls once at the end of the run.
+/**
+ * Start a SECOND, independent Postgres container for two-instance isolation
+ * tests. Unlike `startPostgres()` this function:
+ *  - Does NOT touch `globalThis.__tavern_integration_ctx__`
+ *  - Does NOT overwrite `process.env['DATABASE_URL']`
+ *  - Does NOT overwrite `globalThis.__tavern_prisma__`
+ *  - Is NOT cached — each call starts a fresh container
+ *
+ * Callers are responsible for stopping the returned container via
+ * `stopPostgres(ctx)` in their `afterAll`.
+ */
+export async function startSecondPostgres(): Promise<IntegrationContext> {
+  const container = await new PostgreSqlContainer('postgres:16-alpine')
+    .withDatabase('tavern_test2')
+    .withUsername('tavern_test2')
+    .withPassword('tavern_test2')
+    .start();
+  const databaseUrl = container.getConnectionUri();
+  execSync(
+    `pnpm --filter @tavern/db exec prisma db push --schema "${SCHEMA_PATH}" --skip-generate`,
+    {
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+      stdio: 'inherit',
+    },
+  );
+  const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  await prisma.$connect();
+  return { container, prisma, databaseUrl };
+}
+
+export async function stopPostgres(ctx: IntegrationContext): Promise<void> {
+  // The PRIMARY container (globalSlot.__tavern_integration_ctx__) is shared
+  // across all test files in the singleFork run and must NOT be stopped by
+  // individual test files — it's owned by the process lifetime.
+  //
+  // SECONDARY containers created by startSecondPostgres() are NOT registered
+  // in the global slot, so we stop them here when the caller requests it.
+  if (ctx === globalSlot.__tavern_integration_ctx__) return;
+  if (!ctx.container) return;
+  await ctx.prisma.$disconnect().catch(() => undefined);
+  await ctx.container.stop().catch(() => undefined);
 }
 
 export async function isDockerAvailable(): Promise<boolean> {

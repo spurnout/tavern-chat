@@ -21,17 +21,20 @@ export function registerFederationEventsRoutes(
   app: FastifyInstance,
   deps: { service: FederationInboundService },
 ): void {
-  app.post('/_federation/event', async (req, reply) => {
-    try {
-      const result = await deps.service.processEnvelope(req.body);
-      reply.code(result.status).send(result.body ?? { ok: true });
-    } catch (err) {
-      if (err instanceof FederationInboundError) {
-        const status = statusForCode(err.code);
-        return reply.code(status).send({ success: false, error: err.message });
+  app.post('/_federation/event', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    handler: async (req, reply) => {
+      try {
+        const result = await deps.service.processEnvelope(req.body);
+        reply.code(result.status).send(result.body ?? { ok: true });
+      } catch (err) {
+        if (err instanceof FederationInboundError) {
+          const status = statusForCode(err.code);
+          return reply.code(status).send({ success: false, error: err.message });
+        }
+        throw err;
       }
-      throw err;
-    }
+    },
   });
 }
 

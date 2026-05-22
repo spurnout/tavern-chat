@@ -60,7 +60,20 @@ export function buildSignedEnvelope<T>(input: BuildEnvelopeInput<T>): SignedEnve
 
 export type VerifyResult<T> =
   | { ok: true; envelope: SignedEnvelope<T> }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      /**
+       * Discriminator for the failure mode — mirrors the `kind` field on
+       * `TwoLayerVerifyResult` so callers can branch without fragile regex
+       * matching on `reason`.
+       *
+       * - `envelope_invalid`: shape/schema check failed (bad wire format).
+       * - `expired`: time-window check failed (notBefore/notAfter).
+       * - `sig_failure`: signature verification failed.
+       */
+      kind: 'sig_failure' | 'envelope_invalid' | 'expired';
+      reason: string;
+    };
 
 export interface VerifyInput<T extends z.ZodTypeAny> {
   envelope: unknown;
@@ -81,22 +94,22 @@ export function verifyEnvelopeShape<T extends z.ZodTypeAny>(
   const schema = envelopeSchema(input.payloadSchema);
   const parsed = schema.safeParse(input.envelope);
   if (!parsed.success) {
-    return { ok: false, reason: `envelope shape invalid: ${parsed.error.message}` };
+    return { ok: false, kind: 'envelope_invalid', reason: `envelope shape invalid: ${parsed.error.message}` };
   }
   const env = parsed.data;
   const now = input.now?.getTime() ?? Date.now();
   const skewMs = ENVELOPE_CLOCK_SKEW_S * 1000;
   const nb = Date.parse(env.notBefore);
   const na = Date.parse(env.notAfter);
-  if (now + skewMs < nb) return { ok: false, reason: 'notBefore in the future' };
-  if (now - skewMs > na) return { ok: false, reason: 'notAfter expired' };
+  if (now + skewMs < nb) return { ok: false, kind: 'expired', reason: 'notBefore in the future' };
+  if (now - skewMs > na) return { ok: false, kind: 'expired', reason: 'notAfter expired' };
 
   const { signature, ...unsigned } = env;
   const bytes = envelopeSigningBytes(unsigned);
   const pub = publicKeyFromRaw(input.peerPublicKeyRaw);
   const sigBytes = Buffer.from(signature, 'base64');
   if (!edVerify(bytes, sigBytes, pub)) {
-    return { ok: false, reason: 'signature does not verify against peer public key' };
+    return { ok: false, kind: 'sig_failure', reason: 'signature does not verify against peer public key' };
   }
   return { ok: true, envelope: env as SignedEnvelope<z.infer<T>> };
 }

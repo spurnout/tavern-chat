@@ -106,7 +106,7 @@ export type PostFederationEventSyncFn = <TPayload>(
 export async function postFederationEventSync<TPayload>(
   input: PostFederationEventSyncInput<TPayload>,
 ): Promise<PostFederationEventSyncResult<TPayload>> {
-  assertValidPeerHost(input.peerHost);
+  await assertValidPeerHost(input.peerHost);
 
   const url = `https://${input.peerHost}${input.pathOverride ?? '/_federation/event'}`;
   const fetchImpl = input.fetchImpl ?? fetch;

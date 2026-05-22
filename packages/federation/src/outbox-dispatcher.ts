@@ -149,7 +149,7 @@ export async function dispatchOutboxJob(
 
   // Defence in depth — peer.host is admin-controlled, but a hostile DB write
   // (or future restore from a peer that was renamed) could put junk here.
-  assertValidPeerHost(peer.host);
+  await assertValidPeerHost(peer.host);
 
   // Three signing variants:
   //   1. Single-layer (P6-6): presence and other home-instance-asserted events.

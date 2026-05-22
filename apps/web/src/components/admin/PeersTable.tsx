@@ -8,6 +8,7 @@ export interface PeerRow {
   revokedReason: string | null;
   contactEmail: string | null;
   createdAt: string;
+  keyFingerprint: string | null;
 }
 
 interface Props {
@@ -35,6 +36,7 @@ export function PeersTable({ peers, onApprove, onRevoke }: Props): JSX.Element {
           <th className="py-2">Host</th>
           <th className="py-2">Status</th>
           <th className="py-2">Capabilities</th>
+          <th className="py-2">Fingerprint</th>
           <th className="py-2 text-right">Actions</th>
         </tr>
       </thead>
@@ -56,6 +58,11 @@ export function PeersTable({ peers, onApprove, onRevoke }: Props): JSX.Element {
                     <span key={c} className="rounded bg-raised px-1.5 py-0.5 text-xs text-fg-muted">{c}</span>
                   ))}
                 </div>
+              </td>
+              <td className="py-3">
+                {p.keyFingerprint
+                  ? <code className="font-mono text-sm">{p.keyFingerprint}</code>
+                  : <span className="text-fg-muted">—</span>}
               </td>
               <td className="py-3 text-right">
                 {p.status === 'pending_inbound' ? (

@@ -21,7 +21,8 @@ const MAINTENANCE_QUEUE = 'tavern.maintenance';
 type MaintenanceJob =
   | { kind: 'audit-retention'; retentionDays: number }
   | { kind: 'nonce-cleanup'; retentionHours: number }
-  | { kind: 'expired-custom-status' };
+  | { kind: 'expired-custom-status' }
+  | { kind: 'federation-envelope-retention'; retentionDays: number };
 
 async function main(): Promise<void> {
   const cfg = loadWorkerConfig();
@@ -172,6 +173,12 @@ async function main(): Promise<void> {
         }
       }
       log.info({ cleared: expired.length }, 'expired custom-status sweep');
+    } else if (job.data.kind === 'federation-envelope-retention') {
+      const cutoff = new Date(Date.now() - job.data.retentionDays * 86_400_000);
+      const { count } = await prisma.federationEnvelopeLog.deleteMany({
+        where: { receivedAt: { lt: cutoff } },
+      });
+      log.info({ count, cutoffDate: cutoff }, 'federation-envelope-retention: pruned rows');
     }
   };
   const maintenanceWorker = new Worker<MaintenanceJob>(MAINTENANCE_QUEUE, maintenanceProcessor, {
@@ -183,10 +190,13 @@ async function main(): Promise<void> {
   });
 
   // P3-5: federation outbox consumer — only spins up when FEDERATION_ENABLED.
+  // FO-3: pass gatewayPublisher so the worker can notify the initiating user
+  // when a dm.create job exhausts all retries.
   const federationOutboxHandle = await startFederationOutboxWorker({
     connection,
     cfg,
     logger: log,
+    gatewayPublisher,
   });
 
   // Daily at 03:00 UTC for both. The retention sweep is the heavier of the
@@ -213,6 +223,19 @@ async function main(): Promise<void> {
       removeOnComplete: true,
       removeOnFail: false,
       jobId: 'expired-custom-status',
+    },
+  );
+  // FO-1: prune FederationEnvelopeLog rows older than 30 days daily at 03:30
+  // UTC. Keeps the replay-window table lean; rows beyond the window are
+  // useless for replay detection.
+  await maintenanceQueue.add(
+    'federation-envelope-retention',
+    { kind: 'federation-envelope-retention', retentionDays: 30 },
+    {
+      repeat: { pattern: '30 3 * * *' },
+      removeOnComplete: true,
+      removeOnFail: false,
+      jobId: 'federation-envelope-retention',
     },
   );
 

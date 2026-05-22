@@ -21,6 +21,8 @@
  *     follow-up.
  */
 
+import { MENTION_REGEX } from '@tavern/shared';
+
 export type Segment =
   | { kind: 'text'; value: string }
   | { kind: 'bold'; value: string }
@@ -45,12 +47,11 @@ export type Block =
 const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]]+/g;
 
 /**
- * Mention regex — captures an optional `@host` suffix so that qualified
- * federated mentions (`@alice@b.example.com`) are emitted as a distinct
- * `qualifiedMention` segment. The host group is only non-null when it
- * contains at least one dot, matching the shared-parser convention.
+ * Mention regex — re-exported from `@tavern/shared` (MENTION_REGEX). Uses a
+ * non-capturing lead group `(?:^|[\s(\[{])` so group 1 = localpart and
+ * group 2 = optional host. The lead offset is recovered from `m[0]` at
+ * call-sites when needed.
  */
-const MENTION_RE = /(^|[\s(\[{])@([A-Za-z0-9_\-.]+)(?:@([A-Za-z0-9.-]+))?/g;
 
 /** Channel mention regex — `#room-name` after whitespace/bracket/start. */
 const CHANNEL_RE = /(^|[\s(\[{])#([A-Za-z0-9_\-.]+)/g;
@@ -225,13 +226,17 @@ function splitOnUrlsAndMentions(input: string): Segment[] {
     const href = m[0];
     hits.push({ start, end, build: () => ({ kind: 'link', href, label: href }) });
   }
-  MENTION_RE.lastIndex = 0;
-  while ((m = MENTION_RE.exec(input)) !== null) {
-    const lead = m[1] ?? '';
-    const start = m.index + lead.length;
+  MENTION_REGEX.lastIndex = 0;
+  while ((m = MENTION_REGEX.exec(input)) !== null) {
+    // MENTION_REGEX uses a non-capturing lead group: group 1 = localpart,
+    // group 2 = host. Recover the lead length by checking whether m[0] starts
+    // with a non-@ character (the leading whitespace/bracket consumed by the
+    // `(?:^|[\s(\[{])` prefix).
+    const leadLen = m[0].startsWith('@') ? 0 : 1;
+    const start = m.index + leadLen;
     const end = m.index + m[0].length;
-    const localpart = m[2] ?? '';
-    const host = m[3] ?? '';
+    const localpart = m[1] ?? '';
+    const host = m[2] ?? '';
     // Emit a qualifiedMention when there's a host part containing a dot.
     if (host && host.includes('.')) {
       const raw = `@${localpart}@${host}`;

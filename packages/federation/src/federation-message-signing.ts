@@ -115,7 +115,22 @@ export function buildTwoLayerMessageEnvelope<T>(
 
 export type TwoLayerVerifyResult<T> =
   | { ok: true; envelope: TwoLayerSignedEnvelope<T>; payload: T }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      /**
+       * Discriminator for the failure mode.
+       *
+       * - `envelope_invalid`: shape/schema check failed (bad wire format).
+       * - `expired`: time-window check failed (notBefore/notAfter).
+       * - `user_sig_failure`: the user-layer signature did not verify against
+       *   the author's public key. Must NOT trigger the rotation-overlap retry.
+       * - `instance_sig_failure`: the instance-layer signature did not verify
+       *   against the peer's current instance key. This is the ONLY kind that
+       *   should trigger the rotation-overlap fallback retry.
+       */
+      kind: 'user_sig_failure' | 'instance_sig_failure' | 'envelope_invalid' | 'expired';
+      reason: string;
+    };
 
 export interface TwoLayerVerifyInput<T extends z.ZodTypeAny> {
   envelope: unknown;
@@ -145,29 +160,29 @@ export function verifyTwoLayerMessageEnvelope<T extends z.ZodTypeAny>(
 
   const parsed = wireSchema.safeParse(input.envelope);
   if (!parsed.success) {
-    return { ok: false, reason: `envelope shape invalid: ${parsed.error.message}` };
+    return { ok: false, kind: 'envelope_invalid', reason: `envelope shape invalid: ${parsed.error.message}` };
   }
 
   const env = parsed.data;
 
   // Replicate the superRefine check from envelopeSchema
   if (Date.parse(env.notAfter) <= Date.parse(env.notBefore)) {
-    return { ok: false, reason: 'notAfter must be after notBefore' };
+    return { ok: false, kind: 'envelope_invalid', reason: 'notAfter must be after notBefore' };
   }
 
   const now = input.now?.getTime() ?? Date.now();
   const skewMs = ENVELOPE_CLOCK_SKEW_S * 1000;
   const nb = Date.parse(env.notBefore);
   const na = Date.parse(env.notAfter);
-  if (now + skewMs < nb) return { ok: false, reason: 'notBefore in the future' };
-  if (now - skewMs > na) return { ok: false, reason: 'notAfter expired' };
+  if (now + skewMs < nb) return { ok: false, kind: 'expired', reason: 'notBefore in the future' };
+  if (now - skewMs > na) return { ok: false, kind: 'expired', reason: 'notAfter expired' };
 
   // Verify USER signature over canonical(payload)
   const payloadBytes = Buffer.from(canonicalize(env.payload as unknown), 'utf8');
   const userSigBytes = Buffer.from(env.userSignature, 'base64');
   const authorPub = publicKeyFromRaw(input.authorPublicKeyRaw);
   if (!edVerify(payloadBytes, userSigBytes, authorPub)) {
-    return { ok: false, reason: 'user signature does not verify against author public key' };
+    return { ok: false, kind: 'user_sig_failure', reason: 'user signature does not verify against author public key' };
   }
 
   // Verify INSTANCE signature over canonical(envelope-minus-instance-signature)
@@ -176,7 +191,7 @@ export function verifyTwoLayerMessageEnvelope<T extends z.ZodTypeAny>(
   const instanceSigBytes = Buffer.from(signature, 'base64');
   const instancePub = publicKeyFromRaw(input.peerInstancePublicKeyRaw);
   if (!edVerify(envelopeBytes, instanceSigBytes, instancePub)) {
-    return { ok: false, reason: 'instance signature does not verify against peer public key' };
+    return { ok: false, kind: 'instance_sig_failure', reason: 'instance signature does not verify against peer public key' };
   }
 
   return { ok: true, envelope: env as TwoLayerSignedEnvelope<z.infer<T>>, payload: env.payload };

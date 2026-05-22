@@ -97,7 +97,7 @@ export function registerFederationInvitePreviewProxyRoutes(
     // trust DB-pinned hosts blindly even though peering admission already
     // checks. Defence in depth.
     try {
-      assertValidPeerHost(host);
+      await assertValidPeerHost(host);
     } catch (err) {
       return reply
         .code(400)
