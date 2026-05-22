@@ -5,11 +5,14 @@ import { ok } from '../lib/responses.js';
 import type { FederationPeeringService } from '../services/federation-peering.js';
 import type { FederationKeyStore } from '../services/federation-keys.js';
 import type { Config } from '../config.js';
+import type { QueueClient } from '../services/queues.js';
 
 export interface AdminFederationDeps {
   service: FederationPeeringService;
   keys: FederationKeyStore;
   config: Config;
+  /** Optional — undefined when federation is running in in-memory / no-Redis mode. */
+  queues?: QueueClient;
 }
 
 export function registerAdminFederationRoutes(app: FastifyInstance, deps: AdminFederationDeps): void {
@@ -57,5 +60,30 @@ export function registerAdminFederationRoutes(app: FastifyInstance, deps: AdminF
     const body = z.object({ reason: z.string().max(500).optional() }).parse(req.body ?? {});
     await deps.service.revokePeer({ id, reason: body.reason, selfHost, sign: signer });
     reply.send(ok({ id, status: 'revoked' }));
+  });
+
+  app.get('/api/admin/federation/dead-letters', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    if (!ctx.isInstanceAdmin) throw TavernError.forbidden('Instance admins only');
+    const jobs = deps.queues ? await deps.queues.listFailedFederationJobs() : [];
+    reply.send(ok({ jobs }));
+  });
+
+  app.post('/api/admin/federation/dead-letters/:jobId/retry', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    if (!ctx.isInstanceAdmin) throw TavernError.forbidden('Instance admins only');
+    const { jobId } = z.object({ jobId: z.string().min(1) }).parse(req.params);
+    if (!deps.queues) throw TavernError.validation('Queue not available in this deployment');
+    await deps.queues.retryFederationJob(jobId);
+    reply.send(ok({}));
+  });
+
+  app.delete('/api/admin/federation/dead-letters/:jobId', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    if (!ctx.isInstanceAdmin) throw TavernError.forbidden('Instance admins only');
+    const { jobId } = z.object({ jobId: z.string().min(1) }).parse(req.params);
+    if (!deps.queues) throw TavernError.validation('Queue not available in this deployment');
+    await deps.queues.discardFederationJob(jobId);
+    reply.send(ok({}));
   });
 }

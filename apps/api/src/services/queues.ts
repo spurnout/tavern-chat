@@ -31,6 +31,15 @@ import { gatewayBroker } from './gateway-broker.js';
 // the pipeline uses. Accept either.
 type AnyLogger = FastifyBaseLogger;
 
+export interface FailedFederationJob {
+  id: string;
+  eventType: string;
+  peerInstanceId: string;
+  failedReason: string;
+  failedAt: Date | null;
+  attemptsMade: number;
+}
+
 export interface QueueClient {
   enqueueScan(attachmentId: string): Promise<void>;
   /**
@@ -41,6 +50,12 @@ export interface QueueClient {
    * federation-outbox-worker in apps/worker.
    */
   enqueueFederationOutbox(job: FederationOutboxJob): Promise<void>;
+  /** List failed (dead-lettered) federation outbox jobs. Always returns [] in in-memory mode. */
+  listFailedFederationJobs(): Promise<FailedFederationJob[]>;
+  /** Re-queue a failed federation outbox job by BullMQ job id. */
+  retryFederationJob(jobId: string): Promise<void>;
+  /** Permanently remove a failed federation outbox job by BullMQ job id. */
+  discardFederationJob(jobId: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -165,6 +180,18 @@ class InMemoryQueueClient implements QueueClient {
     });
   }
 
+  async listFailedFederationJobs(): Promise<FailedFederationJob[]> {
+    return []; // in-memory mode has no dead-letter
+  }
+
+  async retryFederationJob(_jobId: string): Promise<void> {
+    /* in-memory: no dead-letter */
+  }
+
+  async discardFederationJob(_jobId: string): Promise<void> {
+    /* in-memory: no dead-letter */
+  }
+
   async close(): Promise<void> {
     /* nothing to clean up */
   }
@@ -229,6 +256,32 @@ class RedisQueueClient implements QueueClient {
       );
       throw err;
     }
+  }
+
+  async listFailedFederationJobs(): Promise<FailedFederationJob[]> {
+    const jobs = await this.outboxQueue.getFailed(0, 99);
+    return jobs
+      .filter((j) => j.id != null)
+      .map((j) => ({
+        id: j.id!,
+        eventType: j.data.eventType,
+        peerInstanceId: j.data.peerInstanceId,
+        failedReason: j.failedReason ?? 'unknown',
+        failedAt: j.finishedOn != null ? new Date(j.finishedOn) : null,
+        attemptsMade: j.attemptsMade,
+      }));
+  }
+
+  async retryFederationJob(jobId: string): Promise<void> {
+    const job = await this.outboxQueue.getJob(jobId);
+    if (!job) throw new Error(`federation job ${jobId} not found`);
+    await job.retry('failed');
+  }
+
+  async discardFederationJob(jobId: string): Promise<void> {
+    const job = await this.outboxQueue.getJob(jobId);
+    if (!job) throw new Error(`federation job ${jobId} not found`);
+    await job.remove();
   }
 
   async close(): Promise<void> {

@@ -351,6 +351,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         service: peering,
         keys: federationKeys!,
         config: opts.config,
+        queues,
       });
       // Provision the per-user key store so new users get a signing keypair
       // at registration (Phase 2 task 4). Uses the same dataKey already in scope.
