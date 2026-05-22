@@ -133,6 +133,18 @@ import {
   serializeServer,
 } from '../lib/serializers.js';
 
+const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
+function assertTimestampWithinSkew(label: string, ts: Date): void {
+  const delta = Math.abs(Date.now() - ts.getTime());
+  if (delta > MAX_CLOCK_SKEW_MS) {
+    throw new FederationInboundError(
+      'bad_envelope',
+      `${label} is outside the allowed clock-skew window (${Math.round(delta / 1000)}s)`,
+    );
+  }
+}
+
 /**
  * Why this is a class+exception instead of a tagged union: the route layer
  * just wants a `{ status, body }` to render, and every failure mode in this
@@ -1492,6 +1504,7 @@ async function handleMessageUpdate(input: {
   // says; the audit trail still has the envelope-log row with the receive
   // time.
   const editedAt = new Date(payload.editedAt);
+  assertTimestampWithinSkew('editedAt', editedAt);
   await tx.message.update({
     where: { id: existing.id },
     data: { content: payload.content, editedAt },
@@ -1655,6 +1668,7 @@ async function handleMessageDelete(input: {
   // All four writes participate in the inbound transaction; a failure on
   // any of them rolls back the envelope-log insert too.
   const deletedAt = new Date(payload.deletedAt);
+  assertTimestampWithinSkew('deletedAt', deletedAt);
   await tx.message.update({
     where: { id: existing.id },
     data: { deletedAt, content: '' },
@@ -3591,6 +3605,7 @@ async function handleDmMessageUpdate(input: {
   // 6) Trust the envelope's editedAt — the home instance signed it and the
   //    envelope replay window keeps it close to now.
   const editedAt = new Date(payload.editedAt);
+  assertTimestampWithinSkew('editedAt', editedAt);
   await tx.message.update({
     where: { id: existing.id },
     data: { content: payload.content, editedAt },
@@ -3742,6 +3757,7 @@ async function handleDmMessageDelete(input: {
   //      - drop reactions + mentions
   //    No `pinnedMessage.deleteMany` — DMs don't support pins.
   const deletedAt = new Date(payload.deletedAt);
+  assertTimestampWithinSkew('deletedAt', deletedAt);
   await tx.message.update({
     where: { id: existing.id },
     data: { deletedAt, content: '' },
