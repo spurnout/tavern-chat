@@ -660,7 +660,7 @@ export class FederationInboundService {
     if (
       !verified.ok &&
       peer.previousInstanceKey &&
-      /signature does not verify/i.test(verified.reason)
+      verified.kind === 'sig_failure'
     ) {
       verified = verifyEnvelopeShape({
         envelope: body,
@@ -669,11 +669,12 @@ export class FederationInboundService {
       });
     }
     if (!verified.ok) {
-      const reason = verified.reason;
-      const isSigFailure = /signature does not verify/i.test(reason);
+      // Map the typed `kind` discriminator — sig_failure → bad_signature,
+      // envelope_invalid / expired → bad_envelope.  Same posture as the
+      // two-layer dispatcher above (no fragile regex on `reason`).
       throw new FederationInboundError(
-        isSigFailure ? 'bad_signature' : 'bad_envelope',
-        reason,
+        verified.kind === 'sig_failure' ? 'bad_signature' : 'bad_envelope',
+        verified.reason,
       );
     }
 
