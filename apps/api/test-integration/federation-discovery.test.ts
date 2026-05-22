@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type PrismaClient } from '@prisma/client';
-import { randomBytes } from 'node:crypto';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 
@@ -42,7 +43,7 @@ describe.skipIf(!dockerOk)('.well-known/tavern-federation', () => {
       ...BASE_ENV,
       DATABASE_URL: ctx!.databaseUrl,
       FEDERATION_ENABLED: 'true',
-      TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+      TAVERN_DATA_KEY: SHARED_DATA_KEY,
       PUBLIC_BASE_URL: 'https://a.example',
     } as NodeJS.ProcessEnv;
     const app = await buildApp({ config: loadConfig(env) });

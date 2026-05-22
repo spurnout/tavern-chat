@@ -30,6 +30,7 @@ import {
   startPostgres,
   stopPostgres,
   type IntegrationContext,
+  SHARED_DATA_KEY,
 } from './setup.js';
 
 let ctx: IntegrationContext | null = null;
@@ -111,7 +112,7 @@ function envFor(dbUrl: string, federationEnabled: boolean): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: 'https://self.example',
   } as NodeJS.ProcessEnv;
 }

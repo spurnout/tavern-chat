@@ -125,7 +125,7 @@ export async function registerModerationActionRoutes(
     const { id: serverId, userId } = z
       .object({ id: idSchema, userId: idSchema })
       .parse(req.params);
-    const body = z.object({ reason: z.string().max(280).optional() }).parse(req.body ?? {});
+    const body = z.object({ reason: z.string().max(280).nullish() }).parse(req.body ?? {});
     await requireServerPermission(serverId, ctx.userId, Permission.KICK_MEMBERS);
 
     if (userId === ctx.userId) {

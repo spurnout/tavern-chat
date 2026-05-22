@@ -15,8 +15,9 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type PrismaClient } from '@prisma/client';
-import { randomBytes } from 'node:crypto';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import {
@@ -50,7 +51,7 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: 'true',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: 'https://a.example',
   } as NodeJS.ProcessEnv;
 }

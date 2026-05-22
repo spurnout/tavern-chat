@@ -654,7 +654,9 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     expect(enqueue).not.toHaveBeenCalled(); // still debounced
 
     __testFlushDebouncedFanOuts();
-    await new Promise<void>((r) => setImmediate(r));
+    // setImmediate is too fast for the async DB read inside emitFanOut to
+    // complete — give it a short window so the enqueue actually lands.
+    await new Promise<void>((r) => setTimeout(r, 50));
 
     expect(enqueue).toHaveBeenCalledTimes(1);
     const job = lastJobs[0]!;

@@ -40,7 +40,9 @@ import {
   serializePermissions,
   ulid,
 } from '@tavern/shared';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import {
   fanOutDmReactionAdd,
   fanOutDmReactionRemove,
@@ -264,7 +266,7 @@ function envFor(dbUrl: string, federationEnabled: boolean): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${SELF_HOST}`,
   } as NodeJS.ProcessEnv;
 }
@@ -656,6 +658,11 @@ function makeMockQueue(): {
 }
 
 describe.skipIf(!dockerOk)('P5-9 — helper defence-in-depth (FEDERATION_DMS_ENABLED)', () => {
+  beforeEach(async () => {
+    if (!dockerOk) return;
+    await cleanDb();
+  });
+
   it('fanOutDmReactionAdd: skips fan-out when federationDmsEnabledOnInstance=false', async () => {
     const peer = await seedPeer('b.example', ['messages', 'dms']);
     const { queue, enqueue } = makeMockQueue();

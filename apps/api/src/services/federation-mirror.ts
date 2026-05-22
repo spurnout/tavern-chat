@@ -339,21 +339,23 @@ export class FederationMirrorService {
       tx as unknown as PrismaClient,
     );
 
-    try {
-      await tx.serverMember.create({
-        data: { serverId, userId: localUser.id },
-      });
-    } catch (err) {
-      // P2002 = composite-PK collision on (serverId, userId). Idempotent
-      // success — the member already exists.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        return localUser.id;
-      }
-      throw err;
-    }
+    // Check for an existing membership BEFORE attempting the insert.
+    // The previous approach (try/catch P2002) is unsafe inside a Postgres
+    // interactive transaction: a failed INSERT aborts the transaction and
+    // every subsequent statement fails with error 25P02.  Catching the
+    // P2002 in JS does NOT recover the Postgres transaction state.
+    // Using findUnique first is safe because inside an interactive
+    // transaction there is no concurrent modification risk — callers run
+    // these steps serially within the same $transaction callback.
+    const existing = await tx.serverMember.findUnique({
+      where: { serverId_userId: { serverId, userId: localUser.id } },
+      select: { userId: true },
+    });
+    if (existing) return localUser.id;
+
+    await tx.serverMember.create({
+      data: { serverId, userId: localUser.id },
+    });
 
     return localUser.id;
   }

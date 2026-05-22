@@ -29,6 +29,7 @@ import {
   startPostgres,
   stopPostgres,
   type IntegrationContext,
+  SHARED_DATA_KEY,
 } from './setup.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
@@ -57,14 +58,25 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
     JWT_ACCESS_SECRET: 'a'.repeat(48),
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${SELF_HOST}`,
   } as NodeJS.ProcessEnv;
 }
 
 async function cleanDb(): Promise<void> {
+  // Delete in FK-safe order: child tables before parent tables.
+  // Server.ownerUserId has onDelete: Restrict, so servers must be cleared
+  // before users. This ensures the function works when run after any other
+  // test file that may have left Server rows in the shared DB.
   await prisma.session.deleteMany({});
+  await prisma.serverMember.deleteMany({});
+  await prisma.role.deleteMany({});
+  await prisma.channel.deleteMany({});
+  await prisma.server.deleteMany({});
+  await prisma.remoteUser.deleteMany({});
   await prisma.user.deleteMany({});
+  await prisma.remoteInstance.deleteMany({});
+  await prisma.federationKey.deleteMany({});
 }
 
 async function makeUserWithToken(prefix: string): Promise<{

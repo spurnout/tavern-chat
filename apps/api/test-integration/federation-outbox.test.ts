@@ -15,7 +15,7 @@
  * out of scope.
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
 import { type PrismaClient } from '@prisma/client';
 import {
@@ -45,6 +45,29 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (ctx) await stopPostgres(ctx);
+});
+
+// Clean DB state left by previous test files.  Federation-key rows from
+// earlier buildApp calls are encrypted with SHARED_DATA_KEY; the happy-path
+// test here creates a FederationKeyStore with a fresh random key, and
+// bootstrap() would try to decrypt the stale row with the wrong key,
+// causing a test failure. Server/user/remoteInstance tables are also
+// cleared to avoid accumulating state across the suite.
+async function cleanDb(): Promise<void> {
+  if (!dockerOk) return;
+  await prisma.serverMember.deleteMany({});
+  await prisma.role.deleteMany({});
+  await prisma.channel.deleteMany({});
+  await prisma.server.deleteMany({});
+  await prisma.remoteUser.deleteMany({});
+  await prisma.user.deleteMany({});
+  await prisma.session.deleteMany({});
+  await prisma.remoteInstance.deleteMany({});
+  await prisma.federationKey.deleteMany({});
+}
+
+beforeEach(async () => {
+  await cleanDb();
 });
 
 /** Build a minimal Config that satisfies the queue factory. */

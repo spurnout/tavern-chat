@@ -205,12 +205,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
   registerErrorHandler(app);
 
+  // JWT issuer is a stable constant ('tavern') rather than APP_NAME.
+  // APP_NAME is the human-readable display name for the application, which may
+  // change across deployments (e.g., "My Community Hub"), whereas the JWT
+  // issuer must remain consistent so existing tokens stay valid.
   const jwt = new JwtService({
     accessSecret: opts.config.JWT_ACCESS_SECRET,
     refreshSecret: opts.config.JWT_REFRESH_SECRET,
     accessTtlSeconds: opts.config.ACCESS_TOKEN_TTL_SECONDS,
     refreshTtlSeconds: opts.config.REFRESH_TOKEN_TTL_SECONDS,
-    issuer: opts.config.APP_NAME,
   });
   registerAuthPlugin(app, { jwt });
 

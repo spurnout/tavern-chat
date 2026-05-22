@@ -36,6 +36,7 @@ import {
   startPostgres,
   stopPostgres,
   type IntegrationContext,
+  SHARED_DATA_KEY,
 } from './setup.js';
 import {
   generateKeyPair,
@@ -82,7 +83,7 @@ function envFor(opts: {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: opts.federationEnabled === false ? 'false' : 'true',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${SELF_HOST}`,
   };
   if (opts.dmsEnabled !== undefined) {
@@ -93,10 +94,18 @@ function envFor(opts: {
 
 /** Wipe every row touched by these tests. Mirrors the helper used by other suites. */
 async function cleanDb(): Promise<void> {
+  // Delete in FK-safe order: child tables before parent tables.
+  // Server.ownerUserId has onDelete: Restrict, so servers must be cleared
+  // before users. This ensures the function works when run after any other
+  // test file that may have left Server rows in the shared DB.
   await prisma.apiToken.deleteMany({});
   await prisma.federationEnvelopeLog.deleteMany({});
   await prisma.dmChannelMember.deleteMany({});
   await prisma.dmChannel.deleteMany({});
+  await prisma.serverMember.deleteMany({});
+  await prisma.role.deleteMany({});
+  await prisma.channel.deleteMany({});
+  await prisma.server.deleteMany({});
   await prisma.remoteUser.deleteMany({});
   await prisma.user.deleteMany({});
   await prisma.session.deleteMany({});

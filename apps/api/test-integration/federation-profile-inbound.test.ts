@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type PrismaClient } from '@prisma/client';
-import { randomBytes } from 'node:crypto';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import {
@@ -34,7 +35,7 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: 'true',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: 'https://a.example',
   } as NodeJS.ProcessEnv;
 }
@@ -44,6 +45,12 @@ describe.skipIf(!dockerOk)('federation profile — inbound (phase 2)', () => {
     await prisma.federationEnvelopeLog.deleteMany({});
     await prisma.remoteInstance.deleteMany({});
     await prisma.federationKey.deleteMany({});
+    // Server rows from prior test files can block user deletion via FK.
+    await prisma.serverMember.deleteMany({});
+    await prisma.permissionOverwrite.deleteMany({});
+    await prisma.channel.deleteMany({});
+    await prisma.role.deleteMany({});
+    await prisma.server.deleteMany({});
     await prisma.user.deleteMany({});
   });
 

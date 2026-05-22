@@ -30,6 +30,7 @@ import {
   startPostgres,
   stopPostgres,
   type IntegrationContext,
+  SHARED_DATA_KEY,
 } from './setup.js';
 import {
   PERMISSION_DEFAULT_EVERYONE,
@@ -65,7 +66,7 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: 'true',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${SELF_HOST}`,
   } as NodeJS.ProcessEnv;
 }
@@ -144,17 +145,17 @@ async function seedRemoteMember(opts: {
   serverId: string;
   localpart?: string;
   displayName?: string;
-  presence?: 'online' | 'idle' | 'dnd' | 'offline';
+  presence?: 'active' | 'idle' | 'dnd' | 'offline';
 }): Promise<{
   remoteUserId: string;
   localUserId: string;
   displayName: string;
-  presence: 'online' | 'idle' | 'dnd' | 'offline';
+  presence: 'active' | 'idle' | 'dnd' | 'offline';
 }> {
   const peerId = ulid();
   const localpart = opts.localpart ?? `bob-${ulid().slice(-6).toLowerCase()}`;
   const displayName = opts.displayName ?? 'Bob from B';
-  const presence = opts.presence ?? 'online';
+  const presence = opts.presence ?? 'active';
   const remoteUserId = `${localpart}@${PEER_HOST}`;
   await prisma.remoteInstance.create({
     data: {
@@ -225,7 +226,7 @@ describe.skipIf(!dockerOk)(
         serverId,
         localpart: 'bob',
         displayName: 'Bob from B',
-        presence: 'online',
+        presence: 'active',
       });
 
       const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });

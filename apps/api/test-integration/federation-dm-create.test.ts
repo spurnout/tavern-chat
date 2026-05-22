@@ -32,7 +32,9 @@ import {
   serializePermissions,
   ulid,
 } from '@tavern/shared';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import { fanOutDmCreate } from '../src/services/federation-outbox.js';
 import type { QueueClient } from '../src/services/queues.js';
 import type { FederationOutboxJob } from '@tavern/federation';
@@ -245,7 +247,7 @@ function envFor(dbUrl: string, federationEnabled: boolean): NodeJS.ProcessEnv {
     JWT_REFRESH_SECRET: 'b'.repeat(48),
     NODE_ENV: 'test',
     FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${SELF_HOST}`,
   } as NodeJS.ProcessEnv;
 }

@@ -2121,29 +2121,29 @@ async function handleMemberJoinRequest(input: {
     tx as unknown as PrismaClient,
   );
 
-  // Step 5 — try to create the ServerMember. P2002 on the composite PK
-  // (serverId, userId) means the joiner is already a member; treat that
-  // as an idempotent success and skip the uses increment.
-  let newMember = true;
+  // Step 5 — create the ServerMember if not already present. Use a
+  // findUnique check before the insert rather than catching P2002: a
+  // failed INSERT inside a Postgres interactive transaction leaves the
+  // transaction in an ABORTED state (error 25P02), so catching the
+  // P2002 exception in JS is not sufficient to keep the transaction
+  // live.  The check-first pattern is safe here because we are inside a
+  // single $transaction callback with no concurrent writes from this path.
+  //
   // The ServerMember.joinedAt is sourced from the Prisma row default and
   // captured here so the `member.add` fan-out (post-commit) sends the
   // canonical timestamp on the wire — not "whenever the post-commit hook
   // happened to run", which could be milliseconds later.
-  let memberJoinedAt: Date | null = null;
-  try {
+  const existingMembership = await tx.serverMember.findUnique({
+    where: { serverId_userId: { serverId: invite.serverId, userId: localJoiner.id } },
+    select: { joinedAt: true },
+  });
+  let newMember = existingMembership === null;
+  let memberJoinedAt: Date | null = existingMembership?.joinedAt ?? null;
+  if (newMember) {
     const created = await tx.serverMember.create({
       data: { serverId: invite.serverId, userId: localJoiner.id },
     });
     memberJoinedAt = created.joinedAt;
-  } catch (err) {
-    if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === 'P2002'
-    ) {
-      newMember = false;
-    } else {
-      throw err;
-    }
   }
 
   // Step 6 — atomic uses increment, only when we actually added a row.

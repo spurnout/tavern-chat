@@ -26,7 +26,9 @@ import {
   ulid,
 } from '@tavern/shared';
 import { messageCreatePayloadSchema } from '@tavern/shared';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext,
+  SHARED_DATA_KEY,
+} from './setup.js';
 import {
   computeEffectiveFederation,
   fanOutMessageCreate,
@@ -428,7 +430,7 @@ describe.skipIf(!dockerOk)('P3-6 — route wire-through', () => {
       JWT_REFRESH_SECRET: 'b'.repeat(48),
       NODE_ENV: 'test',
       FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
-      TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+      TAVERN_DATA_KEY: SHARED_DATA_KEY,
       PUBLIC_BASE_URL: 'https://self.example',
     } as NodeJS.ProcessEnv;
   }
@@ -869,7 +871,7 @@ describe.skipIf(!dockerOk)('P4-14 — route wire-through for mirror channels', (
       JWT_REFRESH_SECRET: 'b'.repeat(48),
       NODE_ENV: 'test',
       FEDERATION_ENABLED: federationEnabled ? 'true' : 'false',
-      TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+      TAVERN_DATA_KEY: SHARED_DATA_KEY,
       PUBLIC_BASE_URL: 'https://b.example',
     } as NodeJS.ProcessEnv;
   }

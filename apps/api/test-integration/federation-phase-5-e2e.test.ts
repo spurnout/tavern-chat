@@ -94,6 +94,7 @@ import {
   startPostgres,
   stopPostgres,
   type IntegrationContext,
+  SHARED_DATA_KEY,
 } from './setup.js';
 import {
   PERMISSION_DEFAULT_EVERYONE,
@@ -152,7 +153,7 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
     NODE_ENV: 'test',
     FEDERATION_ENABLED: 'true',
     FEDERATION_DMS_ENABLED: 'true',
-    TAVERN_DATA_KEY: randomBytes(32).toString('base64'),
+    TAVERN_DATA_KEY: SHARED_DATA_KEY,
     PUBLIC_BASE_URL: `https://${B_HOST}`,
   } as NodeJS.ProcessEnv;
 }
