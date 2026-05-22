@@ -18,7 +18,6 @@ export function registerUsersFederatedRoutes(
       rateLimit: {
         max: 20,
         timeWindow: '1 minute',
-        keyGenerator: (req) => req.auth?.userId ?? req.ip,
       },
     },
     handler: async (req, reply) => {

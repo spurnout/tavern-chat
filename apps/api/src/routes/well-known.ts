@@ -31,7 +31,7 @@ export function advertisedCapabilities(
 export function registerWellKnownRoutes(app: FastifyInstance, deps: WellKnownDeps): void {
   // Public. No requireUser — this is how peers discover our keys.
   app.get(WELL_KNOWN_PATH, {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
     handler: async (_req, reply) => {
       const baseUrl = new URL(deps.config.PUBLIC_BASE_URL);
       const host = baseUrl.host;
