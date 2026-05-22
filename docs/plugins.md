@@ -13,6 +13,16 @@ plugin context — they are not a security boundary against a hostile
 plugin, which could simply `require('node:fs')` and do anything else
 Node can do. Only install plugins from sources you trust.
 
+> **Planned: admin review gate.** A future wave (see
+> [roadmap.md](roadmap.md#planned-directions-post-wave-3)) gates plugin
+> loading behind explicit operator approval. Manifests dropped into
+> `plugins/` will register as `pending` and not invoke hooks until an
+> admin approves them via the admin UI. Modifying a plugin's manifest
+> or code re-locks it to `pending`, so an approved plugin can't be
+> bait-and-switched. Until that change ships, anything in `plugins/`
+> loads on boot — treat write access to that directory as equivalent
+> to root on the API host.
+
 ## Where plugins live
 
 The loader scans a single directory on boot. By default that's
@@ -147,14 +157,18 @@ running. A richer admin UI is a follow-up.
 
 ## What V1 does not have
 
+- **Operator approval gate.** Manifests in `plugins/` currently load
+  automatically at boot. The planned admin-review gate (see the
+  callout at the top of this doc) is not yet wired.
 - **Sandboxed execution.** Plugins run in-process with full Node access.
   A future version may use Node's `vm` module or a worker thread for
   isolation; until then, treat plugin source the same way you'd treat
-  operator code.
+  operator code. This is complementary to the review gate — even an
+  approved plugin still has full Node access.
 - **Per-server install.** The manifest's `servers` field reads `"any"`
   in V1 — every loaded plugin sees events from every server. Per-server
-  install requires an `InstalledPlugin` schema and an admin UI; planned
-  for a later wave.
+  install requires an `InstalledPlugin` schema and an admin UI; folds
+  into the admin review gate work.
 - **Marketplace / signed manifests.** Distribution is bring-your-own.
 
 ## See also

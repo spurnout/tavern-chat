@@ -7,22 +7,54 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 /**
- * A single shared PrismaClient. In dev the workspace is reloaded a lot, so we
- * cache the client on globalThis to avoid exhausting the DB connection pool.
+ * Returns the current globalThis.__tavern_prisma__ client, creating and
+ * caching a default one if none exists yet.
+ *
+ * Callers that run BEFORE process.env.DATABASE_URL is set (e.g. module-level
+ * imports) are safe: Prisma reads the env lazily at query time.  However, in
+ * the integration-test harness startPostgres() replaces globalThis.__tavern_prisma__
+ * with a client that has an explicit datasource URL — this function always
+ * returns the most-current slot so those callers transparently switch over.
  */
-export const prisma: PrismaClient =
-  globalForPrisma.__tavern_prisma__ ??
-  new PrismaClient({
-    log:
-      process.env.NODE_ENV === 'production'
-        ? ['error', 'warn']
-        : ['warn', 'error'],
-  });
-
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.__tavern_prisma__ = prisma;
+function _getOrCreate(): PrismaClient {
+  if (!globalForPrisma.__tavern_prisma__) {
+    globalForPrisma.__tavern_prisma__ = new PrismaClient({
+      log:
+        process.env.NODE_ENV === 'production'
+          ? ['error', 'warn']
+          : ['warn', 'error'],
+    });
+  }
+  return globalForPrisma.__tavern_prisma__;
 }
 
+/**
+ * A single shared PrismaClient. In dev/test the workspace is reloaded often,
+ * so we cache the instance on globalThis to avoid exhausting the DB connection
+ * pool. The exported value is a live Proxy: every property access re-reads the
+ * globalThis slot so that if the test harness replaces the slot with a
+ * testcontainer-backed client (which has an explicit URL), all callers —
+ * including those that captured the import reference before the swap — will
+ * automatically use the replacement.
+ */
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const live = _getOrCreate();
+    const val = Reflect.get(live, prop, live);
+    // Bind methods so that `this` inside PrismaClient internals refers to the
+    // real client, not the Proxy wrapper.
+    return typeof val === 'function'
+      ? (val as (...args: unknown[]) => unknown).bind(live)
+      : val;
+  },
+  set(_target, prop, value) {
+    return Reflect.set(_getOrCreate(), prop, value);
+  },
+  has(_target, prop) {
+    return Reflect.has(_getOrCreate(), prop);
+  },
+});
+
 export async function disconnectPrisma(): Promise<void> {
-  await prisma.$disconnect();
+  await _getOrCreate().$disconnect();
 }

@@ -43,15 +43,19 @@ need a click-through (#25 stage rooms, #29 breakouts, #32 recording,
 | 47 | Plugin SDK manifest (`plugin.json`) | Built |
 | 48 | AI session recap (OpenAI-compatible endpoint) | Built |
 
-Permanent exclusion: **#45 Federation** — the Tavern manifesto rules it
-out and the self-hosted-private-community framing actively benefits from
-being a closed graph.
+Wave 3 deliberately did not implement **#45 Federation**. That stance
+has since been reversed — see [Direction & non-goals](#direction--non-goals)
+below for the planned **IR20 federation network**. The remaining
+permanent exclusion is **AI-based content moderation**; the moderation
+stack is deterministic and operator-driven by design (see
+[safety.md](safety.md)).
 
 V2 follow-ups documented inline in the per-batch results
 (`C:\Users\spurn\.claude\plans\can-you-go-ahead-atomic-mango.md`):
 LiveKit Egress for server-side recording, Whisper-based captions,
 SAML SSO, CRDT whiteboard, VM-isolated plugin execution, streamed LLM
-responses, native Dropbox/Nextcloud storage backends.
+responses, native Dropbox/Nextcloud storage backends. Restated under
+[Future infrastructure (V2)](#future-infrastructure-v2) below.
 
 ## Phase 0 — Foundation
 
@@ -167,21 +171,54 @@ responses, native Dropbox/Nextcloud storage backends.
 - `pnpm --filter @tavern/api build` / worker / db — clean
 - `pnpm --filter @tavern/web build` — production bundle ~1.0 MB JS / 19.9 KB CSS
 
-## Honest gaps
+## Direction & non-goals
 
-By design (out of scope per the master spec):
-- No federation, no public discovery, no Matrix/Discord interop.
-- No live transcription, no native apps, no AI moderation.
-- No monetization.
-- No password reset email flow.
-- No built-in MFA / SSO (front with an auth proxy if needed).
+### Planned directions (post-Wave 3)
 
-Genuinely not built (and not pretending to be):
-- Notification stack (push/email).
-- Mobile-native client.
-- GDPR data-export tooling (the schema supports it; there's no packaged
-  exporter yet).
+**IR20 federation network.** Cross-instance federation — identity,
+invites, messages, and presence cross Tavern instances; voice deferred
+to V2. Reverses the closed-graph stance taken in earlier wave notes.
+Substantial scope: protocol design, identity verification across
+instances, federated moderation and abuse/ban propagation,
+key-rotation, and discovery. "IR20" is the working name only; final
+brand TBD. Design doc at [federation.md](federation.md); no code yet.
+
+**Plugin admin review gate.** Plugins currently load on boot from the
+`plugins/` directory with no operator confirmation. Planned change:
+manifests register as `pending` and do not invoke hooks until an admin
+explicitly approves them. Manifest-hash changes re-lock an
+already-approved plugin to `pending`. Folds in the per-server install
+scope (`InstalledPlugin` schema). See [plugins.md](plugins.md) for the
+current trust model and the planned-change callout.
+
+### Future infrastructure (V2)
+
+Deferred — each requires non-trivial infrastructure beyond what's
+currently wired:
+
+- **Server-side recording** via LiveKit Egress. Current voice
+  recording is client-side MediaRecorder → WAV.
+- **Whisper-based live captions.** Current captions use the browser
+  `SpeechRecognition` API, which is Chromium-only.
+- **VM-isolated plugin execution** (Node `vm` / worker_thread sandbox).
+  Complements but does not replace the admin review gate above.
+- **CRDT whiteboard** for true concurrent editing without last-write-wins.
+- **SAML SSO** alongside the existing OIDC support.
+- **Streamed LLM responses** for the session-recap workflow.
+- **Native Dropbox / Nextcloud storage backends.**
+
+### Permanently out of scope
+
+- **AI-based content moderation.** Deterministic, operator-driven only.
+  See [safety.md](safety.md).
+- **Monetization** of any kind in the open-source build.
+
+### Genuinely not built
+
+- Mobile-native client. Web is the only first-class surface.
+- Email notification transport. Web Push is built; email is not.
 - Bundle code-splitting for the web app — the SPA ships as a single chunk.
 
-When you find something that says "Built" here but feels half-baked, file an
-issue. The intent is that this table is honest; bugs are bugs, not gaps.
+When you find something that says "Built" above but feels half-baked,
+file an issue. The intent is that this table is honest; bugs are bugs,
+not gaps.
