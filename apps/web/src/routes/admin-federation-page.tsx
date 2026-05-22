@@ -50,12 +50,20 @@ export function AdminFederationPage(): JSX.Element {
   }
 
   async function retryJob(id: string): Promise<void> {
-    await api(`/admin/federation/dead-letters/${id}/retry`, { method: 'POST' });
-    await refresh();
+    try {
+      await api(`/admin/federation/dead-letters/${id}/retry`, { method: 'POST' });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Failed to retry job');
+    }
   }
   async function discardJob(id: string): Promise<void> {
-    await api(`/admin/federation/dead-letters/${id}`, { method: 'DELETE' });
-    await refresh();
+    try {
+      await api(`/admin/federation/dead-letters/${id}`, { method: 'DELETE' });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Failed to discard job');
+    }
   }
 
   return (

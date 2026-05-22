@@ -24,6 +24,7 @@ import {
   type FederationOutboxJob,
   type UserKeyStore,
 } from '@tavern/federation';
+import { TavernError } from '@tavern/shared';
 import type { Config } from '../config.js';
 import { gatewayBroker } from './gateway-broker.js';
 
@@ -259,6 +260,9 @@ class RedisQueueClient implements QueueClient {
   }
 
   async listFailedFederationJobs(): Promise<FailedFederationJob[]> {
+    // Returns up to 100 most-recent failed jobs (BullMQ inclusive range 0..99).
+    // For deployments that accumulate very large dead-letter backlogs, increase
+    // the upper bound or add pagination via the start/end parameters.
     const jobs = await this.outboxQueue.getFailed(0, 99);
     return jobs
       .filter((j) => j.id != null)
@@ -274,13 +278,13 @@ class RedisQueueClient implements QueueClient {
 
   async retryFederationJob(jobId: string): Promise<void> {
     const job = await this.outboxQueue.getJob(jobId);
-    if (!job) throw new Error(`federation job ${jobId} not found`);
+    if (!job) throw TavernError.notFound(`federation job ${jobId} not found`);
     await job.retry('failed');
   }
 
   async discardFederationJob(jobId: string): Promise<void> {
     const job = await this.outboxQueue.getJob(jobId);
-    if (!job) throw new Error(`federation job ${jobId} not found`);
+    if (!job) throw TavernError.notFound(`federation job ${jobId} not found`);
     await job.remove();
   }
 
