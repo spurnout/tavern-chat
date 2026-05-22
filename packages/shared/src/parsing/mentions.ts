@@ -40,7 +40,7 @@ export type ParsedMention =
  * boundary may not fire and the trailing punctuation is consumed into the
  * match — see the edge-case note above.
  */
-const MENTION_REGEX = /(?:^|[\s(\[{])@([A-Za-z0-9_\-.]+)(?:@([A-Za-z0-9.-]+))?\b/g;
+export const MENTION_REGEX = /(?:^|[\s(\[{])@([A-Za-z0-9_\-.]+)(?:@([A-Za-z0-9.-]+))?\b/g;
 
 export function parseMentions(text: string): ParsedMention[] {
   const out: ParsedMention[] = [];
