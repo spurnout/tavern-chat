@@ -79,6 +79,14 @@ export class PeeringError extends Error {
   }
 }
 
+function computeKeyFingerprint(key: Buffer | null): string | null {
+  if (!key || key.every((b) => b === 0)) return null;
+  const hash = createHash('sha256').update(key).digest();
+  return Array.from(hash.subarray(0, 8))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join(':');
+}
+
 export class FederationPeeringService {
   private readonly prisma: PrismaClient;
   private readonly localCapabilities: readonly Capability[];
@@ -334,7 +342,7 @@ export class FederationPeeringService {
   }
 
   async listPeers() {
-    return this.prisma.remoteInstance.findMany({
+    const rows = await this.prisma.remoteInstance.findMany({
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -346,8 +354,13 @@ export class FederationPeeringService {
         revokedReason: true,
         contactEmail: true,
         createdAt: true,
+        instanceKey: true,
       },
     });
+    return rows.map(({ instanceKey, ...rest }) => ({
+      ...rest,
+      keyFingerprint: computeKeyFingerprint(instanceKey),
+    }));
   }
 
   async initiatePeering(input: InitiatePeeringInput): Promise<{ remoteInstanceId: string }> {
