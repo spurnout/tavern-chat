@@ -14,6 +14,7 @@ import type { PrismaClient } from '@prisma/client';
 import { canonicalize } from '../lib/canonical-json.js';
 import { verifyEnvelopeShape, buildSignedEnvelope, type SignedEnvelope } from './federation-envelopes.js';
 import { discoverInstance, postPeeringEnvelope } from './federation-client.js';
+import { assertValidPeerHost as sharedAssertValidPeerHost } from '@tavern/federation';
 
 /**
  * P5-11 — intersect the capabilities advertised by THIS instance with the
@@ -38,28 +39,17 @@ export function intersectCapabilities(
  * via the unauthenticated /_federation/peering route and defence-in-depth for
  * the admin-initiate path.
  *
- * Rejects: bare IPs (IPv4/IPv6), localhost, hostnames without a dot.
+ * Rejects: bare IPs (IPv4/IPv6), localhost, hostnames without a dot, and
+ * hostnames that resolve exclusively to private/loopback addresses.
+ *
+ * Wraps the shared `assertValidPeerHost` from `@tavern/federation`, converting
+ * plain Error throws into typed PeeringErrors for callers that need them.
  */
-export function assertValidPeerHost(host: string): void {
-  if (!host || typeof host !== 'string') {
-    throw new PeeringError('bad_envelope', 'peer host is required');
-  }
-  const lower = host.toLowerCase();
-  if (lower === 'localhost') {
-    throw new PeeringError('bad_envelope', 'peer host cannot be localhost');
-  }
-  // Bare IPv4: digits, dots, nothing else
-  if (/^\d+\.\d+\.\d+\.\d+(?::\d+)?$/.test(host)) {
-    throw new PeeringError('bad_envelope', 'peer host must be a hostname, not an IPv4 address');
-  }
-  // IPv6: contains colon (a hostname:port shape would also match, but real
-  // peer hosts don't carry a port in the discovery identifier)
-  if (host.includes(':') || host.includes('[') || host.includes(']')) {
-    throw new PeeringError('bad_envelope', 'peer host must not contain port or IPv6 brackets');
-  }
-  // Must contain at least one dot — rejects TLD-less names like "intranet"
-  if (!host.includes('.')) {
-    throw new PeeringError('bad_envelope', 'peer host must be a fully-qualified domain');
+export async function assertValidPeerHost(host: string): Promise<void> {
+  try {
+    await sharedAssertValidPeerHost(host);
+  } catch (err) {
+    throw new PeeringError('bad_envelope', err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -109,7 +99,7 @@ export class FederationPeeringService {
     if (typeof preCheck !== 'string' || preCheck.length === 0) {
       throw new PeeringError('bad_envelope', 'envelope missing fromInstance');
     }
-    assertValidPeerHost(preCheck);
+    await assertValidPeerHost(preCheck);
 
     // 2. fetch the sender's discovery doc to get their public key
     const discovery = await discoverInstance(preCheck);
@@ -223,7 +213,7 @@ export class FederationPeeringService {
     if (typeof preCheck.fromInstance !== 'string' || preCheck.fromInstance.length === 0) {
       throw new PeeringError('bad_envelope', 'envelope missing fromInstance');
     }
-    assertValidPeerHost(preCheck.fromInstance);
+    await assertValidPeerHost(preCheck.fromInstance);
 
     // 2. Look up the existing RemoteInstance row. The accept envelope is only
     //    valid for a peer we already initiated peering with — otherwise it's a
@@ -361,7 +351,7 @@ export class FederationPeeringService {
   }
 
   async initiatePeering(input: InitiatePeeringInput): Promise<{ remoteInstanceId: string }> {
-    assertValidPeerHost(input.host);
+    await assertValidPeerHost(input.host);
     const discovery = await discoverInstance(input.host);
     const pubRaw = Buffer.from(discovery.instanceKey.replace(/^ed25519:/, ''), 'base64');
 
