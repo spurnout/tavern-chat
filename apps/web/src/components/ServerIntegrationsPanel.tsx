@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Copy, Plus, Trash2, Webhook as WebhookIcon } from 'lucide-react';
+import type { Channel } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useRealtime } from '../lib/store.js';
+
+// Stable fallback for the "no channels in this server yet" path. Returning a
+// fresh `[]` from the zustand selector re-fires useSyncExternalStore every
+// render — same trap as the channelsByServer fix in server-home.tsx.
+const EMPTY_CHANNELS: readonly Channel[] = Object.freeze([]);
 
 interface BotResp {
   bot: { id: string; username: string; displayName: string };
@@ -118,7 +124,13 @@ function BotsSection({ serverId }: { serverId: string }): JSX.Element {
 }
 
 function WebhooksSection({ serverId }: { serverId: string }): JSX.Element {
-  const channels = useRealtime((s) => s.channelsByServer[serverId] ?? []);
+  // Subscribe to the dict; derive via useMemo so the empty-case fallback
+  // stays a stable reference across renders.
+  const channelsByServer = useRealtime((s) => s.channelsByServer);
+  const channels = useMemo<readonly Channel[]>(
+    () => channelsByServer[serverId] ?? EMPTY_CHANNELS,
+    [channelsByServer, serverId],
+  );
   const textChannels = useMemo(
     () => channels.filter((c) => c.type === 'text'),
     [channels],

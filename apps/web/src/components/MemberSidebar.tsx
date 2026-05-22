@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Member, Presence } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
@@ -6,6 +6,12 @@ import { PresenceDot } from './PresenceDot.js';
 import { MemberProfileTrigger } from './MemberProfileTrigger.js';
 
 type LoadState = 'loading' | 'loaded' | 'error';
+
+// Module-level frozen default so the "no overrides yet" path returns a stable
+// reference across renders. Returning a fresh `{}` from the zustand selector
+// re-fires useSyncExternalStore on every render and infinite-loops React;
+// same trap as the channelsByServer fix in server-home.tsx.
+const EMPTY_NICK_OVERRIDES: Record<string, string | null> = Object.freeze({});
 
 export function MemberSidebar({ serverId }: { serverId: string }): JSX.Element {
   const [members, setMembers] = useState<Member[]>([]);
@@ -16,9 +22,14 @@ export function MemberSidebar({ serverId }: { serverId: string }): JSX.Element {
   const setPresences = useRealtime((s) => s.setPresences);
   // Nickname overlays applied on top of whatever the initial members fetch
   // returned. Updated by MEMBER_UPDATE dispatches so a rename event reflects
-  // here without a refetch.
-  const nicknameOverrides = useRealtime(
-    (s) => s.nicknameOverridesByServer[serverId] ?? {},
+  // here without a refetch. Subscribe to the dict; derive the per-server
+  // entry via useMemo so the empty-case fallback stays a stable reference.
+  const nicknameOverridesByServer = useRealtime(
+    (s) => s.nicknameOverridesByServer,
+  );
+  const nicknameOverrides = useMemo(
+    () => nicknameOverridesByServer[serverId] ?? EMPTY_NICK_OVERRIDES,
+    [nicknameOverridesByServer, serverId],
   );
 
   useEffect(() => {

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { Role } from '@tavern/shared';
 import { useRealtime } from '../lib/store.js';
+
+// Stable fallback for the "no roles loaded yet" path. Returning a fresh `[]`
+// from the zustand selector re-fires useSyncExternalStore every render — same
+// trap as the channelsByServer fix in server-home.tsx.
+const EMPTY_ROLES: readonly Role[] = Object.freeze([]);
 
 interface Props {
   channelId: string;
@@ -63,8 +69,13 @@ export function MentionAutocomplete({
     return null;
   });
   const serverId = channel?.serverId ?? null;
-  const roles = useRealtime((s) =>
-    serverId ? (s.rolesByServerId[serverId]?.roles ?? []) : [],
+  // Subscribe to the dict; the per-server `.roles` array is itself a stable
+  // ref from the realtime store. Derive via useMemo so the empty-case
+  // fallback (no entry yet) stays a stable reference across renders.
+  const rolesByServerId = useRealtime((s) => s.rolesByServerId);
+  const roles = useMemo<readonly Role[]>(
+    () => (serverId ? (rolesByServerId[serverId]?.roles ?? EMPTY_ROLES) : EMPTY_ROLES),
+    [rolesByServerId, serverId],
   );
   const loadRolesForServer = useRealtime((s) => s.loadRolesForServer);
   const [active, setActive] = useState(0);
