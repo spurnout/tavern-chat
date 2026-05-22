@@ -7,6 +7,7 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { APP_NAME } from '@tavern/shared';
 import { prisma } from '@tavern/db';
+import type { PrismaClient } from '@prisma/client';
 import { ClamAVScanner } from '@tavern/media';
 import { describeConfig, type Config } from './config.js';
 import { createLogger } from './lib/logger.js';
@@ -140,6 +141,14 @@ export interface BuildAppOptions {
    * `postFederationEventSync`.
    */
   federationSyncDispatchOverride?: import('@tavern/federation').PostFederationEventSyncFn;
+  /**
+   * Test-only override for the Prisma client. When set, both
+   * `FederationPeeringService` and `FederationInboundService` (and
+   * `configurePresenceFederation`) use this client instead of the global
+   * `@tavern/db` singleton. Enables two isolated app instances in a single
+   * test run, each backed by its own testcontainer DB.
+   */
+  prismaOverride?: PrismaClient;
 }
 
 export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> {
@@ -320,6 +329,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         getFederationDispatcher: () => federationDispatcherSlot,
       });
 
+    // Test-only: allow a second isolated PrismaClient so two app instances
+    // can run against separate testcontainer DBs in the same process.
+    const db = opts.prismaOverride ?? prisma;
+
     let federationKeys: FederationKeyStore | null = null;
     let federationProfile: FederationProfileService | null = null;
     // P3-6: `selfHost` is hoisted out of the FEDERATION_ENABLED block so
@@ -345,6 +358,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       // that ask for `dms`.
       const peering = new FederationPeeringService({
         localCapabilities: advertisedCapabilities(opts.config),
+        prisma: db,
       });
       registerFederationPeeringRoutes(app, { service: peering });
       registerAdminFederationRoutes(app, {
@@ -387,6 +401,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         // handler reads it yet.
         federationPresenceEnabledOnInstance: opts.config.FEDERATION_PRESENCE_ENABLED,
         log: app.log,
+        prisma: db,
       });
       registerFederationEventsRoutes(app, { service: federationInbound });
       registerUsersFederatedRoutes(app, { service: federationProfile });
@@ -453,7 +468,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         queues,
         selfHost,
         federationPresenceEnabledOnInstance: opts.config.FEDERATION_PRESENCE_ENABLED,
-        prisma,
+        prisma: db,
         log: app.log,
       });
     } else {
