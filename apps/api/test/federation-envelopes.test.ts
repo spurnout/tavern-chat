@@ -53,7 +53,10 @@ describe('federation envelopes', () => {
       payloadSchema: peeringRequestPayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/signature/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('sig_failure');
+      expect(result.reason).toMatch(/signature/i);
+    }
   });
 
   it('rejects an envelope where notAfter <= notBefore (shape-level)', () => {
@@ -72,7 +75,10 @@ describe('federation envelopes', () => {
       payloadSchema: peeringRequestPayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/expired|notAfter/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('envelope_invalid');
+      expect(result.reason).toMatch(/expired|notAfter/i);
+    }
   });
 
   it('rejects an envelope whose window has already closed', () => {
@@ -95,7 +101,10 @@ describe('federation envelopes', () => {
       payloadSchema: peeringRequestPayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/expired/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('expired');
+      expect(result.reason).toMatch(/expired/i);
+    }
   });
 
   it('tolerates clock skew up to ENVELOPE_CLOCK_SKEW_S', () => {

@@ -66,7 +66,10 @@ describe('two-layer message envelope', () => {
       payloadSchema: messageCreatePayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/user signature/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('user_sig_failure');
+      expect(result.reason).toMatch(/user signature/i);
+    }
   });
 
   it('fails when instance signature is wrong', () => {
@@ -88,7 +91,10 @@ describe('two-layer message envelope', () => {
       payloadSchema: messageCreatePayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/instance signature/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('instance_sig_failure');
+      expect(result.reason).toMatch(/instance signature/i);
+    }
   });
 
   it('fails when notAfter has expired', () => {
@@ -112,7 +118,10 @@ describe('two-layer message envelope', () => {
       payloadSchema: messageCreatePayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/expired/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('expired');
+      expect(result.reason).toMatch(/expired/i);
+    }
   });
 
   // --- P4-13 — preservedUserSignature path ---------------------------------
@@ -193,7 +202,10 @@ describe('two-layer message envelope', () => {
       payloadSchema: messageCreatePayloadSchema,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/user signature/i);
+    if (!result.ok) {
+      expect(result.kind).toBe('user_sig_failure');
+      expect(result.reason).toMatch(/user signature/i);
+    }
   });
 
   it('throws when both signUser and preservedUserSignature are provided', () => {

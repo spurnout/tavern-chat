@@ -115,7 +115,22 @@ export function buildTwoLayerMessageEnvelope<T>(
 
 export type TwoLayerVerifyResult<T> =
   | { ok: true; envelope: TwoLayerSignedEnvelope<T>; payload: T }
-  | { ok: false; kind: 'sig_failure' | 'envelope_invalid' | 'expired'; reason: string };
+  | {
+      ok: false;
+      /**
+       * Discriminator for the failure mode.
+       *
+       * - `envelope_invalid`: shape/schema check failed (bad wire format).
+       * - `expired`: time-window check failed (notBefore/notAfter).
+       * - `user_sig_failure`: the user-layer signature did not verify against
+       *   the author's public key. Must NOT trigger the rotation-overlap retry.
+       * - `instance_sig_failure`: the instance-layer signature did not verify
+       *   against the peer's current instance key. This is the ONLY kind that
+       *   should trigger the rotation-overlap fallback retry.
+       */
+      kind: 'user_sig_failure' | 'instance_sig_failure' | 'envelope_invalid' | 'expired';
+      reason: string;
+    };
 
 export interface TwoLayerVerifyInput<T extends z.ZodTypeAny> {
   envelope: unknown;
@@ -167,7 +182,7 @@ export function verifyTwoLayerMessageEnvelope<T extends z.ZodTypeAny>(
   const userSigBytes = Buffer.from(env.userSignature, 'base64');
   const authorPub = publicKeyFromRaw(input.authorPublicKeyRaw);
   if (!edVerify(payloadBytes, userSigBytes, authorPub)) {
-    return { ok: false, kind: 'sig_failure', reason: 'user signature does not verify against author public key' };
+    return { ok: false, kind: 'user_sig_failure', reason: 'user signature does not verify against author public key' };
   }
 
   // Verify INSTANCE signature over canonical(envelope-minus-instance-signature)
@@ -176,7 +191,7 @@ export function verifyTwoLayerMessageEnvelope<T extends z.ZodTypeAny>(
   const instanceSigBytes = Buffer.from(signature, 'base64');
   const instancePub = publicKeyFromRaw(input.peerInstancePublicKeyRaw);
   if (!edVerify(envelopeBytes, instanceSigBytes, instancePub)) {
-    return { ok: false, kind: 'sig_failure', reason: 'instance signature does not verify against peer public key' };
+    return { ok: false, kind: 'instance_sig_failure', reason: 'instance signature does not verify against peer public key' };
   }
 
   return { ok: true, envelope: env as TwoLayerSignedEnvelope<z.infer<T>>, payload: env.payload };
