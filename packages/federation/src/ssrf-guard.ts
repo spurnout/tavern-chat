@@ -7,9 +7,20 @@ const PRIVATE_IP_PATTERNS = [
   /^192\.168\./,                       // RFC 1918
   /^169\.254\./,                       // link-local
   /^::1$/,                             // IPv6 loopback
-  /^f[ce][0-9a-f]{2}:/i,               // fc00::/7 unique-local
+  /^f[cd][0-9a-f]{2}:/i,               // fc00::/7 unique-local (fc** and fd**)
   /^fe[89ab][0-9a-f]:/i,               // fe80::/10 link-local
 ];
+
+const DNS_TIMEOUT_MS = 3_000;
+
+function dnsWithTimeout<T>(p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('dns timeout')), DNS_TIMEOUT_MS),
+    ),
+  ]);
+}
 
 function isPrivateIp(ip: string): boolean {
   return PRIVATE_IP_PATTERNS.some((re) => re.test(ip));
@@ -55,8 +66,8 @@ export async function assertValidPeerHost(host: string): Promise<void> {
   // letting the fetch fail naturally at connection time).
   try {
     const [v4, v6] = await Promise.allSettled([
-      dns.resolve4(host),
-      dns.resolve6(host),
+      dnsWithTimeout(dns.resolve4(host)),
+      dnsWithTimeout(dns.resolve6(host)),
     ]);
     const ips = [
       ...(v4.status === 'fulfilled' ? v4.value : []),
