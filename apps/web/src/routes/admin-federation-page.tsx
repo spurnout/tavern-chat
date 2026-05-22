@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api-client.js';
 import { PeersTable, type PeerRow } from '../components/admin/PeersTable.js';
 import { AddPeerModal } from '../components/admin/AddPeerModal.js';
+import { RevokePeerModal } from '../components/admin/RevokePeerModal.js';
 
 interface FailedJob {
   id: string;
@@ -18,6 +19,7 @@ export function AdminFederationPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [pendingRevoke, setPendingRevoke] = useState<PeerRow | null>(null);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -42,10 +44,15 @@ export function AdminFederationPage(): JSX.Element {
     await api(`/admin/peers/${id}/approve`, { method: 'POST' });
     await refresh();
   }
-  async function revoke(id: string): Promise<void> {
-    const reason = window.prompt('Revoke this peer? Optional reason:') ?? undefined;
-    if (reason === undefined) return; // cancelled
-    await api(`/admin/peers/${id}`, { method: 'DELETE', body: { reason: reason || undefined } });
+  function revoke(id: string): void {
+    const peer = peers.find((p) => p.id === id) ?? null;
+    setPendingRevoke(peer);
+  }
+
+  async function confirmRevoke(reason?: string): Promise<void> {
+    if (!pendingRevoke) return;
+    await api(`/admin/peers/${pendingRevoke.id}`, { method: 'DELETE', body: { reason } });
+    setPendingRevoke(null);
     await refresh();
   }
 
@@ -86,6 +93,12 @@ export function AdminFederationPage(): JSX.Element {
       <AddPeerModal
         open={addOpen}
         onOpenChange={(o) => { setAddOpen(o); if (!o) void refresh(); }}
+      />
+      <RevokePeerModal
+        open={pendingRevoke !== null}
+        onOpenChange={(o) => { if (!o) setPendingRevoke(null); }}
+        peerHost={pendingRevoke?.host ?? ''}
+        onConfirm={confirmRevoke}
       />
 
       <section className="mt-8">
