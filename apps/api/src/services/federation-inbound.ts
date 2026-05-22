@@ -506,7 +506,7 @@ export class FederationInboundService {
     if (
       !verified.ok &&
       peer.previousInstanceKey &&
-      /instance signature does not verify/i.test(verified.reason)
+      verified.kind === 'sig_failure'
     ) {
       verified = verifyTwoLayerMessageEnvelope({
         envelope: body,
@@ -516,17 +516,13 @@ export class FederationInboundService {
       });
     }
     if (!verified.ok) {
-      // verify returns three flavours of failure: (a) "envelope shape
-      // invalid" / "notBefore in the future" / "notAfter expired" — those
-      // are 400-bad-envelope problems (the peer sent us garbage or a stale
-      // event); (b) "user signature does not verify" / "instance signature
-      // does not verify" — those are 401-bad-signature. Map by the prefix
-      // because the verify helper returns a `reason` string.
-      const reason = verified.reason;
-      const isSigFailure = /signature does not verify/i.test(reason);
+      // verify returns three flavours of failure: (a) envelope_invalid /
+      // expired — those are 400-bad-envelope problems (the peer sent us
+      // garbage or a stale event); (b) sig_failure — those are
+      // 401-bad-signature. Map using the typed `kind` discriminator.
       throw new FederationInboundError(
-        isSigFailure ? 'bad_signature' : 'bad_envelope',
-        reason,
+        verified.kind === 'sig_failure' ? 'bad_signature' : 'bad_envelope',
+        verified.reason,
       );
     }
 
