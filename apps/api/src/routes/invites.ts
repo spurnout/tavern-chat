@@ -213,6 +213,41 @@ export async function registerInviteRoutes(
     reply.status(201).send(ok(serializeInvite(invite)));
   });
 
+  // List server-scoped invites. Anyone with CREATE_INVITES on the server
+  // can see the active invite codes their teammates have minted (matches
+  // Discord behaviour); the DELETE-level MANAGE_SERVER gate still applies
+  // to revocation. Revoked / expired / exhausted invites are included so
+  // the UI can surface history — the client decides what to filter.
+  app.get('/api/servers/:id/invites', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id: serverId } = z.object({ id: idSchema }).parse(req.params);
+    await requireServerPermission(serverId, ctx.userId, Permission.CREATE_INVITES);
+    const rows = await prisma.invite.findMany({
+      where: { serverId, scope: 'server' },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      include: {
+        createdBy: {
+          select: { id: true, username: true, displayName: true },
+        },
+      },
+    });
+    reply.send(
+      ok(
+        rows.map((i) => ({
+          ...serializeInvite(i),
+          createdBy: i.createdBy
+            ? {
+                id: i.createdBy.id,
+                username: i.createdBy.username,
+                displayName: i.createdBy.displayName,
+              }
+            : null,
+        })),
+      ),
+    );
+  });
+
   app.delete('/api/invites/:id', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { id } = z.object({ id: idSchema }).parse(req.params);

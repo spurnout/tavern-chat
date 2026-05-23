@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
-import { Ban, Bell, Bot, Globe, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
+import { Ban, Bell, Bot, DoorOpen, Globe, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
 import type {
   CustomEmoji,
   Member,
@@ -24,11 +24,13 @@ import { BanModal } from '../components/BanModal.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { PerTavernNotificationSettings } from '../components/PerTavernNotificationSettings.js';
 import { ServerIntegrationsPanel } from '../components/ServerIntegrationsPanel.js';
+import { ServerInvitesPanel } from '../components/ServerInvitesPanel.js';
 import { useCanIn, useRealtime } from '../lib/store.js';
 
 type Tab =
   | 'roles'
   | 'members'
+  | 'invites'
   | 'bans'
   | 'emoji'
   | 'policy'
@@ -39,6 +41,7 @@ type Tab =
 const ALL_TABS: Tab[] = [
   'roles',
   'members',
+  'invites',
   'bans',
   'emoji',
   'policy',
@@ -75,6 +78,9 @@ export function ServerSettingsPage(): JSX.Element {
           <TabButton active={tab === 'members'} onClick={() => setTab('members')}>
             <Users size={12} /> Members
           </TabButton>
+          <TabButton active={tab === 'invites'} onClick={() => setTab('invites')}>
+            <DoorOpen size={12} /> Invites
+          </TabButton>
           <TabButton active={tab === 'bans'} onClick={() => setTab('bans')}>
             <Ban size={12} /> Bans
           </TabButton>
@@ -98,6 +104,7 @@ export function ServerSettingsPage(): JSX.Element {
       <div className="p-6">
         {tab === 'roles' ? <RolesPanel serverId={serverId} /> : null}
         {tab === 'members' ? <MembersPanel serverId={serverId} /> : null}
+        {tab === 'invites' ? <ServerInvitesPanel serverId={serverId} /> : null}
         {tab === 'bans' ? <BansPanel serverId={serverId} autoOpenBan={initial.autoBan} /> : null}
         {tab === 'emoji' ? <EmojiPanel serverId={serverId} /> : null}
         {tab === 'policy' ? <SafetyPolicyPanel serverId={serverId} /> : null}
