@@ -37,11 +37,22 @@ function getContext(): AudioContext | null {
   return ctx;
 }
 
+// localStorage keys carry the `tavern.` prefix the rest of the codebase uses
+// (preferences-store, outbox, api-client) so multi-app collisions on the same
+// origin are impossible. The non-prefixed names are still consulted as a
+// one-time read-side fallback for users upgrading from an earlier build.
+const ENABLED_KEY = 'tavern.sound.enabled';
+const VOLUME_KEY = 'tavern.sound.volume';
+const LEGACY_ENABLED_KEY = 'sound.enabled';
+const LEGACY_VOLUME_KEY = 'sound.volume';
+
 function readLocalStorage(): SoundSettings {
   if (typeof window === 'undefined') return { enabled: true, volume: 0.7 };
-  const enabled = window.localStorage.getItem('sound.enabled') !== 'false';
-  const raw = window.localStorage.getItem('sound.volume');
-  const n = raw != null ? Number(raw) : 70;
+  const ls = window.localStorage;
+  const enabledRaw = ls.getItem(ENABLED_KEY) ?? ls.getItem(LEGACY_ENABLED_KEY);
+  const enabled = enabledRaw !== 'false';
+  const volumeRaw = ls.getItem(VOLUME_KEY) ?? ls.getItem(LEGACY_VOLUME_KEY);
+  const n = volumeRaw != null ? Number(volumeRaw) : 70;
   const volume = Number.isFinite(n) ? Math.max(0, Math.min(1, n / 100)) : 0.7;
   return { enabled, volume };
 }

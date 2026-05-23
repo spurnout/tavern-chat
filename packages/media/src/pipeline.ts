@@ -85,20 +85,46 @@ interface AttachmentUpdate {
 const IMAGE_KINDS = new Set(['image', 'gif', 'map', 'character_asset']);
 const AUDIO_KINDS = new Set(['audio', 'voice_message']);
 
-const MAGIC_BYTES: Array<{ mime: string; sig: number[]; offset?: number }> = [
-  { mime: 'image/jpeg', sig: [0xff, 0xd8, 0xff] },
-  { mime: 'image/png', sig: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
-  { mime: 'image/webp', sig: [0x52, 0x49, 0x46, 0x46] },
-  { mime: 'image/gif', sig: [0x47, 0x49, 0x46, 0x38] },
-  { mime: 'video/mp4', sig: [0x66, 0x74, 0x79, 0x70], offset: 4 },
-  { mime: 'video/webm', sig: [0x1a, 0x45, 0xdf, 0xa3] },
-  { mime: 'audio/mpeg', sig: [0x49, 0x44, 0x33] },
-  { mime: 'audio/ogg', sig: [0x4f, 0x67, 0x67, 0x53] },
-];
+/**
+ * One element = ONE signature check (a sequence of bytes at a given offset).
+ * A single MIME can require multiple checks via `signatures: [...]` in the
+ * MIME table below — all must match for the MIME to be accepted. This is how
+ * WEBP gets verified: the WEBP wrapper is RIFF (a generic Microsoft container
+ * also used by AVI / WAV), so checking only `RIFF` at offset 0 is not
+ * sufficient — we also require `WEBP` at offset 8.
+ */
+interface MagicSignature {
+  sig: number[];
+  offset?: number;
+}
+
+const MIME_MAGIC: Record<string, MagicSignature[][]> = {
+  // Each outer entry is a set of (AND-ed) signatures that all must match.
+  // Multiple outer entries are OR-ed. JPEG has several valid markers after
+  // the SOI; we keep the conservative 3-byte prefix.
+  'image/jpeg': [[{ sig: [0xff, 0xd8, 0xff] }]],
+  'image/png': [[{ sig: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }]],
+  // WEBP = RIFF...WEBP. Both checks required (see comment above).
+  'image/webp': [[{ sig: [0x52, 0x49, 0x46, 0x46] }, { sig: [0x57, 0x45, 0x42, 0x50], offset: 8 }]],
+  'image/gif': [[{ sig: [0x47, 0x49, 0x46, 0x38] }]],
+  'video/mp4': [[{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }]],
+  'video/webm': [[{ sig: [0x1a, 0x45, 0xdf, 0xa3] }]],
+  'audio/mpeg': [[{ sig: [0x49, 0x44, 0x33] }]],
+  'audio/ogg': [[{ sig: [0x4f, 0x67, 0x67, 0x53] }]],
+};
+
+function signatureMatches(buf: Buffer, sig: MagicSignature): boolean {
+  const offset = sig.offset ?? 0;
+  if (buf.length < offset + sig.sig.length) return false;
+  for (let i = 0; i < sig.sig.length; i++) {
+    if (buf[offset + i] !== sig.sig[i]) return false;
+  }
+  return true;
+}
 
 function checkMagic(buf: Buffer, declaredMime: string): boolean {
-  const candidates = MAGIC_BYTES.filter((m) => m.mime === declaredMime);
-  if (candidates.length === 0) {
+  const candidates = MIME_MAGIC[declaredMime];
+  if (!candidates) {
     // UPL-009: for the heavily-typed kinds (image/video/audio) we always
     // expect a magic signature. If the declared MIME is in those families
     // and we don't have one in the table, that's a config drift / a new MIME
@@ -115,14 +141,8 @@ function checkMagic(buf: Buffer, declaredMime: string): boolean {
     }
     return true;
   }
-  return candidates.some((m) => {
-    const offset = m.offset ?? 0;
-    if (buf.length < offset + m.sig.length) return false;
-    for (let i = 0; i < m.sig.length; i++) {
-      if (buf[offset + i] !== m.sig[i]) return false;
-    }
-    return true;
-  });
+  // Each candidate set is AND-ed; the candidates list is OR-ed.
+  return candidates.some((sigSet) => sigSet.every((sig) => signatureMatches(buf, sig)));
 }
 
 export async function runScanJob(input: ScanJobInput, deps: PipelineDeps): Promise<void> {
@@ -177,23 +197,48 @@ export async function runScanJob(input: ScanJobInput, deps: PipelineDeps): Promi
     }
 
     // 3. Image normalisation + thumbnail.
+    //
+    // Previously this path buffered the entire object via `Buffer.concat`,
+    // then re-decoded it THREE times (metadata, stripped, thumb). With the
+    // 100 MiB upload cap and worker concurrency=4 that produced ~400 MiB
+    // peak resident memory for a sustained image-job spike. We now:
+    //   - pipe the storage stream into a single sharp instance,
+    //   - `clone()` it for each output so the decoded representation is
+    //     reused rather than re-decoded from the raw buffer,
+    //   - never hold the raw bytes ourselves — sharp buffers internally
+    //     only what it actually needs.
     let width: number | null = null;
     let height: number | null = null;
     let thumbnailKey: string | null = null;
     if (IMAGE_KINDS.has(att.kind)) {
       const stream = await deps.storage.getObject(att.storageBucket, att.storageKey);
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream as AsyncIterable<Buffer>) chunks.push(chunk);
-      const buf = Buffer.concat(chunks);
+      const decoder = sharp({ animated: att.kind === 'gif' });
+      // Best-effort error wiring so a decode error surfaces in the catch
+      // block below rather than crashing the worker via unhandled 'error'.
+      const readable = stream as NodeJS.ReadableStream;
+      readable.on('error', (err) => decoder.destroy(err));
+      readable.pipe(decoder);
 
-      const meta = await sharp(buf).metadata();
+      // Explicitly wait for the writable side of the decoder to finish
+      // before kicking off the clones. sharp's `.metadata()` / `.toBuffer()`
+      // resolve only after the writable finishes anyway, but on a slow
+      // (network) input stream a misbehaving consumer could otherwise see
+      // a partial-image metadata read or even a torn buffer. Making the
+      // ordering explicit is cheap and removes that whole class of race.
+      await new Promise<void>((resolve, reject) => {
+        decoder.once('finish', resolve);
+        decoder.once('error', reject);
+      });
+
+      const meta = await decoder.clone().metadata();
       width = meta.width ?? null;
       height = meta.height ?? null;
 
-      const stripped = await sharp(buf, { animated: att.kind === 'gif' }).rotate().toBuffer();
+      const stripped = await decoder.clone().rotate().toBuffer();
       await deps.storage.putObject(att.storageBucket, att.storageKey, stripped, att.mimeType);
 
-      const thumb = await sharp(buf)
+      const thumb = await decoder
+        .clone()
         .rotate()
         .resize({ width: 320, withoutEnlargement: true })
         .webp({ quality: 80 })

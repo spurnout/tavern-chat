@@ -32,9 +32,22 @@ export class GatewayClient {
   constructor(private readonly opts: GatewayClientOptions) {}
 
   connect(): void {
-    if (this.socket || this.status === 'connecting') return;
+    // Early-out covers both the freshly-connecting case AND the situation
+    // where a reconnect timer has already been scheduled by `scheduleReconnect`
+    // — letting a manual `connect()` slip through during the reconnect window
+    // produced double-sockets when the timer subsequently fired (each socket
+    // separately handling HELLO / IDENTIFY).
+    if (this.socket || this.status === 'connecting' || this.status === 'reconnecting') return;
     const url = this.opts.url ?? this.defaultUrl();
     this.setStatus('connecting');
+
+    // If a timer is still queued (e.g. caller pre-empted the schedule by
+    // explicitly invoking connect), cancel it now so it doesn't fire a
+    // duplicate connection moments later.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     const socket = new WebSocket(url);
     this.socket = socket;
@@ -62,7 +75,10 @@ export class GatewayClient {
     this.setStatus('closed');
     this.resumeSessionId = null;
     this.lastSeq = 0;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.cleanupSocket();
   }
 
@@ -81,6 +97,12 @@ export class GatewayClient {
 
   private scheduleReconnect(): void {
     if (this.status === 'closed') return;
+    // Cancel any timer that's still queued from a prior schedule — the
+    // close-handler shouldn't leave overlapping timers in flight.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.setStatus('reconnecting');
     // RT-015: add ±20% jitter so a server restart that drops every client
     // doesn't cause them all to reconnect on identical schedules. Without
@@ -90,7 +112,14 @@ export class GatewayClient {
     const jitter = base * 0.2 * (Math.random() * 2 - 1);
     const delay = Math.max(250, Math.floor(base + jitter));
     this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      // Allow the `connect()` early-out to pass: leaving `reconnecting`
+      // before calling connect avoids a self-block since we just guarded
+      // against that state in connect().
+      if (this.status === 'reconnecting') this.setStatus('idle');
+      this.connect();
+    }, delay);
   }
 
   private setStatus(s: typeof this.status): void {

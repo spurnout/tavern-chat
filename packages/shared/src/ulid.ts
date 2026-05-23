@@ -17,13 +17,14 @@ let lastRandom: number[] = [];
 
 function getCryptoRandomBytes(length: number): Uint8Array {
   const bytes = new Uint8Array(length);
-  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < length; i++) {
-      bytes[i] = Math.floor(Math.random() * 256);
-    }
+  // Node 18+ and every supported browser exposes globalThis.crypto. If a
+  // future target environment doesn't, we want a hard failure rather than
+  // silently downgrading IDs to Math.random() — a non-cryptographic source
+  // here would let an attacker who has seen one ULID predict the next.
+  if (typeof globalThis.crypto === 'undefined' || !globalThis.crypto.getRandomValues) {
+    throw new Error('ulid: secure crypto.getRandomValues is required');
   }
+  globalThis.crypto.getRandomValues(bytes);
   return bytes;
 }
 

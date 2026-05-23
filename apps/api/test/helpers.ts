@@ -144,8 +144,22 @@ export function makeFakePrismaClient(db: FakeDb) {
       },
     },
     session: {
-      async findUnique({ where }: { where: { id: string } }) {
-        return db.sessions.get(where.id) ?? null;
+      async findUnique({
+        where,
+        select,
+      }: {
+        where: { id: string };
+        select?: { user?: { select?: Record<string, true> } };
+      }) {
+        const session = db.sessions.get(where.id) ?? null;
+        if (!session) return null;
+        // Mirror Prisma's `select: { user: { select: ... } }` behaviour so
+        // the auth plugin's combined session+user query lights up here too.
+        if (select?.user) {
+          const user = db.users.get(session.userId);
+          return { ...session, user: user ?? null };
+        }
+        return session;
       },
       async create({ data }: { data: Omit<SessionRow, 'createdAt' | 'revokedAt'> & { revokedAt?: Date | null } }) {
         const row: SessionRow = {

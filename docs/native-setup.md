@@ -15,7 +15,11 @@ What "no" means in practice:
 
 - **No Redis** → gateway uses an in-process EventEmitter (single replica
   only); upload pipeline runs in the API process; the worker daemon exits
-  immediately because there's nothing for it to do.
+  immediately because there's nothing for it to do. WebAuthn challenges
+  and OIDC sign-in `state` rows are also kept in an in-process Map, which
+  means a passkey ceremony or SSO callback that lands on a different
+  replica without sticky sessions will fail — set `REDIS_URL` if you run
+  more than one API node.
 - **No object storage** → files written to `./data/storage/<bucket>/<key>`,
   served back through the API at `/api/_local-files/...`.
 - **No ClamAV** → upload virus scan is skipped; magic-byte checks and
@@ -94,7 +98,9 @@ Memurai is a Windows-native, Redis-compatible server.
 
 The worker process now has work to do; the API switches from in-memory
 queues to BullMQ; the gateway broker promotes from in-process to Redis
-pub/sub on startup.
+pub/sub on startup; and WebAuthn challenge / OIDC `state` storage moves
+into a shared Redis namespace so passkey and SSO ceremonies survive a
+reconnect onto a different replica.
 
 ### macOS / Linux
 

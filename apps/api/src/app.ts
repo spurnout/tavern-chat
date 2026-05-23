@@ -102,6 +102,8 @@ import { registerUserRoutes } from './routes/users.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
+import IORedis from 'ioredis';
+import { InMemoryEphemeralStore, RedisEphemeralStore, type EphemeralStore } from './lib/ephemeral-store.js';
 import { advertisedCapabilities, registerWellKnownRoutes } from './routes/well-known.js';
 import { registerFederationPeeringRoutes } from './routes/federation-peering.js';
 import { registerAdminFederationRoutes } from './routes/admin-federation.js';
@@ -278,7 +280,34 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     get userKeyStore() { return userKeys ?? undefined; },
     logger: app.log,
   });
-  const webauthnService = new WebAuthnService(opts.config);
+  // Shared Redis client for ephemeral state (WebAuthn challenges, OIDC
+  // states). Each namespace gets its own store wrapper but they share the
+  // connection. When REDIS_URL is unset we fall back to per-process
+  // in-memory stores; documented as a single-replica limitation.
+  let sharedEphemeralRedis: import('ioredis').Redis | null = null;
+  const makeEphemeralStore = (namespace: string): EphemeralStore => {
+    if (!opts.config.REDIS_URL) return new InMemoryEphemeralStore();
+    if (!sharedEphemeralRedis) {
+      sharedEphemeralRedis = new IORedis(opts.config.REDIS_URL, {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+        // Defer the actual TCP connect to the first command. That way an
+        // operator booting the API on a host whose Redis is briefly down
+        // doesn't fail the boot itself, and the tests (whose TEST_CONFIG
+        // sets REDIS_URL but never hits the WebAuthn/OIDC paths) don't fill
+        // the log with reconnect noise.
+        lazyConnect: true,
+      });
+      sharedEphemeralRedis.on('error', (err) => {
+        app.log.warn({ err }, 'ephemeral-store redis error');
+      });
+      app.addHook('onClose', async () => {
+        await sharedEphemeralRedis?.quit().catch(() => undefined);
+      });
+    }
+    return new RedisEphemeralStore(sharedEphemeralRedis, namespace);
+  };
+  const webauthnService = new WebAuthnService(opts.config, makeEphemeralStore('webauthn'));
 
   app.get('/healthz', async () => ok({ ok: true, app: APP_NAME, env: opts.config.NODE_ENV }));
   app.get('/api/instance', async () =>
@@ -567,7 +596,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerBreakoutRoutes(app, opts.config);
     await registerRecordingRoutes(app);
     await registerPluginRoutes(app);
-    const oidcService = new OidcService(opts.config);
+    const oidcService = new OidcService(opts.config, makeEphemeralStore('oidc'));
     await registerSsoRoutes(app, { oidc: oidcService, auth: authService, config: opts.config });
     await registerWhiteboardRoutes(app);
     await registerEncounterTemplateRoutes(app);

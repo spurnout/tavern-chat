@@ -9,8 +9,13 @@ moderation services — Tavern ships with a **local Trust & Safety Core** for
 access control, upload hygiene, reporting, quarantine, audit logs, and
 configurable community policies.
 
-This is **not** a Discord clone or Matrix bridge. It does not federate. It does
-not have public server discovery, monetization, or live transcription.
+This is **not** a Discord clone or Matrix bridge. There is no public server
+discovery and no monetization. Live transcription is not built in. Tavern
+supports **opt-in federation** with other Tavern instances over a small,
+documented protocol (IR20) — off by default, controlled by `FEDERATION_ENABLED`,
+and limited to the capabilities each side advertises. See
+[`docs/federation.md`](docs/federation.md) for the design and the operator
+guide for how to keep it disabled if you want a fully-private instance.
 
 ---
 

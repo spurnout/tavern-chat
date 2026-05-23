@@ -29,16 +29,28 @@ export function AccountDataSection(): JSX.Element {
     }
   }
 
+  // Statuses where there's nothing left to update — pollung past them is
+  // wasted work. The server marks an export ready/failed and the row never
+  // moves on its own; the user must request a new one.
+  const TERMINAL_STATUSES = new Set(['ready', 'failed', 'expired']);
+  const hasInflight = exports.some((e) => !TERMINAL_STATUSES.has(e.status));
+
   useEffect(() => {
     void refresh();
-    // Lightweight poll while there's an inflight export; the gateway sends
-    // an EXPORT_READY too but a 4s tick is a safer floor in case the user
-    // closed and reopened the tab mid-export.
+  }, []);
+
+  useEffect(() => {
+    // Lightweight poll only while there IS an inflight export; the gateway
+    // also sends an EXPORT_READY event but a 4s tick is a safer floor in
+    // case the user closed and reopened the tab mid-export. When no rows
+    // are in flight the interval doesn't run, so an idle settings tab
+    // doesn't ping the API forever.
+    if (!hasInflight) return;
     const handle = window.setInterval(() => {
       void refresh();
     }, 4000);
     return () => window.clearInterval(handle);
-  }, []);
+  }, [hasInflight]);
 
   async function requestExport(): Promise<void> {
     setBusy(true);

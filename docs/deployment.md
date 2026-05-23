@@ -18,9 +18,15 @@ Docker runs — a home server, a VPS, or a small cluster.
 | Traefik   | Reverse proxy + TLS                  | recommended |
 
 ¹ **Redis + Worker are required for multi-replica deployments.** In a single-replica
-deployment Tavern uses an in-process EventEmitter for gateway fanout and runs
-the upload pipeline inline in the API process; the worker is then a no-op
-that idles waiting for SIGTERM. See INF-006 / INF-012.
+deployment Tavern uses an in-process EventEmitter for gateway fanout, runs
+the upload pipeline inline in the API process, and keeps the WebAuthn
+challenge store / OIDC sign-in `state` store in per-process Maps; the
+worker is then a no-op that idles waiting for SIGTERM. As soon as you
+add a second API replica behind a load balancer, configure `REDIS_URL`
+so the ephemeral-state stores can be shared — without it, passkey
+registration / login and OIDC callbacks break unpredictably depending on
+which replica the second leg of the ceremony lands on. See INF-006 /
+INF-012.
 
 ² Without Garage (or another S3-compatible store), Tavern uses the
 filesystem-backed `local` storage backend and serves attachments through the

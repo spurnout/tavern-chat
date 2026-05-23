@@ -20,6 +20,8 @@ coverage/
 e2e/test-results/
 e2e/playwright-report/
 e2e/playwright/.cache/
+# Scratch directory created by the Playwright MCP smoke harness
+.playwright-mcp/
 e2e/walkthrough-frames/
 e2e/walkthrough.html
 e2e/walkthrough.mp4

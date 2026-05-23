@@ -3,6 +3,7 @@ import {
   PROTOCOL_VERSION,
   ENVELOPE_CLOCK_SKEW_S,
   ENVELOPE_DEFAULT_LIFETIME_S,
+  ENVELOPE_EVENT_TYPES,
   type EnvelopeEventType,
 } from '@tavern/shared';
 import { z } from 'zod';
@@ -145,9 +146,12 @@ export interface TwoLayerVerifyInput<T extends z.ZodTypeAny> {
 export function verifyTwoLayerMessageEnvelope<T extends z.ZodTypeAny>(
   input: TwoLayerVerifyInput<T>,
 ): TwoLayerVerifyResult<z.infer<T>> {
+  // Match the strictness of `sync-dispatch.ts`: an envelope with an unknown
+  // event type is rejected here rather than downstream — keeps the protocol
+  // surface as small as the constants declare.
   const wireSchema = z.object({
     version: z.literal(PROTOCOL_VERSION),
-    eventType: z.string(),
+    eventType: z.enum(ENVELOPE_EVENT_TYPES),
     nonce: z.string().min(20).max(64).regex(/^[A-Za-z0-9_-]+$/),
     notBefore: z.string().datetime({ offset: true }),
     notAfter: z.string().datetime({ offset: true }),

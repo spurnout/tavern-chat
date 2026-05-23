@@ -79,15 +79,32 @@ export const messageSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-export const createMessageRequestSchema = z.object({
-  content: z.string().max(MESSAGE_LIMITS.MAX_CONTENT_LENGTH),
-  replyToMessageId: idSchema.optional(),
-  attachmentIds: z.array(idSchema).max(MESSAGE_LIMITS.MAX_ATTACHMENTS_PER_MESSAGE).optional(),
-  /** Idempotency key — server returns the same message id on retry. */
-  nonce: z.string().min(1).max(64).optional(),
-  /** Wave 2 #5 — when set, this message is a forward of an existing one. */
-  forwardedFromMessageId: idSchema.optional(),
-});
+export const createMessageRequestSchema = z
+  .object({
+    content: z.string().max(MESSAGE_LIMITS.MAX_CONTENT_LENGTH),
+    replyToMessageId: idSchema.optional(),
+    attachmentIds: z.array(idSchema).max(MESSAGE_LIMITS.MAX_ATTACHMENTS_PER_MESSAGE).optional(),
+    /** Idempotency key — server returns the same message id on retry. */
+    nonce: z.string().min(1).max(64).optional(),
+    /** Wave 2 #5 — when set, this message is a forward of an existing one. */
+    forwardedFromMessageId: idSchema.optional(),
+  })
+  .superRefine((data, ctx) => {
+    // A message must carry SOMETHING: non-empty text, one or more attachments,
+    // or a forward source (which embeds the original content). Forum threads
+    // and DMs both pass through this gate, so the empty-thread title case is
+    // unreachable too.
+    const hasText = data.content.trim().length > 0;
+    const hasAttachments = (data.attachmentIds?.length ?? 0) > 0;
+    const isForward = Boolean(data.forwardedFromMessageId);
+    if (!hasText && !hasAttachments && !isForward) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Message must have content, an attachment, or be a forward',
+        path: ['content'],
+      });
+    }
+  });
 
 export const updateMessageRequestSchema = z.object({
   content: z.string().max(MESSAGE_LIMITS.MAX_CONTENT_LENGTH),

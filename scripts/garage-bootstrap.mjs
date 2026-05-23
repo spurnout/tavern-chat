@@ -69,6 +69,29 @@ function assertDevOnly(env) {
   }
 }
 
+// Defence-in-depth: these values become positional CLI arguments to
+// `docker exec ... /garage`. Garage itself enforces sane shapes today, but
+// a value containing a leading `-` would be interpreted as a flag, and a
+// newline could split the command. Restrict to the alphabet operators
+// realistically use for these fields.
+function assertSafeArgValues(env) {
+  const SHAPE = /^[A-Za-z0-9._-]+$/;
+  const checks = [
+    ['S3_ACCESS_KEY', env.S3_ACCESS_KEY],
+    ['S3_SECRET_KEY', env.S3_SECRET_KEY],
+    ['S3_BUCKET', env.S3_BUCKET],
+    ['S3_QUARANTINE_BUCKET', env.S3_QUARANTINE_BUCKET],
+  ];
+  for (const [name, value] of checks) {
+    if (typeof value !== 'string' || !SHAPE.test(value)) {
+      console.error(
+        `garage-bootstrap: ${name} must match /^[A-Za-z0-9._-]+$/ to be safe as a CLI argument (got: ${JSON.stringify(value)}).`,
+      );
+      process.exit(1);
+    }
+  }
+}
+
 function garage(args, { allowFail = false } = {}) {
   const r = spawnSync('docker', ['exec', CONTAINER, '/garage', ...args], {
     encoding: 'utf-8',
@@ -111,7 +134,13 @@ if (!dockerRunning()) {
 // over-provisioned mount points) sometimes take longer than 60s to assign
 // the initial layout. Operators can bump this with `GARAGE_HEALTH_TIMEOUT_MS`
 // when they need to.
-const healthTimeoutMs = Number(process.env.GARAGE_HEALTH_TIMEOUT_MS ?? 60_000);
+const rawTimeoutMs = Number(process.env.GARAGE_HEALTH_TIMEOUT_MS ?? 60_000);
+const healthTimeoutMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? rawTimeoutMs : 60_000;
+if (process.env.GARAGE_HEALTH_TIMEOUT_MS && !Number.isFinite(rawTimeoutMs)) {
+  console.warn(
+    `garage-bootstrap: GARAGE_HEALTH_TIMEOUT_MS=${process.env.GARAGE_HEALTH_TIMEOUT_MS} is not a number, falling back to 60000ms.`,
+  );
+}
 console.info(`garage-bootstrap: waiting for tavern-garage to be healthy (${healthTimeoutMs}ms)...`);
 const deadline = Date.now() + healthTimeoutMs;
 while (!containerHealthy()) {
@@ -150,6 +179,7 @@ if (!layoutAssign.ok || !layoutApply.ok) {
 
 const env = loadEnv();
 assertDevOnly(env);
+assertSafeArgValues(env);
 console.info(`garage-bootstrap: importing key id="${env.S3_ACCESS_KEY}"`);
 
 // 3. Import key with known credentials.

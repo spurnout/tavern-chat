@@ -83,9 +83,15 @@ this list. Items are ordered by impact.
 
 ## Realtime / scaling
 
-- [ ] If running >1 API replica, `REDIS_URL` is configured. The gateway
-      auto-promotes to Redis pub/sub on startup and falls back to in-process
-      with a warning if Redis is unreachable.
+- [ ] If running >1 API replica, `REDIS_URL` is configured. With Redis,
+      Tavern uses it for **four** things and only one of them is the
+      gateway: BullMQ job queues, gateway pub/sub fan-out, the WebAuthn
+      challenge store, and the OIDC sign-in `state` store. Without Redis
+      the latter two fall back to per-process in-memory Maps, so a passkey
+      registration / login or an OIDC callback that lands on a different
+      replica will fail with "challenge expired" / "state invalid".
+- [ ] The gateway auto-promotes to Redis pub/sub on startup and falls
+      back to in-process with a warning if Redis is unreachable.
 - [ ] Sticky sessions are NOT required — clients reconnect cleanly across
       replicas. (Verify by killing one API replica during a chat.)
 - [ ] Worker has at least one replica. Two for availability.
@@ -140,12 +146,26 @@ Tavern's frontend is a Vite SPA served as static files. When fronting it:
 - [ ] Reapply Prisma migrations and re-seed in a staging environment before
       pushing to production.
 
+## Authentication options
+
+Tavern's account model supports three orthogonal credential types:
+
+- **Password + optional TOTP**. Built in; argon2id with replay-protected TOTP.
+  Self-service reset flow (Wave 3) lands tokens by email when `SMTP_HOST`
+  is configured.
+- **WebAuthn passkeys**. Built in. Set `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN`
+  to the canonical browser-facing host. Challenges live in the
+  EphemeralStore (Redis when configured; per-process Map otherwise — see
+  the Realtime / scaling section).
+- **OIDC single sign-on**. Built in. Set `OIDC_ISSUER_URL` /
+  `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET`. The default behaviour
+  auto-links an unmatched SSO sign-in to an existing local account when
+  the IdP returns a verified email that matches; **multi-IdP deployments
+  should set `OIDC_AUTO_LINK_BY_EMAIL=false`** so a second IdP cannot
+  silently inherit a victim's account by replaying their email.
+
 ## Out of scope (read this before assuming it works)
 
-- Tavern does **not** implement password reset email flows. If a user forgets
-  their password, an instance admin must reset the `passwordHash` directly.
-- There is **no** built-in MFA/SSO. Front the instance with a SSO proxy
-  (Authelia, oauth2-proxy) if you need MFA.
 - There is **no** ToS / privacy policy / age-gate UI. Add your own as a
   static landing page if your jurisdiction requires it.
 - No GDPR data-export or right-to-erasure tooling. The schema makes this

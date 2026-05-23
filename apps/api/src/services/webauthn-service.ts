@@ -14,16 +14,16 @@ import type {
 } from '@simplewebauthn/types';
 import { ErrorCodes, TavernError, ulid } from '@tavern/shared';
 import type { Config } from '../config.js';
+import { InMemoryEphemeralStore, type EphemeralStore } from '../lib/ephemeral-store.js';
 
 /**
  * Wave 3 — WebAuthn / passkey second factor.
  *
- * Challenges are deliberately ephemeral: a short-TTL in-process Map keyed by
- * the relevant subject (userId for enrollment, identifier-lowered for
- * anonymous login). The API process is single-replica without Redis (the
- * codebase comments call this out repeatedly), so a Map is fine — and even
- * with Redis later, challenges have ~60s lifetimes so the failure mode of
- * "user restarts mid-ceremony" is just "try again", not "locked out".
+ * Challenges are short-lived and stored via the injected EphemeralStore.
+ * Default backend is `InMemoryEphemeralStore` (fine for single-replica
+ * deployments); when Redis is available the app wires in a
+ * `RedisEphemeralStore` so a passkey ceremony that lands on a different
+ * replica after the start step can still finish on a new one.
  *
  * Credential records hold the raw `credentialId` and the COSE `publicKey`
  * bytes. The `counter` field is monotonically updated on each successful
@@ -35,7 +35,6 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 interface PendingChallenge {
   challenge: string;
-  expiresAt: number;
   purpose: 'registration' | 'authentication';
   /** Subject this challenge is bound to (userId for register, userId for auth). */
   userId: string;
@@ -51,9 +50,14 @@ function base64UrlFromBytes(input: Buffer | Uint8Array): string {
 }
 
 export class WebAuthnService {
-  private readonly challenges = new Map<string, PendingChallenge>();
+  private readonly challenges: EphemeralStore;
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    challenges?: EphemeralStore,
+  ) {
+    this.challenges = challenges ?? new InMemoryEphemeralStore();
+  }
 
   private rpId(): string {
     return this.config.WEBAUTHN_RP_ID;
@@ -67,16 +71,8 @@ export class WebAuthnService {
     return this.config.WEBAUTHN_ORIGIN ?? this.config.WEB_BASE_URL;
   }
 
-  private storeChallenge(key: string, val: PendingChallenge): void {
-    this.gcExpired();
-    this.challenges.set(key, val);
-  }
-
-  private gcExpired(): void {
-    const now = Date.now();
-    for (const [k, v] of this.challenges) {
-      if (v.expiresAt < now) this.challenges.delete(k);
-    }
+  private async storeChallenge(key: string, val: PendingChallenge): Promise<void> {
+    await this.challenges.set(key, val, CHALLENGE_TTL_MS);
   }
 
   /** List a user's enrolled credentials (no public key bytes). */
@@ -145,10 +141,9 @@ export class WebAuthnService {
         userVerification: 'preferred',
       },
     });
-    this.storeChallenge(`reg:${userId}`, {
+    await this.storeChallenge(`reg:${userId}`, {
       userId,
       challenge: opts.challenge,
-      expiresAt: Date.now() + CHALLENGE_TTL_MS,
       purpose: 'registration',
     });
     return opts;
@@ -159,8 +154,8 @@ export class WebAuthnService {
     response: RegistrationResponseJSON,
     deviceName: string | null,
   ): Promise<{ id: string; deviceName: string | null }> {
-    const pending = this.challenges.get(`reg:${userId}`);
-    if (!pending || pending.purpose !== 'registration' || pending.expiresAt < Date.now()) {
+    const pending = await this.challenges.get<PendingChallenge>(`reg:${userId}`);
+    if (!pending || pending.purpose !== 'registration') {
       throw new TavernError(
         ErrorCodes.WEBAUTHN_CHALLENGE_EXPIRED,
         'Passkey registration challenge expired — start over',
@@ -182,7 +177,7 @@ export class WebAuthnService {
         400,
       );
     } finally {
-      this.challenges.delete(`reg:${userId}`);
+      await this.challenges.delete(`reg:${userId}`);
     }
     if (!verification.verified || !verification.registrationInfo) {
       throw new TavernError(
@@ -229,10 +224,9 @@ export class WebAuthnService {
         userVerification: 'preferred',
         allowCredentials: [],
       });
-      this.storeChallenge(`auth:${userId}`, {
+      await this.storeChallenge(`auth:${userId}`, {
         userId,
         challenge: opts.challenge,
-        expiresAt: Date.now() + CHALLENGE_TTL_MS,
         purpose: 'authentication',
       });
       return { options: opts, hasCredentials: false };
@@ -245,10 +239,9 @@ export class WebAuthnService {
         transports: (c.transports ?? []) as AuthenticatorTransportFuture[],
       })),
     });
-    this.storeChallenge(`auth:${userId}`, {
+    await this.storeChallenge(`auth:${userId}`, {
       userId,
       challenge: opts.challenge,
-      expiresAt: Date.now() + CHALLENGE_TTL_MS,
       purpose: 'authentication',
     });
     return { options: opts, hasCredentials: true };
@@ -262,8 +255,8 @@ export class WebAuthnService {
     userId: string,
     response: AuthenticationResponseJSON,
   ): Promise<{ userId: string }> {
-    const pending = this.challenges.get(`auth:${userId}`);
-    if (!pending || pending.purpose !== 'authentication' || pending.expiresAt < Date.now()) {
+    const pending = await this.challenges.get<PendingChallenge>(`auth:${userId}`);
+    if (!pending || pending.purpose !== 'authentication') {
       throw new TavernError(
         ErrorCodes.WEBAUTHN_CHALLENGE_EXPIRED,
         'Passkey login challenge expired — start over',
@@ -284,7 +277,7 @@ export class WebAuthnService {
       },
     });
     if (!cred || cred.userId !== userId) {
-      this.challenges.delete(`auth:${userId}`);
+      await this.challenges.delete(`auth:${userId}`);
       throw new TavernError(
         ErrorCodes.WEBAUTHN_VERIFICATION_FAILED,
         'Unknown passkey',
@@ -312,7 +305,7 @@ export class WebAuthnService {
         400,
       );
     } finally {
-      this.challenges.delete(`auth:${userId}`);
+      await this.challenges.delete(`auth:${userId}`);
     }
     if (!verification.verified) {
       throw new TavernError(

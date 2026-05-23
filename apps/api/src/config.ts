@@ -209,6 +209,20 @@ const envSchema = z.object({
   OIDC_REDIRECT_URI: optionalString,
   /** Label shown on the login button. */
   OIDC_BUTTON_LABEL: z.string().default('Sign in with SSO'),
+  /**
+   * SEC: when `true` (default, for backwards-compat with single-IdP setups),
+   * an SSO sign-in whose `(iss, sub)` doesn't match any local row falls back
+   * to an `email_verified` lookup and AUTO-LINKS the matching local account.
+   * For multi-IdP deployments this is account-takeover-shaped: a victim
+   * with a known email can be silently linked by any new IdP the operator
+   * configures. Set to `false` to disable the fallback — unmatched SSO users
+   * then provision a NEW Tavern account (or, if the email collides, surface
+   * an explicit-link prompt).
+   */
+  OIDC_AUTO_LINK_BY_EMAIL: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 
   // Federation -------------------------------------------------------------
   /**

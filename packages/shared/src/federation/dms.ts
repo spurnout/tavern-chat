@@ -1,9 +1,5 @@
 import { z } from 'zod';
-
-// NOTE: REMOTE_USER_ID_RE is duplicated across messages.ts and membership.ts.
-// Follow-up #18 tracks consolidating these into a shared helper; until then we
-// keep the duplication local to each federation schema module.
-const REMOTE_USER_ID_RE = /^[a-z0-9_.-]+@[a-z0-9.-]+\.[a-z0-9.-]+$/i;
+import { REMOTE_USER_ID_RE } from './constants.js';
 
 const remoteUserIdSchema = z
   .string()

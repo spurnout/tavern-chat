@@ -45,6 +45,14 @@ export type EnvelopeEventType = (typeof ENVELOPE_EVENT_TYPES)[number];
 export const ENVELOPE_DEFAULT_LIFETIME_S = 300; // 5 min
 export const ENVELOPE_CLOCK_SKEW_S = 60;
 
+/**
+ * Canonical shape for a federated user identifier: `localpart@host` (DNS-ish
+ * host with at least one dot). Centralised here so dms.ts / messages.ts /
+ * membership.ts share a single source of truth — closes the follow-up the
+ * three modules each flag in a comment.
+ */
+export const REMOTE_USER_ID_RE = /^[a-z0-9_.-]+@[a-z0-9.-]+\.[a-z0-9.-]+$/i;
+
 // Locked design decisions (not runtime constants — documented here for reference):
 //   protocolFamily:  'tavern-native'
 //   identityFormat:  'user@host'

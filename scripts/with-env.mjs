@@ -58,10 +58,23 @@ if (!cmd) {
   process.exit(2);
 }
 
-// `shell: true` so pnpm/npx/etc resolve via the OS's PATH lookup the same
-// way an interactive shell would — needed on Windows where pnpm lives in
-// a .cmd wrapper.
-const child = spawn(cmd, args, { stdio: 'inherit', shell: true });
+// Defence-in-depth: this script is invoked from package.json scripts so the
+// argv is controlled today, but a future caller passing untrusted input
+// would otherwise turn `shell: true` (set below for Windows .cmd resolution)
+// into command injection. Reject the obvious metacharacters in the command
+// name; arg validation is left to the caller since legitimate args can
+// contain spaces or quotes.
+if (/[;&|`$<>\n]/.test(cmd)) {
+  console.error(`with-env: command contains unsafe characters: ${cmd}`);
+  process.exit(2);
+}
+
+// `shell: true` is needed on Windows so pnpm/npx (which live as `.cmd`
+// wrappers) resolve via the OS PATH lookup the way an interactive shell
+// would. POSIX platforms don't need this — keeping shell:false there
+// closes the residual injection surface on the common dev path.
+const useShell = process.platform === 'win32';
+const child = spawn(cmd, args, { stdio: 'inherit', shell: useShell });
 child.on('exit', (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 0);

@@ -1,6 +1,7 @@
 import { prisma } from '@tavern/db';
 import { ulid } from '@tavern/shared';
 import { gatewayBroker } from './gateway-broker.js';
+import { pinnedFetch } from '../lib/pinned-fetch.js';
 
 /**
  * In-process OG / oEmbed unfurl. Runs as a fire-and-forget background task
@@ -14,6 +15,10 @@ import { gatewayBroker } from './gateway-broker.js';
  *   - Hard timeout via AbortController so a slow site can't hang the API.
  *   - Strict size cap on the response body (256 KB).
  *   - No JS execution; we only consume the static HTML.
+ *   - SSRF guard: every hop goes through `pinnedFetch`, which resolves the
+ *     hostname once and dials the resolved IP directly (mitigating DNS
+ *     rebinding) while rejecting any private/loopback/multicast/reserved
+ *     address.
  *   - Best-effort robots.txt check skipped for now (would add another
  *     outbound request); operators can lock down via the per-server domain
  *     allowlist (deferred).
@@ -23,6 +28,7 @@ const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]]+/g;
 const MAX_PER_MESSAGE = 4;
 const FETCH_TIMEOUT_MS = 4_000;
 const MAX_BYTES = 256 * 1024;
+const MAX_REDIRECTS = 4;
 
 export interface LinkPreviewDto {
   id: string;
@@ -74,17 +80,52 @@ function pickTitle(html: string): string | null {
 }
 
 async function fetchPreview(url: string): Promise<LinkPreviewDto | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'user-agent': 'TavernBot/1.0 (+https://github.com/)',
-        accept: 'text/html, application/xhtml+xml',
-      },
-    });
+    // Manual redirect handling so each hop is re-resolved and re-validated.
+    // `pinnedFetch` ALWAYS returns `redirect: 'manual'` even if undici would
+    // otherwise auto-follow, which is exactly what we want — auto-follow
+    // would skip the per-hop SSRF guard.
+    let currentUrl = url;
+    let res: Response | null = null;
+    let redirects = 0;
+    while (true) {
+      // Cheap pre-check so a malformed/non-http URL is rejected without a
+      // DNS lookup. The real guard lives inside pinnedFetch.
+      let parsed: URL;
+      try {
+        parsed = new URL(currentUrl);
+      } catch {
+        return null;
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      let r: Response;
+      try {
+        r = await pinnedFetch(currentUrl, {
+          timeoutMs: FETCH_TIMEOUT_MS,
+          init: {
+            headers: {
+              'user-agent': 'TavernBot/1.0 (+https://github.com/tavern-app/tavern)',
+              accept: 'text/html, application/xhtml+xml',
+            },
+          },
+        });
+      } catch {
+        // Treat any pinnedFetch error (blocked IP, DNS failure, timeout) as
+        // "no preview" — link previews are best-effort by design.
+        return null;
+      }
+      if (r.status >= 300 && r.status < 400) {
+        if (redirects >= MAX_REDIRECTS) return null;
+        const loc = r.headers.get('location');
+        if (!loc) return null;
+        currentUrl = new URL(loc, parsed).toString();
+        redirects += 1;
+        continue;
+      }
+      res = r;
+      break;
+    }
+    if (!res) return null;
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') ?? '';
     if (!contentType.includes('html')) return null;
@@ -110,8 +151,6 @@ async function fetchPreview(url: string): Promise<LinkPreviewDto | null> {
     };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

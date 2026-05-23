@@ -121,7 +121,14 @@ export async function startFederationOutboxWorker(
       logger.error({ err: err.message }, 'outbox: job failed (no job object)');
       return;
     }
-    const exhausted = job.attemptsMade >= (job.opts.attempts ?? 0);
+    // `?? 0` previously made every failure look exhausted (0 >= 0), which
+    // spuriously emitted DM_CHANNEL_FEDERATION_REFUSED on the first transient
+    // failure. Treat a missing attempts cap as "no cap" so only an actual
+    // BullMQ-driven retry exhaustion qualifies, plus the explicit
+    // `UnrecoverableError` path BullMQ raises for permanent failures.
+    const maxAttempts = job.opts.attempts ?? Infinity;
+    const exhausted =
+      job.attemptsMade >= maxAttempts || err.name === 'UnrecoverableError';
     const level = exhausted ? 'error' : 'warn';
     logger[level](
       {

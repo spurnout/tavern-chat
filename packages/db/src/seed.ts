@@ -11,7 +11,6 @@
 import argon2 from 'argon2';
 import { Prisma, PrismaClient, ChannelType } from '@prisma/client';
 import {
-  Permission,
   PERMISSION_DEFAULT_EVERYONE,
   serializePermissions,
   ulid,
@@ -153,8 +152,6 @@ async function main(): Promise<void> {
       },
     });
 
-    // System welcome message — using Permission flag just to silence "unused" lint.
-    void Permission;
     await tx.message.create({
       data: {
         id: ulid(),

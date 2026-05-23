@@ -83,10 +83,20 @@ async function tryAuthenticate(
 
   const payload = await jwt.verifyAccess(token);
 
-  // Verify the session still exists & is not revoked.
+  // Single query for both halves of the auth check (session validity + user
+  // lookup for `isInstanceAdmin`). Previously two `findUnique`s ran on every
+  // authenticated request; pulling the user via the session's relation hits
+  // Postgres exactly once and keeps the same correctness guarantees because
+  // the session's `userId` is the FK we'd otherwise re-query against.
   const session = await prisma.session.findUnique({
     where: { id: payload.sid },
-    select: { id: true, userId: true, revokedAt: true, expiresAt: true },
+    select: {
+      id: true,
+      userId: true,
+      revokedAt: true,
+      expiresAt: true,
+      user: { select: { id: true, isInstanceAdmin: true } },
+    },
   });
   if (!session || session.revokedAt || session.expiresAt < new Date()) {
     throw TavernError.unauthorized('Session is no longer valid');
@@ -94,17 +104,12 @@ async function tryAuthenticate(
   if (session.userId !== payload.sub) {
     throw TavernError.unauthorized('Session/user mismatch');
   }
-
-  const user = await prisma.user.findUnique({
-    where: { id: payload.sub },
-    select: { id: true, isInstanceAdmin: true },
-  });
-  if (!user) throw TavernError.unauthorized('User not found');
+  if (!session.user) throw TavernError.unauthorized('User not found');
 
   return {
-    userId: user.id,
+    userId: session.user.id,
     sessionId: session.id,
-    isInstanceAdmin: user.isInstanceAdmin,
+    isInstanceAdmin: session.user.isInstanceAdmin,
   };
 }
 

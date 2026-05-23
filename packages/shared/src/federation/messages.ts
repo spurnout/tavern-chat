@@ -1,6 +1,5 @@
 import { z } from 'zod';
-
-const REMOTE_USER_ID_RE = /^[a-z0-9_.-]+@[a-z0-9.-]+\.[a-z0-9.-]+$/i;
+import { REMOTE_USER_ID_RE } from './constants.js';
 
 const remoteUserIdSchema = z.string().min(3).max(253).regex(REMOTE_USER_ID_RE, 'expected localpart@host');
 

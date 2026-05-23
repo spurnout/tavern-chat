@@ -1,8 +1,44 @@
 import crypto from 'node:crypto';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createLocalJWKSet, errors as joseErrors, jwtVerify, type JSONWebKeySet } from 'jose';
 import { prisma } from '@tavern/db';
 import type { Config } from '../config.js';
 import { TavernError, ulid } from '@tavern/shared';
+import { InMemoryEphemeralStore, type EphemeralStore } from '../lib/ephemeral-store.js';
+import { pinnedFetch } from '../lib/pinned-fetch.js';
+
+const OIDC_FETCH_TIMEOUT_MS = 8_000;
+/**
+ * Maximum number of pending SSO `state` entries the in-memory backend will
+ * hold. Has no effect on the Redis-backed backend (key TTLs handle eviction
+ * there). A login dance is a few seconds long, so even on a busy instance
+ * this is huge headroom. Bound matters because /api/auth/sso/start is
+ * unauthenticated.
+ */
+const MAX_PENDING_STATES = 1_024;
+
+/**
+ * Wrapper around `pinnedFetch` that converts its failure modes into typed
+ * `TavernError`s so the callback path returns a 502 with a useful message
+ * instead of a generic 500. The pinned-fetch helper handles the SSRF +
+ * DNS-rebinding mitigation and per-request timeout for us; we just need to
+ * shape the error.
+ */
+type PinnedFetchInit = NonNullable<Parameters<typeof pinnedFetch>[1]>['init'];
+
+async function fetchOidc(url: string, init?: PinnedFetchInit): Promise<Response> {
+  try {
+    return await pinnedFetch(url, {
+      timeoutMs: OIDC_FETCH_TIMEOUT_MS,
+      init,
+    });
+  } catch (err) {
+    throw new TavernError(
+      'INTERNAL_ERROR',
+      `OIDC fetch failed for ${url}: ${err instanceof Error ? err.message : 'unknown'}`,
+      502,
+    );
+  }
+}
 
 /**
  * Wave 3 #36 — Minimal OIDC client.
@@ -37,17 +73,36 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 
 interface PendingState {
   state: string;
-  expiresAt: number;
   /** ULID of the optional Tavern user the state is bound to (account-linking). */
   linkingUserId?: string;
 }
 
+/** Re-fetch the JWKS at most this often even when we already have a copy. */
+const JWKS_MAX_AGE_MS = 30 * 60 * 1000;
+/**
+ * After a verify miss we wait at least this long before re-fetching, so a
+ * spike of stale-key requests can't turn into a fetch storm against the
+ * IdP. Mirrors the cool-down `createRemoteJWKSet` uses internally.
+ */
+const JWKS_MIN_REFETCH_MS = 30 * 1000;
+
+interface CachedJwks {
+  verifier: ReturnType<typeof createLocalJWKSet>;
+  fetchedAt: number;
+}
+
 export class OidcService {
   private discoveryPromise: Promise<OidcDiscovery> | null = null;
-  private jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
-  private readonly states: Map<string, PendingState> = new Map();
+  private jwksCache: CachedJwks | null = null;
+  private jwksLastFetchAttempt = 0;
+  private readonly states: EphemeralStore;
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    states?: EphemeralStore,
+  ) {
+    this.states = states ?? new InMemoryEphemeralStore({ cap: MAX_PENDING_STATES });
+  }
 
   isEnabled(): boolean {
     return Boolean(
@@ -76,10 +131,10 @@ export class OidcService {
   async buildAuthorizeUrl(opts?: { linkingUserId?: string }): Promise<string> {
     const disc = await this.discover();
     const state = crypto.randomBytes(24).toString('base64url');
-    const pending: PendingState = { state, expiresAt: Date.now() + STATE_TTL_MS };
+    const pending: PendingState = { state };
     if (opts?.linkingUserId) pending.linkingUserId = opts.linkingUserId;
-    this.states.set(state, pending);
-    this.gcStates();
+    // TTL + cap (for the in-memory backend) are handled inside the store.
+    await this.states.set(state, pending, STATE_TTL_MS);
     const url = new URL(disc.authorization_endpoint);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', this.config.OIDC_CLIENT_ID as string);
@@ -100,13 +155,16 @@ export class OidcService {
     linked: boolean;
     issuerLinkingMismatch?: boolean;
   }> {
-    const pending = this.states.get(state);
-    if (!pending || pending.expiresAt < Date.now()) {
+    const pending = await this.states.get<PendingState>(state);
+    if (!pending) {
       throw TavernError.unauthorized('SSO state invalid or expired');
     }
-    this.states.delete(state);
+    await this.states.delete(state);
     const disc = await this.discover();
-    const tokenResp = await fetch(disc.token_endpoint, {
+    // SSRF + DNS-rebinding-safe POST to the IdP-advertised token endpoint:
+    // a malicious discovery doc could otherwise point us at an internal
+    // service or use TOCTOU DNS to slip past the host check.
+    const tokenResp = await fetchOidc(disc.token_endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -148,43 +206,108 @@ export class OidcService {
     }
     if (!this.discoveryPromise) {
       const url = `${this.config.OIDC_ISSUER_URL.replace(/\/+$/, '')}/.well-known/openid-configuration`;
-      this.discoveryPromise = fetch(url)
-        .then(async (r) => {
-          if (!r.ok) {
-            throw new Error(`discovery failed: ${r.status}`);
-          }
-          return (await r.json()) as OidcDiscovery;
-        })
-        .catch((err) => {
-          // Drop the cached promise on failure so a transient hiccup at
-          // boot doesn't poison the service for the process lifetime.
-          this.discoveryPromise = null;
-          throw err;
+      this.discoveryPromise = (async () => {
+        // SSRF + DNS-rebinding guard on the operator-configured issuer URL.
+        // The issuer is a config value so the immediate threat surface is
+        // low, but defence in depth: if it ever resolves to a private IP
+        // we refuse to fetch.
+        const r = await fetchOidc(url, {
+          method: 'GET',
+          headers: { accept: 'application/json' },
         });
+        if (!r.ok) {
+          throw new Error(`discovery failed: ${r.status}`);
+        }
+        return (await r.json()) as OidcDiscovery;
+      })().catch((err) => {
+        // Drop the cached promise on failure so a transient hiccup at
+        // boot doesn't poison the service for the process lifetime.
+        this.discoveryPromise = null;
+        throw err;
+      });
     }
     return this.discoveryPromise;
+  }
+
+  /**
+   * Fetch the JWKS document at `jwks_uri` through `pinnedFetch` and build a
+   * local verifier. Cached on the instance with a max age and a min refetch
+   * cool-down — mirrors what `createRemoteJWKSet` does internally, except
+   * the network call now goes through our SSRF / DNS-pinning helper instead
+   * of jose's native fetch (which would otherwise resolve `jwks_uri`'s
+   * hostname fresh on every miss, defeating the discovery-time pin).
+   *
+   * `force` skips the cache and triggers a refetch — used on signature
+   * miss to pull in newly-rotated keys.
+   */
+  private async loadJwks(disc: OidcDiscovery, force = false): Promise<CachedJwks> {
+    const now = Date.now();
+    if (
+      !force &&
+      this.jwksCache &&
+      now - this.jwksCache.fetchedAt < JWKS_MAX_AGE_MS
+    ) {
+      return this.jwksCache;
+    }
+    // Cool-down so a flood of failing verifications can't turn into a fetch
+    // storm against the IdP. The previous successful cache is reused
+    // whenever the cool-down hasn't elapsed.
+    if (force && this.jwksCache && now - this.jwksLastFetchAttempt < JWKS_MIN_REFETCH_MS) {
+      return this.jwksCache;
+    }
+    this.jwksLastFetchAttempt = now;
+    const r = await fetchOidc(disc.jwks_uri, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+    if (!r.ok) {
+      throw new TavernError('INTERNAL_ERROR', `JWKS fetch failed: ${r.status}`, 502);
+    }
+    const body = (await r.json()) as JSONWebKeySet;
+    const verifier = createLocalJWKSet(body);
+    this.jwksCache = { verifier, fetchedAt: now };
+    return this.jwksCache;
   }
 
   private async verifyIdToken(
     idToken: string,
     disc: OidcDiscovery,
   ): Promise<OidcIdTokenClaims> {
-    if (!this.jwks) {
-      this.jwks = createRemoteJWKSet(new URL(disc.jwks_uri));
-    }
+    let cached = await this.loadJwks(disc);
     let payload;
     try {
-      const result = await jwtVerify(idToken, this.jwks, {
+      const result = await jwtVerify(idToken, cached.verifier, {
         issuer: disc.issuer,
         audience: this.config.OIDC_CLIENT_ID,
       });
       payload = result.payload as unknown as OidcIdTokenClaims;
     } catch (err) {
-      throw new TavernError(
-        'INVALID_TOKEN',
-        `SSO id_token verification failed: ${err instanceof Error ? err.message : 'unknown'}`,
-        401,
-      );
+      // Key rotation: if the verifier didn't recognise the kid, the IdP may
+      // have rotated keys since our last fetch. Refresh once and retry —
+      // any other failure (signature mismatch, expiry, audience drift, etc.)
+      // bubbles straight up.
+      if (err instanceof joseErrors.JWKSNoMatchingKey) {
+        try {
+          cached = await this.loadJwks(disc, true);
+          const result = await jwtVerify(idToken, cached.verifier, {
+            issuer: disc.issuer,
+            audience: this.config.OIDC_CLIENT_ID,
+          });
+          payload = result.payload as unknown as OidcIdTokenClaims;
+        } catch (retryErr) {
+          throw new TavernError(
+            'INVALID_TOKEN',
+            `SSO id_token verification failed: ${retryErr instanceof Error ? retryErr.message : 'unknown'}`,
+            401,
+          );
+        }
+      } else {
+        throw new TavernError(
+          'INVALID_TOKEN',
+          `SSO id_token verification failed: ${err instanceof Error ? err.message : 'unknown'}`,
+          401,
+        );
+      }
     }
     if (!payload.sub || !payload.iss) {
       throw new TavernError('INVALID_TOKEN', 'SSO id_token missing iss/sub', 401);
@@ -224,8 +347,18 @@ export class OidcService {
     });
     if (bySso) return { userId: bySso.id, linked: false };
 
-    // 3. Try email-match if the IdP says the email is verified.
-    if (claims.email && claims.email_verified !== false) {
+    // 3. Try email-match if the IdP says the email is verified AND the
+    //    operator has opted into the auto-link fallback (OIDC_AUTO_LINK_BY_EMAIL).
+    //    Skipping this branch means an unmatched SSO sign-in falls through to
+    //    new-account provisioning even when the email collides — the unique
+    //    constraint on User.emailLower then forces an explicit-link UX (or,
+    //    for a single-IdP setup, the operator can keep the default and the
+    //    fallback behaves as before).
+    if (
+      this.config.OIDC_AUTO_LINK_BY_EMAIL &&
+      claims.email &&
+      claims.email_verified !== false
+    ) {
       const byEmail = await prisma.user.findUnique({
         where: { emailLower: claims.email.toLowerCase() },
         select: { id: true, oidcIssuer: true },
@@ -246,7 +379,16 @@ export class OidcService {
       .slice(0, 40);
     const username = await uniqueUsername(base);
     const displayName = claims.name || claims.preferred_username || username;
-    const email = claims.email ?? `${claims.sub}@${new URL(claims.iss).host}`;
+    // When the IdP omits an email we synthesise `<sub>@<iss-host>`. The pair
+    // `(iss, sub)` is unique-per-user so this synthetic value is also unique,
+    // but two providers that both omit emails for users with the same sub
+    // would collide. Run it through `uniqueEmail` to absorb that case
+    // (it appends `+N` before the `@`). Defer the `new URL(claims.iss)`
+    // parse so a malformed issuer string never throws on the common path
+    // where the IdP DID return an email.
+    const email = claims.email
+      ? claims.email
+      : await uniqueEmail(`${claims.sub}@${safeIssuerHost(claims.iss)}`);
     const created = await prisma.user.create({
       data: {
         id: ulid(),
@@ -264,12 +406,20 @@ export class OidcService {
     });
     return { userId: created.id, linked: false };
   }
+}
 
-  private gcStates(): void {
-    const now = Date.now();
-    for (const [k, v] of this.states) {
-      if (v.expiresAt < now) this.states.delete(k);
-    }
+/**
+ * Best-effort `new URL(iss).host` that returns a safe placeholder if the
+ * issuer claim isn't a URL. `iss` has already been compared against the
+ * discovery doc's issuer (which IS a URL the operator configured), so the
+ * fallback path should be unreachable in practice — this guards against a
+ * future schema change rather than producing a generic 500.
+ */
+function safeIssuerHost(iss: string): string {
+  try {
+    return new URL(iss).host || 'idp.invalid';
+  } catch {
+    return 'idp.invalid';
   }
 }
 
@@ -285,4 +435,26 @@ async function uniqueUsername(base: string): Promise<string> {
   }
   // Fall back to a random suffix.
   return `${base}-${crypto.randomBytes(3).toString('hex')}`;
+}
+
+/**
+ * Synthetic-email uniqueness for OIDC accounts whose IdP didn't return an
+ * `email` claim. Reuses the `localpart+N@host` shape so the value stays a
+ * RFC 5321-shaped string. Falls back to a random local suffix after 50
+ * attempts so a pathologically misconfigured IdP can't brick registration.
+ */
+async function uniqueEmail(base: string): Promise<string> {
+  const atIdx = base.indexOf('@');
+  const localpart = atIdx >= 0 ? base.slice(0, atIdx) : base;
+  const domain = atIdx >= 0 ? base.slice(atIdx + 1) : 'invalid.local';
+  let candidate = base;
+  for (let i = 0; i < 50; i += 1) {
+    const exists = await prisma.user.findUnique({
+      where: { emailLower: candidate.toLowerCase() },
+      select: { id: true },
+    });
+    if (!exists) return candidate;
+    candidate = `${localpart}+${i + 1}@${domain}`;
+  }
+  return `${localpart}+${crypto.randomBytes(3).toString('hex')}@${domain}`;
 }
