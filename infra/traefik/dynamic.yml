@@ -41,7 +41,12 @@ http:
         contentTypeNosniff: true
         frameDeny: true
         referrerPolicy: "strict-origin-when-cross-origin"
-        permissionsPolicy: "camera=(), microphone=(), geolocation=(), payment=()"
+        # Camera / microphone / display-capture must be (self), not (), because
+        # the voice room calls getUserMedia / getDisplayMedia from the top-level
+        # SPA (LiveKit JS client, not an iframe). An empty allowlist makes the
+        # browser block the call with "Permission denied" before LiveKit ever
+        # gets the mic stream. Keep this consistent with apps/web/nginx.conf.
+        permissionsPolicy: "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=()"
 
   services:
     tavern-web:
