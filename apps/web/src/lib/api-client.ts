@@ -84,9 +84,15 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
     }
   }
 
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
-  };
+  // Only set Content-Type when we actually have a body. Fastify's default
+  // JSON parser rejects empty bodies with FST_ERR_CTP_EMPTY_JSON_BODY when
+  // the request advertises `application/json`, so for body-less POST/DELETE
+  // (typing pings, draft deletes, account-tab list-ack endpoints, …) we
+  // must omit the header instead of lying about a body that isn't there.
+  const headers: Record<string, string> = {};
+  if (opts.body !== undefined) {
+    headers['content-type'] = 'application/json';
+  }
   const access = tokenStore.accessToken;
   if (access) headers.authorization = `Bearer ${access}`;
 

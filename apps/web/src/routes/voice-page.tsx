@@ -1,6 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useParams } from '@tanstack/react-router';
+import type { Channel } from '@tavern/shared';
 import { useRealtime } from '../lib/store.js';
+
+// Stable fallback for the "no channels for this server loaded yet" path —
+// returning a fresh `[]` from a zustand selector re-fires
+// useSyncExternalStore every render and trips React #185. Same trap as
+// the four selectors fixed in commit 7a9e99e.
+const EMPTY_CHANNELS: readonly Channel[] = Object.freeze([]);
 
 /**
  * Thin placeholder route. The actual VoiceRoom lives one level up in
@@ -13,10 +20,14 @@ export function VoicePage(): JSX.Element {
     serverId?: string;
     channelId?: string;
   };
-  const channel = useRealtime((s) => {
-    if (!channelId || !serverId) return null;
-    return (s.channelsByServer[serverId] ?? []).find((c) => c.id === channelId) ?? null;
-  });
+  // Subscribe to the dict; derive the per-server list via useMemo so the
+  // empty-case fallback stays a stable reference across renders.
+  const channelsByServer = useRealtime((s) => s.channelsByServer);
+  const channel = useMemo(() => {
+    if (!serverId || !channelId) return null;
+    const list = channelsByServer[serverId] ?? EMPTY_CHANNELS;
+    return list.find((c) => c.id === channelId) ?? null;
+  }, [channelsByServer, serverId, channelId]);
   const setCurrentVoice = useRealtime((s) => s.setCurrentVoice);
 
   useEffect(() => {

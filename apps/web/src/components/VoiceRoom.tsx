@@ -57,7 +57,15 @@ import { RecordingControls } from './RecordingControls.js';
 import { WatchPartyPanel } from './WatchPartyPanel.js';
 import { Whiteboard } from './Whiteboard.js';
 import { LiveCaptions, CaptionsToggleButton } from './LiveCaptions.js';
-import { useCaptions } from '../lib/captions-store.js';
+import { useCaptions, type CaptionLine } from '../lib/captions-store.js';
+
+// Stable module-scoped fallback for the "no captions for this channel
+// yet" path. Same trap as the four selectors fixed in commit 7a9e99e:
+// a fresh `[]` returned from a zustand selector re-fires
+// useSyncExternalStore every render and trips React #185 ("Maximum
+// update depth exceeded"). This fires on voice-join because the
+// captions store is empty until somebody speaks with captions enabled.
+const EMPTY_CAPTION_LINES: CaptionLine[] = [];
 
 interface JoinResponse {
   liveKitUrl: string;
@@ -176,7 +184,13 @@ export function VoiceRoom({
   // Used to swap back when BREAKOUT_CLOSE fires after the user has been
   // moved into a child room.
   const parentJoinRef = useRef<{ liveKitUrl: string } | null>(null);
-  const captionLines = useCaptions((s) => s.linesByChannel[channelId] ?? []);
+  // Subscribe to the dict; derive the per-channel slice via useMemo so the
+  // empty-case fallback stays a stable reference across renders.
+  const linesByChannel = useCaptions((s) => s.linesByChannel);
+  const captionLines = useMemo<CaptionLine[]>(
+    () => linesByChannel[channelId] ?? EMPTY_CAPTION_LINES,
+    [linesByChannel, channelId],
+  );
   const [allowed, setAllowed] = useState<JoinResponse['allowedFeatures'] | null>(null);
   const [shareOptions, setShareOptions] = useState<ScreenShareOptions>({
     audio: true,
