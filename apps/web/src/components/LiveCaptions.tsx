@@ -58,6 +58,12 @@ export function LiveCaptions({
       setLocalLine('');
       return;
     }
+    // FE-06e: track the in-flight clear-line timer so we cancel it on
+    // teardown. Without this, an unmount within 800 ms of a final caption
+    // setStates on an unmounted component (React 18 ignores, but the warning
+    // is real signal); more importantly, an `enabled` flip-off doesn't
+    // immediately blank the line.
+    let clearTimer: number | null = null;
     const engine = createCaptionEngine({
       onResult: (r) => {
         setLocalLine(r.text);
@@ -69,7 +75,11 @@ export function LiveCaptions({
         }).catch(() => undefined);
         if (r.isFinal) {
           // Clear the local line so the next utterance starts blank.
-          setTimeout(() => setLocalLine(''), 800);
+          if (clearTimer !== null) window.clearTimeout(clearTimer);
+          clearTimer = window.setTimeout(() => {
+            clearTimer = null;
+            setLocalLine('');
+          }, 800);
         }
       },
       onError: () => {
@@ -80,6 +90,7 @@ export function LiveCaptions({
     engine.start();
     engineRef.current = engine;
     return () => {
+      if (clearTimer !== null) window.clearTimeout(clearTimer);
       engine.stop();
       engineRef.current = null;
     };

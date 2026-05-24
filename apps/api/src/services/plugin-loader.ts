@@ -137,6 +137,15 @@ async function loadPluginDirectory(
   }
 }
 
+/**
+ * Per-hook timeout. Plugins run in-process at operator trust (no VM
+ * sandbox), so a hung hook (HTTP call that never resolves, infinite loop,
+ * deadlock) would otherwise block the route handler that dispatched it
+ * indefinitely. 5 s is generous for legitimate hooks (DB write, outbound
+ * webhook) while short enough that a wedged plugin degrades gracefully.
+ */
+const HOOK_TIMEOUT_MS = 5_000;
+
 export async function dispatchHook<K extends keyof PluginHooks>(
   name: K,
   ...args: Parameters<NonNullable<PluginHooks[K]>>
@@ -150,7 +159,26 @@ export async function dispatchHook<K extends keyof PluginHooks>(
       const fn = entry.hooks[name] as ((...a: unknown[]) => unknown) | undefined;
       if (!fn) return;
       try {
-        await fn(...(args as unknown[]));
+        const result = fn(...(args as unknown[]));
+        // Race the hook against a deadline. If the hook is a synchronous
+        // function (or already-resolved promise), the deadline never wins.
+        const timeout = new Promise<'timeout'>((resolve) => {
+          setTimeout(() => resolve('timeout'), HOOK_TIMEOUT_MS).unref?.();
+        });
+        const outcome = await Promise.race([
+          Promise.resolve(result).then(() => 'ok' as const),
+          timeout,
+        ]);
+        if (outcome === 'timeout') {
+          hookLog?.warn(
+            {
+              plugin: entry.manifest.name,
+              hook: String(name),
+              timeoutMs: HOOK_TIMEOUT_MS,
+            },
+            'tavern.plugin.hook_timeout',
+          );
+        }
       } catch (err) {
         hookLog?.warn(
           {

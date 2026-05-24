@@ -8,6 +8,7 @@ import { toast } from '../lib/toast.js';
 import { AttachmentView } from './AttachmentView.js';
 import { MemberProfileTrigger } from './MemberProfileTrigger.js';
 import { ReactionBar } from './ReactionBar.js';
+import { DiceRollMessage } from './MessageList.js';
 
 interface Props {
   dmChannelId: string;
@@ -120,6 +121,11 @@ export function DmMessageList({ dmChannelId }: Props): JSX.Element {
               </div>
               {message.deletedAt ? (
                 <div className="text-sm italic text-fg-muted">Message deleted</div>
+              ) : message.type === 'dice_roll' ? (
+                <>
+                  <DiceRollMessage message={message} />
+                  {me ? <ReactionBar message={message} /> : null}
+                </>
               ) : (
                 <>
                   <div className="whitespace-pre-wrap break-words text-sm text-fg">

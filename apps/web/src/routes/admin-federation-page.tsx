@@ -41,8 +41,16 @@ export function AdminFederationPage(): JSX.Element {
   useEffect(() => { void refresh(); }, []);
 
   async function approve(id: string): Promise<void> {
-    await api(`/admin/peers/${id}/approve`, { method: 'POST' });
-    await refresh();
+    try {
+      await api(`/admin/peers/${id}/approve`, { method: 'POST' });
+      await refresh();
+    } catch (e) {
+      // Surface failure rather than silently swallow — admin needs to know
+      // a 403 / 5xx happened. `revoke` and the dead-letter actions already
+      // have try/catch around their api() calls; this one was the odd
+      // exception.
+      setError(e instanceof ApiError ? e.message : 'Could not approve peer');
+    }
   }
   function revoke(id: string): void {
     const peer = peers.find((p) => p.id === id) ?? null;

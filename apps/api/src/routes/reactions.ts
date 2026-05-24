@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { prisma } from '@tavern/db';
+import { Prisma, prisma } from '@tavern/db';
 import { z } from 'zod';
 import {
   idSchema,
@@ -8,7 +8,10 @@ import {
   TavernError,
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
-import { requireChannelPermission } from '../services/permissions-service.js';
+import {
+  requireChannelPermission,
+  requireServerPermission,
+} from '../services/permissions-service.js';
 import { requireDmChannelMembership } from '../services/dm-service.js';
 import { gatewayBroker, type GatewayEvent } from '../services/gateway-broker.js';
 import {
@@ -90,10 +93,11 @@ export async function registerReactionRoutes(
   app.get('/api/servers/:id/quick-reactions', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
     const { id: serverId } = z.object({ id: idSchema }).parse(req.params);
-    await requireChannelPermission(serverId, ctx.userId, Permission.VIEW_CHANNEL).catch(
-      // Server-scope check via fall-through to permission service.
-      () => undefined,
-    );
+    // SEC: was calling requireChannelPermission with a serverId (always
+    // 404'd), then swallowing the throw — effectively a permission check
+    // disabled. Server-scoped check is correct here; throws 403 for
+    // non-members.
+    await requireServerPermission(serverId, ctx.userId, Permission.VIEW_CHANNEL);
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const rows = await prisma.messageReaction.groupBy({
       by: ['emoji'],
@@ -301,8 +305,19 @@ export async function registerReactionRoutes(
       await prisma.messageReaction.delete({
         where: { messageId_userId_emoji: { messageId: id, userId: ctx.userId, emoji } },
       });
-    } catch {
-      /* idempotent */
+    } catch (err) {
+      // Narrow swallow: only the "row not found" case is the idempotent path
+      // we want. A blanket catch was masking real failures (e.g., dropped DB
+      // connection) and we'd still fire the gateway/federation fan-out below
+      // as if the reaction had been removed.
+      if (
+        !(
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === 'P2025'
+        )
+      ) {
+        throw err;
+      }
     }
     gatewayBroker.publish(
       reactionEvent('REACTION_REMOVE', message, { messageId: id, userId: ctx.userId, emoji }),

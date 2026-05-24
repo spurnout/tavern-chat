@@ -59,9 +59,11 @@ working name; the final brand is undecided.
 | **Peer** | Another instance that this one has explicitly agreed to talk to. |
 | **Envelope** | A signed, transport-agnostic message carrying a federation event. |
 
-## Open design questions (resolve these first)
+## Design decisions (locked)
 
-Load-bearing decisions. Lock them down before writing protocol code.
+These were the load-bearing decisions made before protocol code landed. All
+seven are now in production behaviour as described below. Kept here as
+historical record.
 
 1. **Protocol family.** Tavern-native (recommended), Matrix,
    ActivityPub, or hybrid? See [§Protocol choice](#protocol-choice).

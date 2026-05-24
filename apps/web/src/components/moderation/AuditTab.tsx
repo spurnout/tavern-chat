@@ -19,7 +19,11 @@ export function AuditTab({ serverId }: Props): JSX.Element {
 
   useEffect(() => {
     setLoading(true);
-    api<AuditLogEntry[]>(`/servers/${serverId}/audit-log`)
+    // PERF: cap the page size client-side so an active server's audit log
+    // doesn't render thousands of rows at once (no virtualization here).
+    // The server still controls the page count via its own default, but the
+    // explicit `?limit=200` keeps the UI snappy and the filter cheap.
+    api<AuditLogEntry[]>(`/servers/${serverId}/audit-log?limit=200`)
       .then(setEntries)
       .catch((err) =>
         toast.error(err instanceof ApiError ? err.message : 'Could not load audit log'),

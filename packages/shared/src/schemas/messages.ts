@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
+import { diceTermResultSchema } from './dice.js';
 import { MESSAGE_LIMITS } from '../constants.js';
 
 export const messageTypeSchema = z.enum([
@@ -51,6 +52,22 @@ export const messageSchema = z.object({
     }),
   ),
   diceRollId: idSchema.nullable(),
+  /**
+   * Inline dice-roll payload. Non-null when this message represents a
+   * server-side roll (`type === 'dice_roll'`); carries the per-die breakdown
+   * and total so renderers don't need a second round-trip to fetch the
+   * result. Mirrors the shape stored in `DiceRoll.resultJson` plus the
+   * top-level `label`.
+   */
+  diceRoll: z
+    .object({
+      notation: z.string(),
+      terms: z.array(diceTermResultSchema),
+      total: z.number().int(),
+      label: z.string().nullable(),
+    })
+    .nullable()
+    .optional(),
   /** Non-null when this message has an associated poll (Phase 3.2). */
   pollId: idSchema.nullable().optional(),
   /** Non-null when this message lives inside a thread (Phase 3.1). */

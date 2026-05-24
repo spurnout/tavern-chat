@@ -10,6 +10,7 @@ import {
   socialLinkSchema,
   type Attachment,
   type Channel as ChannelDto,
+  type DiceRollResult,
   type Member,
   type Message,
   type MutualServer,
@@ -271,6 +272,17 @@ export interface MessageRow {
   deletedAt: Date | null;
   safetyState: string;
   diceRollId: string | null;
+  /**
+   * Optional inline dice-roll result. Populated when the message query
+   * includes the `diceRoll` relation with at least `resultJson` and `label`
+   * selected. `resultJson` is `Prisma.JsonValue` at the storage layer but
+   * always matches `DiceRollResult` shape — we wrote it through that schema
+   * in the dice / slash routes.
+   */
+  diceRoll?: {
+    resultJson: unknown;
+    label: string | null;
+  } | null;
   /** Phase 3.1 — thread membership. */
   threadId?: string | null;
   isThreadRoot?: boolean;
@@ -331,6 +343,22 @@ export function serializeMessage(row: MessageRow, viewerId: string): Message {
     attachmentIds: row.attachments.map((a) => a.id),
     reactions,
     diceRollId: row.diceRollId,
+    diceRoll: row.diceRoll
+      ? (() => {
+          // `resultJson` was written through `diceRollResultSchema` in the
+          // dice/slash routes, so the shape is trusted. Cast rather than
+          // re-parse to keep the hot serializer cheap; if a future migration
+          // ever changes the stored shape, the renderer will simply skip
+          // unknown fields.
+          const r = row.diceRoll.resultJson as DiceRollResult;
+          return {
+            notation: r.notation,
+            terms: r.terms,
+            total: r.total,
+            label: row.diceRoll.label,
+          };
+        })()
+      : null,
     pollId: row.poll?.id ?? null,
     threadId: row.threadId ?? null,
     isThreadRoot: row.isThreadRoot ?? false,

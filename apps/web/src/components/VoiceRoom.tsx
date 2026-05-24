@@ -218,6 +218,17 @@ export function VoiceRoom({
   // Coalesces voice-state POSTs so a rapid toggle doesn't fire three requests.
   const stateBuffer = useRef<Partial<Record<'screenSharing' | 'cameraOn' | 'selfMute' | 'selfDeaf', boolean>>>({});
   const stateTimer = useRef<number | null>(null);
+  // FE-06d: top-level mounted flag visible inside debounce/timer closures so
+  // a fast leave (within the 200 ms debounce) doesn't POST against an
+  // unmounted component. The join effect uses its own local `mounted` flag,
+  // which is scoped to the effect's closure and not visible from here.
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
   // FE-04: hold reportVoiceState in a ref so the join effect (which captures
   // it at mount) and per-event RoomEvent listeners (registered inside that
   // effect) all see the latest channelId-bound implementation. Previously the
@@ -236,6 +247,12 @@ export function VoiceRoom({
         const body = { channelId, ...stateBuffer.current };
         stateBuffer.current = {};
         stateTimer.current = null;
+        // FE-06d: skip the POST if the component is unmounted. clearTimeout
+        // in the cleanup nominally cancels this, but `stateTimer.current`
+        // gets nulled by the start of this callback (line above) before any
+        // cleanup runs — leaving clearTimeout a no-op if the unmount lands
+        // mid-microtask. Cheap mounted-ref check closes the window.
+        if (!mountedRef.current) return;
         api('/voice/state', { method: 'POST', body }).catch(() => undefined);
       }, 200);
     },
@@ -493,7 +510,15 @@ export function VoiceRoom({
       offOpen();
       offClose();
     };
-  }, [room, me?.id, channelId, me]);
+    // We intentionally key on `me?.id` only. Listing the whole `me` object
+    // (which the linter wants because the body reads `me.id`) would tear
+    // down + re-register on every unrelated field update (avatar,
+    // displayName), briefly dropping breakout events between the offOpen()
+    // and the new subscribe. The `me.id` we read inside the closure is
+    // captured at subscribe-time but `id` is the only field that ever
+    // changes "meaningfully" for this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room, me?.id, channelId]);
 
   async function toggleMic(): Promise<void> {
     if (!room) return;

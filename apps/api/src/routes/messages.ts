@@ -112,6 +112,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         attachments: { select: { id: true } },
         reactions: { select: { emoji: true, userId: true } },
         author: { select: { id: true, displayName: true, username: true } },
+        diceRoll: { select: { resultJson: true, label: true } },
         poll: { select: { id: true } },
         replyTo: {
           select: {
@@ -240,6 +241,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           attachments: { select: { id: true } },
           reactions: { select: { emoji: true, userId: true } },
           author: { select: { id: true, displayName: true, username: true } },
+          diceRoll: { select: { resultJson: true, label: true } },
           poll: { select: { id: true } },
           replyTo: {
             select: {
@@ -460,6 +462,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           attachments: { select: { id: true } },
           reactions: { select: { emoji: true, userId: true } },
           author: { select: { id: true, displayName: true, username: true } },
+          diceRoll: { select: { resultJson: true, label: true } },
           poll: { select: { id: true } },
           replyTo: {
             select: {
@@ -564,7 +567,12 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
             dmChannelId: fullRow.dmChannelId,
             authorId: fullRow.authorId,
             authorDisplayName: fullRow.author.displayName,
+            type: fullRow.type,
             content: fullRow.content,
+            // Regular @mentions don't carry dice payloads, but the shape
+            // must match the inbox subset so the typed client never blows
+            // up on a missing field. Always null here.
+            diceRoll: null,
             createdAt: fullRow.createdAt.toISOString(),
           },
         },
@@ -654,6 +662,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           attachments: { select: { id: true } },
           reactions: { select: { emoji: true, userId: true } },
           author: { select: { id: true, displayName: true, username: true } },
+          diceRoll: { select: { resultJson: true, label: true } },
           poll: { select: { id: true } },
           replyTo: {
             select: {

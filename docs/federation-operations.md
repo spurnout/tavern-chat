@@ -29,8 +29,11 @@ Controls the entire federation subsystem.
 | `true` | Federation is on. The discovery endpoint is live. Operators can initiate and approve peer requests via the admin UI. |
 
 Setting `FEDERATION_ENABLED=true` does **not** federate any content by itself. It only
-enables the peering handshake (Phase 1). Content federation (Phase 3+) requires additional
-per-Tavern and per-channel opt-in settings that do not exist yet.
+enables the peering handshake (Phase 1). Content federation (Phase 3+) requires per-Tavern
+opt-in (`Server.federationEnabled`) and per-channel opt-in (`Channel.federationMode`), both
+documented in the Phase 3 section below. DMs additionally require the `dms` capability to be
+negotiated with the peer; presence additionally requires `FEDERATION_PRESENCE_ENABLED=true`
+plus the `presence` capability.
 
 ### `TAVERN_DATA_KEY`
 

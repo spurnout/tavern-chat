@@ -24,6 +24,7 @@ export async function registerPinRoutes(app: FastifyInstance): Promise<void> {
             attachments: { select: { id: true } },
             reactions: { select: { emoji: true, userId: true } },
             author: { select: { id: true, displayName: true, username: true } },
+            diceRoll: { select: { resultJson: true, label: true } },
           },
         },
       },

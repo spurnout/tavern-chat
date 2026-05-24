@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Pin, X } from 'lucide-react';
 import { api } from '../lib/api-client.js';
 import type { Message } from '@tavern/shared';
+import { messagePreview } from '../lib/message-preview.js';
 
 interface PinEntry {
   channelId: string;
@@ -93,7 +94,7 @@ export function PinsPopover({ channelId }: Props): JSX.Element {
                         {new Date(p.pinnedAt).toLocaleString()}
                       </span>
                     </div>
-                    <p className="mt-1 line-clamp-3 text-fg-muted">{p.message.content || '—'}</p>
+                    <p className="mt-1 line-clamp-3 text-fg-muted">{messagePreview(p.message)}</p>
                     {p.note ? (
                       <p className="mt-1 text-xs italic text-fg-muted">— {p.note}</p>
                     ) : null}

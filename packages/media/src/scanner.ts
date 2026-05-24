@@ -113,9 +113,27 @@ export class ClamAVScanner {
         settled = true;
         clearTimeout(timer);
         const text = Buffer.concat(reply).toString('utf8').replace(/\0$/, '').trim();
-        const clean = /:\s*OK\b/.test(text);
+        // An empty / truncated clamd response (daemon crash mid-stream,
+        // version mismatch, network reset before the reply landed) should
+        // surface as an error so callers can fall back to the
+        // `ALLOW_UNSCANNED_UPLOADS` path or quarantine intentionally. The
+        // prior behaviour silently resolved as `{ clean: false }` with no
+        // signature, which silently quarantines every upload after a
+        // clamd hiccup — indistinguishable from a real detection.
+        if (text === '') {
+          reject(new Error('ClamAV returned an empty response'));
+          return;
+        }
+        // A well-formed response always contains either ": OK" or " FOUND".
+        // Anything else means the daemon emitted something we don't know
+        // how to parse — treat it the same as an empty reply.
+        const isOk = /:\s*OK\b/.test(text);
         const found = text.match(/:\s*(.+?)\s+FOUND/);
-        resolve({ clean, signature: found ? found[1] : undefined, raw: text });
+        if (!isOk && !found) {
+          reject(new Error(`Unrecognised ClamAV response: ${text.slice(0, 200)}`));
+          return;
+        }
+        resolve({ clean: isOk, signature: found ? found[1] : undefined, raw: text });
       });
 
       sock.on('error', (err) => {

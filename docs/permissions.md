@@ -62,9 +62,10 @@ build permission strings without parsing TypeScript. DOC-002.
 |  47 | `MANAGE_REPORT_WORKFLOW`      |     140737488355328 | T&S         |
 |  48 | `LOCK_USER_POSTING`           |     281474976710656 | T&S         |
 |  49 | `LOCK_USER_UPLOADS`           |     562949953421312 | T&S         |
+|  50 | `MANAGE_NICKNAMES`            |    1125899906842624 | Member identity |
 |  62 | `ADMINISTRATOR`               | 4611686018427387904 | Top-level   |
 
-`ADMINISTRATOR` short-circuits every check. Bits 50-61 are reserved.
+`ADMINISTRATOR` short-circuits every check. Bits 51-61 are reserved.
 
 ## Resolution
 

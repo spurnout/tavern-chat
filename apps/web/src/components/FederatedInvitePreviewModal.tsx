@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import type { FederatedInvitePreview } from '@tavern/shared';
 import { acceptFederatedInvite, ApiError, previewFederatedInvite } from '../lib/api-client.js';
@@ -41,6 +41,11 @@ export function FederatedInvitePreviewModal({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
+  // Synchronous in-flight guard: React batching means two clicks within the
+  // same render pass both see `accepting === false` and both queue the
+  // setState. Refs flip immediately, so the second click bails before
+  // firing the second acceptFederatedInvite POST.
+  const inFlightRef = useRef(false);
   const navigate = useNavigate();
 
   // Fetch the preview each time the modal opens with new (host, code). We
@@ -77,19 +82,22 @@ export function FederatedInvitePreviewModal({
   }, [open, host, code]);
 
   async function handleAccept(): Promise<void> {
-    if (!preview || accepting) return;
+    if (!preview || accepting || inFlightRef.current) return;
+    inFlightRef.current = true;
     setAccepting(true);
     try {
       const result = await acceptFederatedInvite(code, host);
       // The gateway broadcasts SERVER_ADD on the next tick — the realtime
       // store will splice it into serversById. We can navigate optimistically
       // using the resolved id returned in the body; the route will hydrate
-      // its own per-server channel list on mount.
-      onOpenChange(false);
+      // its own per-server channel list on mount. Navigate FIRST, then close:
+      // a navigate failure should leave the modal open with the error
+      // visible, not strand the user on the invite page with no signal.
       await navigate({
         to: '/app/servers/$serverId',
         params: { serverId: result.serverId },
       });
+      onOpenChange(false);
       if (result.alreadyMember) {
         toast.info(`You're already in ${preview.name}.`);
       } else {
@@ -98,6 +106,7 @@ export function FederatedInvitePreviewModal({
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not join this den.');
     } finally {
+      inFlightRef.current = false;
       setAccepting(false);
     }
   }
@@ -106,7 +115,9 @@ export function FederatedInvitePreviewModal({
   // states share the same modal chrome so the user keeps spatial context.
   const title = preview ? `Join ${preview.name}?` : 'Federated invite';
   const description = preview
-    ? `Hosted on ${host}, invited by ${preview.inviterRemoteUserId}`
+    ? // SEC: cap remote-controlled identifier length so a hostile peer
+      // can't ship a 500-char inviter ID that overflows the modal chrome.
+      `Hosted on ${host}, invited by ${preview.inviterRemoteUserId.slice(0, 64)}`
     : undefined;
 
   return (

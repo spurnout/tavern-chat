@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ModerationStats, Report } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
 import { toast } from '../../lib/toast.js';
@@ -29,7 +29,7 @@ export function ReportsTab({ serverId }: Props): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [pendingBan, setPendingBan] = useState<PendingBan | null>(null);
 
-  function refresh(): void {
+  const refresh = useCallback((): void => {
     setLoading(true);
     Promise.all([
       api<Report[]>(`/servers/${serverId}/moderation/queue`),
@@ -43,12 +43,11 @@ export function ReportsTab({ serverId }: Props): JSX.Element {
         toast.error(err instanceof ApiError ? err.message : 'Could not load the queue.'),
       )
       .finally(() => setLoading(false));
-  }
+  }, [serverId]);
 
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverId]);
+  }, [refresh]);
 
   const oldHotMs = stats?.oldestUnreviewedAt
     ? Date.now() - new Date(stats.oldestUnreviewedAt).getTime()

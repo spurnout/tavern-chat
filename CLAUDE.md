@@ -17,6 +17,7 @@ packages/
   shared/    zod schemas, permission bitset, dice parser, ULID, errors
   db/        Prisma schema + client + seed
   media/     LiveKit + media helpers
+  federation/ Ed25519 + canonical-JSON + envelope signing + SSRF guard + at-rest encryption
 infra/       docker-compose, livekit, traefik configs
 docs/        Architecture, API, deployment, design system, etc.
 e2e/         Playwright suite + walkthrough scripts
@@ -64,7 +65,7 @@ Hard rules:
 
 ## Other docs
 
-`docs/architecture.md` · `docs/api.md` · `docs/permissions.md` · `docs/deployment.md` · `docs/native-setup.md` · `docs/docker-setup.md` · `docs/production-hardening.md` · `docs/safety.md` · `docs/tabletop.md` · `docs/walkthrough.md` · `docs/roadmap.md`
+`docs/architecture.md` · `docs/api.md` · `docs/permissions.md` · `docs/deployment.md` · `docs/native-setup.md` · `docs/docker-setup.md` · `docs/production-hardening.md` · `docs/safety.md` · `docs/tabletop.md` · `docs/walkthrough.md` · `docs/roadmap.md` · `docs/federation.md` · `docs/federation-operations.md` · `docs/federation-followups.md`
 
 ## Workflow
 

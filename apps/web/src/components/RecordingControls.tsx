@@ -68,6 +68,32 @@ export function RecordingControls({
     };
   }, [channelId]);
 
+  // FE-06c: if the host leaves the voice room (or the component is otherwise
+  // unmounted) mid-recording, the MediaRecorder keeps running in the
+  // background — the browser's audio-capture indicator stays lit and the
+  // captured blob is never uploaded. Tear down the recorder + AudioContext
+  // on unmount as a backstop to the normal stop() path.
+  useEffect(
+    () => () => {
+      const rec = recorderRef.current;
+      if (rec && rec.state !== 'inactive') {
+        try {
+          rec.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      recorderRef.current = null;
+      const ctx = audioCtxRef.current;
+      if (ctx && ctx.state !== 'closed') {
+        ctx.close().catch(() => undefined);
+      }
+      audioCtxRef.current = null;
+      chunksRef.current = [];
+    },
+    [],
+  );
+
   // Host tracks consent responses.
   useEffect(() => {
     if (!isHost) return;
@@ -146,11 +172,29 @@ export function RecordingControls({
       };
       recorderRef.current = recorder;
       startTsRef.current = Date.now();
-      recorder.start(1000);
+      // ORDER: post BEFORE starting the recorder so a refused start
+      // (concurrent role change, peer 403, network drop) doesn't leave a
+      // running MediaRecorder + open AudioContext on the catch branch.
       await api(`/voice/${channelId}/recording/start`, { method: 'POST' });
+      recorder.start(1000);
       setPhase('recording');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not start recording');
+      // Defensive: if the recorder did manage to start (e.g. start succeeded
+      // but a follow-up state mutation threw) or the AudioContext is open,
+      // tear them down so we don't leak the capture indicator.
+      const rec = recorderRef.current;
+      if (rec && rec.state !== 'inactive') {
+        try {
+          rec.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      recorderRef.current = null;
+      audioCtxRef.current?.close().catch(() => undefined);
+      audioCtxRef.current = null;
+      chunksRef.current = [];
       setPhase('idle');
     }
   }

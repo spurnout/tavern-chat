@@ -200,6 +200,11 @@ model User {
 
   @@unique([oidcIssuer, oidcSubject], map: "User_oidc_idx")
   @@index([customStatusExpiresAt], map: "User_customStatusExpiresAt_idx")
+  // PERF: queries that revoke a peer or list every synthetic user from a
+  // single RemoteInstance do a sequential scan on the (potentially huge)
+  // User table without this index. RemoteUser already has the symmetric
+  // index; mirror it here.
+  @@index([remoteInstanceId], map: "User_remoteInstanceId_idx")
 }
 
 model Session {

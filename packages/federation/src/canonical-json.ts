@@ -8,6 +8,21 @@
  *
  * Rejects: undefined at the top level, NaN, +/-Infinity, BigInt, symbols, functions.
  * Allowed: nested objects/arrays of the above primitives.
+ *
+ * **Subtle contract for callers:** `undefined` inside an array is replaced with
+ * `null` (line 31), but `undefined` as an object property value is silently
+ * **omitted** (line 35). This matches `JSON.stringify` semantics and the JCS
+ * spec, but means an envelope built with an optional field set to `undefined`
+ * on instance A will produce a different canonical string than the same
+ * envelope built with that field set to `null` — and the resulting signature
+ * won't verify on the other side. Callers MUST normalise optional fields to
+ * `null` (or omit them entirely) before signing; do not rely on `undefined`.
+ *
+ * **Non-ASCII keys:** the sort is JS `Array#sort` (UTF-16 code-unit order),
+ * which matches JCS for the BMP but diverges from a true Unicode code-point
+ * sort for characters above U+FFFF. All envelope keys today are ASCII (no
+ * concern). Add a per-key allowlist in the schema if non-ASCII keys are
+ * ever introduced.
  */
 export function canonicalize(value: unknown): string {
   if (value === undefined) {

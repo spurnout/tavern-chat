@@ -133,9 +133,11 @@ export async function registerInboxRoutes(app: FastifyInstance): Promise<void> {
             channelId: true,
             dmChannelId: true,
             authorId: true,
+            type: true,
             content: true,
             createdAt: true,
             author: { select: { id: true, displayName: true, username: true } },
+            diceRoll: { select: { resultJson: true, label: true } },
           },
         },
       },
@@ -156,7 +158,19 @@ export async function registerInboxRoutes(app: FastifyInstance): Promise<void> {
             dmChannelId: m.message.dmChannelId,
             authorId: m.message.authorId,
             authorDisplayName: m.message.author.displayName,
+            type: m.message.type,
             content: m.message.content,
+            // Mirror the slice we expose for dice rolls in the main message
+            // DTO so the inbox preview can render "1d20 → 14" instead of just
+            // the formula. resultJson is trusted (written through the dice
+            // route's typed schema); cast it for the wire payload.
+            diceRoll: m.message.diceRoll
+              ? {
+                  notation: (m.message.diceRoll.resultJson as { notation: string }).notation,
+                  total: (m.message.diceRoll.resultJson as { total: number }).total,
+                  label: m.message.diceRoll.label,
+                }
+              : null,
             createdAt: m.message.createdAt.toISOString(),
           },
         })),

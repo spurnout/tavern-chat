@@ -29,6 +29,8 @@ apps/
 packages/
   shared/       zod schemas, permission bitset, dice parser, ULID, errors
   db/           Prisma schema + client + seed
+  media/        upload pipeline, ClamAV scanner, S3/local storage adapters
+  federation/   Ed25519 + canonical-JSON + envelope signing + at-rest encryption
 infra/
   docker/       docker-compose for postgres, redis, garage, clamav, livekit
   garage/       Garage S3-compatible storage config + bootstrap helper

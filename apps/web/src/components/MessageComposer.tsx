@@ -103,6 +103,14 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   // survive the React-render that nulls out the state value.
   const activeRecorderRef = useRef<MediaRecorder | null>(null);
   const activeStreamRef = useRef<MediaStream | null>(null);
+  // FE-06b: capture the latest `pending` array in a ref so the unmount
+  // cleanup can revoke every object URL it created. The setState reference
+  // we'd otherwise hold in closure is stale by the time the effect runs.
+  const pendingRef = useRef(pending);
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -130,6 +138,18 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
       }
       activeRecorderRef.current = null;
       activeStreamRef.current = null;
+      // FE-06b: revoke every preview blob URL on unmount. send() and
+      // removePending() handle the steady state; this catches the
+      // navigate-away-without-sending path.
+      for (const p of pendingRef.current) {
+        if (p.previewUrl) {
+          try {
+            URL.revokeObjectURL(p.previewUrl);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     };
   }, []);
 

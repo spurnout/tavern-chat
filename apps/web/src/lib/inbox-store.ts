@@ -21,7 +21,19 @@ export interface InboxItem {
     dmChannelId: string | null;
     authorId: string;
     authorDisplayName: string;
+    /** Mirrors `Message.type` so the inbox preview can render dice rolls. */
+    type: 'default' | 'system' | 'voice' | 'dice_roll' | 'session_event';
     content: string;
+    /**
+     * Compact dice-roll payload. Non-null when `type === 'dice_roll'`; lets
+     * the preview render "1d20 → 14" instead of just the formula. We only
+     * surface the fields the preview needs, not the per-die breakdown.
+     */
+    diceRoll: {
+      notation: string;
+      total: number;
+      label: string | null;
+    } | null;
     createdAt: string;
   };
 }
@@ -68,9 +80,39 @@ export const useInbox = create<InboxState>((set, get) => ({
       const states = await api<ChannelReadState[]>('/me/read-states');
       const byChannel: Record<string, ChannelReadState> = {};
       for (const s of states) byChannel[s.channelId] = s;
-      set({
-        readStatesByChannel: byChannel,
-        totalUnreadMentions: recomputeTotal(byChannel),
+      // RACE: gateway events (MENTION_CREATE, ACK) can fire in the window
+      // between this call's start and its resolution. A blanket replace of
+      // `readStatesByChannel` would silently drop those events. Merge: for
+      // each channel, take the per-channel max mentionCount (snapshot vs
+      // anything that arrived since), and prefer the more recent
+      // lastReadMessageId/lastReadAt (an ACK is monotone).
+      set((s) => {
+        const merged: Record<string, ChannelReadState> = { ...s.readStatesByChannel };
+        for (const [channelId, snapshot] of Object.entries(byChannel)) {
+          const live = s.readStatesByChannel[channelId];
+          if (!live) {
+            merged[channelId] = snapshot;
+            continue;
+          }
+          merged[channelId] = {
+            channelId,
+            // The snapshot's lastRead* are authoritative if no ACK arrived
+            // since (live === snapshot). If an ACK did arrive, the live
+            // value is newer; keep it.
+            lastReadMessageId: live.lastReadMessageId ?? snapshot.lastReadMessageId,
+            lastReadAt:
+              new Date(live.lastReadAt).getTime() >= new Date(snapshot.lastReadAt).getTime()
+                ? live.lastReadAt
+                : snapshot.lastReadAt,
+            // Mentions count: take max so we don't lose live MENTION_CREATEs
+            // that landed between the request and its response.
+            mentionCount: Math.max(live.mentionCount, snapshot.mentionCount),
+          };
+        }
+        return {
+          readStatesByChannel: merged,
+          totalUnreadMentions: recomputeTotal(merged),
+        };
       });
     } catch {
       // Silent fail — bell will just show 0 until next attempt.
@@ -129,9 +171,11 @@ export const useInbox = create<InboxState>((set, get) => ({
     if (!item || item.isRead) return;
     try {
       await api(`/me/inbox/${mentionId}/ack`, { method: 'POST' });
-      set((s) => ({
-        inboxItems: s.inboxItems.map((m) => (m.id === mentionId ? { ...m, isRead: true } : m)),
-        readStatesByChannel: item.channelId
+      // Fold both updates into a single `set` so a concurrent MENTION_CREATE
+      // landing between two separate set()s can't recompute totals against
+      // the post-event map (would have under-counted the live event).
+      set((s) => {
+        const nextStates = item.channelId
           ? {
               ...s.readStatesByChannel,
               [item.channelId]: {
@@ -145,9 +189,15 @@ export const useInbox = create<InboxState>((set, get) => ({
                 ),
               },
             }
-          : s.readStatesByChannel,
-      }));
-      set((s) => ({ totalUnreadMentions: recomputeTotal(s.readStatesByChannel) }));
+          : s.readStatesByChannel;
+        return {
+          inboxItems: s.inboxItems.map((m) =>
+            m.id === mentionId ? { ...m, isRead: true } : m,
+          ),
+          readStatesByChannel: nextStates,
+          totalUnreadMentions: recomputeTotal(nextStates),
+        };
+      });
     } catch {
       // Ignore — UI is best-effort.
     }

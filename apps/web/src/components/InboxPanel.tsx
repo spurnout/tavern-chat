@@ -3,6 +3,7 @@ import { Bell, CheckCheck, X } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
 import { useInbox } from '../lib/inbox-store.js';
 import { useRealtime } from '../lib/store.js';
+import { messagePreview } from '../lib/message-preview.js';
 
 /**
  * Activity inbox bell. Shows the total unread @mention count and opens a
@@ -132,7 +133,7 @@ export function InboxPanel(): JSX.Element {
                         <span className="font-mono text-xs text-fg-muted">{tagFor(m.kind)}</span>
                         <span className="ml-auto text-xs text-fg-muted">{when(m.createdAt)}</span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-fg-muted">{m.message.content || '—'}</p>
+                      <p className="mt-1 line-clamp-2 text-fg-muted">{messagePreview(m.message)}</p>
                     </button>
                   </li>
                 ))}

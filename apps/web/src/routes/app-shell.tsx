@@ -36,6 +36,11 @@ import { ImageLightbox } from '../components/ImageLightbox.js';
 import { CommandPalette } from '../components/CommandPalette.js';
 import { onUi } from '../lib/ui-events.js';
 
+// Stable empty-array fallback; never mutated. Module-level so the same
+// reference survives every render and React.memo'd consumers see prop
+// equality. Cast away ReadonlyArray so consumers still get Channel[].
+const EMPTY_CHANNELS = [] as Channel[];
+
 export function AppShell(): JSX.Element {
   const me = useAuth((s) => s.me);
   const logout = useAuth((s) => s.logout);
@@ -161,7 +166,13 @@ export function AppShell(): JSX.Element {
   }, [params.channelId, setActiveChannelId]);
 
   const activeServer = params.serverId ? servers.find((s) => s.id === params.serverId) : null;
-  const channels = params.serverId ? (channelsByServer[params.serverId] ?? []) : [];
+  // Stable empty fallback so the `?? []` (a fresh literal on every render)
+  // doesn't hand a new array reference to ChannelSidebar each pass — would
+  // defeat React.memo if we ever wrap it.
+  const channels = useMemo(
+    () => (params.serverId ? channelsByServer[params.serverId] ?? EMPTY_CHANNELS : EMPTY_CHANNELS),
+    [params.serverId, channelsByServer],
+  );
 
   return (
     <div className="relative flex h-full bg-canvas text-fg">

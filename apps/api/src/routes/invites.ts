@@ -295,12 +295,30 @@ export async function registerInviteRoutes(
       where: { serverId_userId: { serverId: invite.serverId, userId: ctx.userId } },
     });
     if (!existing) {
-      const newMember = await prisma.serverMember.create({
-        data: { serverId: invite.serverId, userId: ctx.userId },
-      });
-      await prisma.invite.update({
-        where: { id: invite.id },
-        data: { uses: { increment: 1 } },
+      // RACE: atomic check-and-increment for maxUses. The plain check above
+      // is a UX-friendly fast-fail; under N concurrent redeems on
+      // `maxUses=1` it can let all N pass. Inside the transaction we
+      // re-check + increment with a predicate (`uses: { lt: maxUses }`) so
+      // only the first writer wins. Mirrors the registration flow in
+      // auth-service which already uses this pattern.
+      const newMember = await prisma.$transaction(async (tx) => {
+        if (invite.maxUses !== null) {
+          const consumed = await tx.invite.updateMany({
+            where: { id: invite.id, uses: { lt: invite.maxUses } },
+            data: { uses: { increment: 1 } },
+          });
+          if (consumed.count === 0) {
+            throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
+          }
+        } else {
+          await tx.invite.update({
+            where: { id: invite.id },
+            data: { uses: { increment: 1 } },
+          });
+        }
+        return tx.serverMember.create({
+          data: { serverId: invite.serverId!, userId: ctx.userId },
+        });
       });
       gatewayBroker.publish({
         type: 'MEMBER_ADD',

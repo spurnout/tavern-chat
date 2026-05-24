@@ -60,11 +60,16 @@ export function WatchPartyPanel({ channelId, userId }: Props): JSX.Element | nul
     // Listen for WATCH_PARTY_* gateway events. We piggy-back on the same
     // broker store dispatch path the rest of the app uses by polling every
     // 5s as a fallback — the gateway-driven update arrives faster but the
-    // poll keeps late joiners honest.
+    // poll keeps late joiners honest. PERF: only poll while a party is
+    // actually loaded (or until we know there isn't one). For the common
+    // case (no party in this room) the post-first-load `party === null`
+    // state stops the interval, so a quiet voice room isn't hitting the
+    // API every 5s for the entire session.
+    if (party === null) return;
     const handle = window.setInterval(refresh, 5000);
     return () => window.clearInterval(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId]);
+  }, [channelId, party === null]);
 
   const isHost = !!party && party.hostUserId === userId;
 

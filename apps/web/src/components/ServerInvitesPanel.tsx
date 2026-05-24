@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Copy, DoorOpen, Plus, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 /**
  * Server-scoped invite management. Lists existing invite codes, lets
@@ -96,6 +97,10 @@ export function ServerInvitesPanel({ serverId }: Props): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [latest, setLatest] = useState<InviteRow | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
+  // FE-13: confirm before destructive revoke. The trash-can button was
+  // single-click → fire — an accidental tap permanently invalidated an
+  // active invite with no undo. Same pattern as the peer-revoke modal.
+  const [pendingRevoke, setPendingRevoke] = useState<InviteRow | null>(null);
 
   // Tick once a minute so the "expires in N min" labels stay roughly
   // fresh while the tab is open. Source of truth stays the server's
@@ -288,7 +293,7 @@ export function ServerInvitesPanel({ serverId }: Props): JSX.Element {
                       <button
                         type="button"
                         className="rounded p-1 text-fg-muted hover:bg-raised"
-                        onClick={() => void revoke(r.id)}
+                        onClick={() => setPendingRevoke(r)}
                         aria-label="Revoke invite"
                         title="Revoke invite"
                       >
@@ -302,6 +307,21 @@ export function ServerInvitesPanel({ serverId }: Props): JSX.Element {
           )}
         </ul>
       </section>
+
+      {pendingRevoke ? (
+        <ConfirmDialog
+          title="Revoke this invite?"
+          description={`Anyone holding the link "${pendingRevoke.code}" will no longer be able to join with it. This cannot be undone.`}
+          confirmLabel="Revoke"
+          destructive
+          onCancel={() => setPendingRevoke(null)}
+          onConfirm={async () => {
+            const id = pendingRevoke.id;
+            setPendingRevoke(null);
+            await revoke(id);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

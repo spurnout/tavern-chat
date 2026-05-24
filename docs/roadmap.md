@@ -173,15 +173,33 @@ responses, native Dropbox/Nextcloud storage backends. Restated under
 
 ## Direction & non-goals
 
-### Planned directions (post-Wave 3)
+### Shipped (Wave 4 — federation, Phases 1–6)
 
-**IR20 federation network.** Cross-instance federation — identity,
-invites, messages, and presence cross Tavern instances; voice deferred
-to V2. Reverses the closed-graph stance taken in earlier wave notes.
-Substantial scope: protocol design, identity verification across
-instances, federated moderation and abuse/ban propagation,
-key-rotation, and discovery. "IR20" is the working name only; final
-brand TBD. Design doc at [federation.md](federation.md); no code yet.
+**IR20 federation network — Phases 1 through 6 are implemented.**
+Cross-instance federation is now opt-in via `FEDERATION_ENABLED`, off by
+default. Phases shipped:
+
+1. Peering handshake + capability negotiation
+2. Remote-user identity (Ed25519 per-user keys, `RemoteUser` mirror)
+3. Federated channel messages, edits, deletes, reactions
+4. Federated invites + Tavern mirroring (origin-tracked
+   `Server`/`Channel`/`ServerMember` rows)
+5. Federated 1:1 DMs (gated on the `dms` capability)
+6. Federated presence + custom status (gated on the `presence` capability
+   plus `FEDERATION_PRESENCE_ENABLED`)
+
+Operational guide: [federation-operations.md](federation-operations.md).
+Protocol reference: [federation.md](federation.md). Follow-ups:
+[federation-followups.md](federation-followups.md).
+
+### Planned directions (post-Wave 4)
+
+**Federation Phase 7 — moderation propagation.** Federated bans, content
+removal, abuse-report routing, instance-level deny-lists. Out of scope for
+Phase 1–6; design pass before implementation.
+
+**Federation Phase 8 — voice.** Cross-instance LiveKit federation.
+Substantial scope (Egress + token federation + TURN); not started.
 
 **Plugin admin review gate.** Plugins currently load on boot from the
 `plugins/` directory with no operator confirmation. Planned change:

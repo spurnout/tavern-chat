@@ -66,10 +66,15 @@ const envSchema = z.object({
   /** Optional — when blank, ClamAV scanning is skipped. */
   CLAMAV_HOST: optionalString,
   CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
-  /** Default true: lets uploads proceed without a scanner present. */
+  /**
+   * Default false: refuse uploads when no scanner is configured. Operators
+   * who explicitly want unscanned uploads in dev/test environments must opt
+   * in. The startup-time guard further refuses `true` in production when
+   * CLAMAV_HOST is unset.
+   */
   ALLOW_UNSCANNED_UPLOADS: z
     .enum(['true', 'false'])
-    .default('true')
+    .default('false')
     .transform((v) => v === 'true'),
   BLOCK_EXECUTABLE_UPLOADS: z
     .enum(['true', 'false'])

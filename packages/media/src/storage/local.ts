@@ -144,7 +144,10 @@ export class LocalStorageBackend extends StorageBackend {
     });
 
     try {
-      await pipeline(body, sizeGuard, createWriteStream(targetPath));
+      // SEC: mode 0o600 — attachments are user-private. Default OS umask
+      // (commonly 0644) leaves them group/world-readable on multi-user
+      // hosts. Use the same mode for the streaming and the buffered path.
+      await pipeline(body, sizeGuard, createWriteStream(targetPath, { mode: 0o600 }));
     } catch (err) {
       // Pipeline failed mid-write — clean up the partial file so we don't
       // leave junk in the bucket directory.
@@ -175,7 +178,9 @@ export class LocalStorageBackend extends StorageBackend {
   ): Promise<void> {
     const target = this.absPath(bucket, key);
     mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, body);
+    // SEC: mode 0o600 — match acceptUpload above. Attachments default to
+    // owner-only on disk; group/world readers don't belong here.
+    writeFileSync(target, body, { mode: 0o600 });
   }
 
   async statObject(bucket: string, key: string): Promise<ObjectStat> {

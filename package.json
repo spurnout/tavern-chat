@@ -29,6 +29,7 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "typecheck": "pnpm -r typecheck",
+    "ci": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm build",
     "db:generate": "pnpm --filter @tavern/db generate",
     "db:migrate": "pnpm ensure-env && node scripts/with-env.mjs pnpm --filter @tavern/db migrate",
     "db:migrate:dev": "pnpm ensure-env && node scripts/with-env.mjs pnpm --filter @tavern/db migrate:dev",

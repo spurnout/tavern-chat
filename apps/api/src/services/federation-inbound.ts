@@ -145,6 +145,13 @@ function assertTimestampWithinSkew(label: string, ts: Date): void {
   }
 }
 
+/** Convenience: parse + validate the inbound `createdAt` in one step. */
+function assertCreatedAtWithinSkew(iso: string): Date {
+  const ts = new Date(iso);
+  assertTimestampWithinSkew('createdAt', ts);
+  return ts;
+}
+
 /**
  * Why this is a class+exception instead of a tagged union: the route layer
  * just wants a `{ status, body }` to render, and every failure mode in this
@@ -1260,7 +1267,7 @@ async function handleMessageCreate(input: {
       type: 'default',
       content: payload.content,
       replyToMessageId: payload.replyToMessageId ?? null,
-      createdAt: new Date(payload.createdAt),
+      createdAt: assertCreatedAtWithinSkew(payload.createdAt),
       signature: signatureBytes,
       originInstanceId: peer.id,
     },
@@ -3429,7 +3436,12 @@ async function handleDmMessageCreate(input: {
   // 7) Persist the Message row. Same envelope.signature retention as the
   //    server-channel handler — keeps the moderation surface uniform.
   const signatureBytes = Buffer.from(envelope.signature, 'base64');
-  const createdAt = new Date(payload.createdAt);
+  // Bound `createdAt` to the same MAX_CLOCK_SKEW window the envelope itself
+  // is bounded by — the envelope's notBefore/notAfter limit replay, but
+  // payload.createdAt is independent and a malicious peer can backdate a
+  // message hours/days into the past (bypassing timeline ordering on the
+  // receiver) without violating the envelope window.
+  const createdAt = assertCreatedAtWithinSkew(payload.createdAt);
   const messageRow = await tx.message.create({
     data: {
       id: payload.messageId,
@@ -4093,7 +4105,12 @@ async function handlePresenceUpdate(input: {
   const atIdx = payload.userRemoteUserId.lastIndexOf('@');
   const userHost =
     atIdx >= 0 ? payload.userRemoteUserId.slice(atIdx + 1) : '';
-  if (userHost !== peer.host) {
+  // DNS labels are case-insensitive; lowercase both sides so a peer whose
+  // discovery doc uses a different capitalisation than its presence
+  // envelopes doesn't trigger `not_home_instance` for legitimate senders.
+  // All other host comparisons in this file (e.g. dm.create recipient check)
+  // already normalise to lower-case.
+  if (userHost.toLowerCase() !== peer.host.toLowerCase()) {
     throw new FederationInboundError(
       'not_home_instance',
       `peer ${peer.host} cannot emit presence for ${payload.userRemoteUserId}`,

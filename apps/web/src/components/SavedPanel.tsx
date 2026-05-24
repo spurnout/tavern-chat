@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router';
 import type { Message } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
+import { messagePreview } from '../lib/message-preview.js';
 
 interface SavedEntry {
   messageId: string;
@@ -143,7 +144,7 @@ export function SavedPanel(): JSX.Element {
                       onClick={() => openEntry(e)}
                       className="mt-1 line-clamp-3 w-full text-left text-fg-muted hover:underline"
                     >
-                      {e.message.content || '—'}
+                      {messagePreview(e.message)}
                     </button>
                   </li>
                 ))}

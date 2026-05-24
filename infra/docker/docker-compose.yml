@@ -229,7 +229,11 @@ services:
   # Requires:    docker compose --profile livekit up -d
   # Phase 3 wires the API to issue tokens for this service.
   livekit:
-    image: livekit/livekit-server:latest
+    # Pinned (was `:latest`) so a docker pull mid-rev doesn't pick up a
+    # breaking LiveKit release silently. All other images in this file are
+    # pinned; this is the matching change. Bump deliberately when you
+    # validate against a newer LiveKit.
+    image: livekit/livekit-server:v1.7.2
     container_name: tavern-livekit
     profiles: ["livekit"]
     restart: unless-stopped

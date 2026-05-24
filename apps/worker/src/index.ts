@@ -55,7 +55,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  log.info({ redis: cfg.REDIS_URL }, 'tavern worker starting');
+  // SEC: log only the host:port — REDIS_URL may carry credentials
+  // (redis://:password@host:port) and log aggregators retain them indefinitely.
+  log.info({ redis: redactRedisUrl(cfg.REDIS_URL) }, 'tavern worker starting');
 
   const storage = createStorage(cfg);
   const scanner = cfg.CLAMAV_HOST
@@ -116,10 +118,13 @@ async function main(): Promise<void> {
   const maintenanceProcessor: Processor<MaintenanceJob> = async (job) => {
     if (job.data.kind === 'audit-retention') {
       const cutoff = new Date(Date.now() - job.data.retentionDays * 86_400_000);
-      const result = await prisma.auditLogEntry.deleteMany({
-        where: { createdAt: { lt: cutoff } },
-      });
-      log.info({ deleted: result.count, retentionDays: job.data.retentionDays }, 'audit retention sweep');
+      // BATCH: a single unbounded DELETE on a multi-million-row table holds
+      // row-level locks for the full duration and amplifies WAL pressure,
+      // stalling concurrent writes (audit-log inserts, federation envelope
+      // inserts) for seconds. Chunk to 5_000 rows per pass and yield between
+      // passes so the worker doesn't monopolise the connection either.
+      const deleted = await pruneInBatches('auditLogEntry', { createdAt: { lt: cutoff } });
+      log.info({ deleted, retentionDays: job.data.retentionDays }, 'audit retention sweep');
     } else if (job.data.kind === 'nonce-cleanup') {
       const cutoff = new Date(Date.now() - job.data.retentionHours * 3_600_000);
       const result = await prisma.message.updateMany({
@@ -130,26 +135,21 @@ async function main(): Promise<void> {
     } else if (job.data.kind === 'expired-custom-status') {
       // Find every user whose custom-status expiry has passed, then clear
       // both the status and the timestamp. We need the affected userIds
-      // (and their shared servers) to fan out MEMBER_UPDATE so open
-      // profile cards refresh — Prisma's updateMany doesn't return the
-      // rows, so we query first.
+      // and their shared servers to fan out MEMBER_UPDATE so open profile
+      // cards refresh — Prisma's updateMany doesn't return rows, so we
+      // query first. Single query with a relation include avoids an N+1
+      // (was one `serverMember.findMany` per expired user).
       const now = new Date();
       const expired = await prisma.user.findMany({
         where: { customStatusExpiresAt: { lte: now, not: null } },
-        select: { id: true },
+        select: { id: true, memberships: { select: { serverId: true } } },
       });
       if (expired.length === 0) return;
       await prisma.user.updateMany({
         where: { id: { in: expired.map((u) => u.id) } },
         data: { customStatus: null, customStatusExpiresAt: null },
       });
-      // Fan out one MEMBER_UPDATE per (user × shared server) so live
-      // clients drop the status without a /me refresh.
-      for (const { id: userId } of expired) {
-        const memberships = await prisma.serverMember.findMany({
-          where: { userId },
-          select: { serverId: true },
-        });
+      for (const { id: userId, memberships } of expired) {
         for (const { serverId } of memberships) {
           void gatewayPublisher
             .publish(
@@ -175,12 +175,46 @@ async function main(): Promise<void> {
       log.info({ cleared: expired.length }, 'expired custom-status sweep');
     } else if (job.data.kind === 'federation-envelope-retention') {
       const cutoff = new Date(Date.now() - job.data.retentionDays * 86_400_000);
-      const { count } = await prisma.federationEnvelopeLog.deleteMany({
-        where: { receivedAt: { lt: cutoff } },
-      });
+      // BATCH: same reasoning as audit-retention — a peered instance whose
+      // peer was offline for an extended period can accumulate millions of
+      // log rows. Chunked deletes keep each transaction short.
+      const count = await pruneInBatches('federationEnvelopeLog', { receivedAt: { lt: cutoff } });
       log.info({ count, cutoffDate: cutoff }, 'federation-envelope-retention: pruned rows');
     }
   };
+
+  // Chunked-delete helper. Prisma's deleteMany has no LIMIT, and unbounded
+  // DELETEs on retention tables hold row-level locks for the full duration.
+  // Yields between batches so other workers can make progress.
+  async function pruneInBatches(
+    table: 'auditLogEntry' | 'federationEnvelopeLog',
+    where: Record<string, unknown>,
+    batchSize = 5_000,
+  ): Promise<number> {
+    let total = 0;
+    for (;;) {
+      // The two supported tables both have `id: string` PKs; the cast keeps
+      // the helper polymorphic without giving up Prisma's generated types
+      // at the call site.
+      const ids = await (prisma[table] as unknown as {
+        findMany(args: {
+          where: Record<string, unknown>;
+          select: { id: true };
+          take: number;
+        }): Promise<{ id: string }[]>;
+      }).findMany({ where, select: { id: true }, take: batchSize });
+      if (ids.length === 0) break;
+      const result = await (prisma[table] as unknown as {
+        deleteMany(args: { where: { id: { in: string[] } } }): Promise<{ count: number }>;
+      }).deleteMany({ where: { id: { in: ids.map((r) => r.id) } } });
+      total += result.count;
+      if (ids.length < batchSize) break;
+      // Yield to the event loop so concurrent jobs and the BullMQ heartbeat
+      // don't starve. setImmediate is enough — we don't need a real delay.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return total;
+  }
   const maintenanceWorker = new Worker<MaintenanceJob>(MAINTENANCE_QUEUE, maintenanceProcessor, {
     connection,
     concurrency: 1,
@@ -205,12 +239,12 @@ async function main(): Promise<void> {
   await maintenanceQueue.add(
     'audit-retention',
     { kind: 'audit-retention', retentionDays: cfg.AUDIT_RETENTION_DAYS },
-    { repeat: { pattern: '0 3 * * *' }, removeOnComplete: true, removeOnFail: false, jobId: 'audit-retention' },
+    { repeat: { pattern: '0 3 * * *' }, removeOnComplete: true, removeOnFail: { count: 10 }, attempts: 3, backoff: { type: 'exponential', delay: 30_000 }, jobId: 'audit-retention' },
   );
   await maintenanceQueue.add(
     'nonce-cleanup',
     { kind: 'nonce-cleanup', retentionHours: cfg.NONCE_RETENTION_HOURS },
-    { repeat: { pattern: '15 * * * *' }, removeOnComplete: true, removeOnFail: false, jobId: 'nonce-cleanup' },
+    { repeat: { pattern: '15 * * * *' }, removeOnComplete: true, removeOnFail: { count: 10 }, attempts: 3, backoff: { type: 'exponential', delay: 30_000 }, jobId: 'nonce-cleanup' },
   );
   // Track 3 — clear expired custom statuses every 5 minutes. Cheaper than
   // a per-row deadline since most users never set an expiry, and the
@@ -221,7 +255,9 @@ async function main(): Promise<void> {
     {
       repeat: { pattern: '*/5 * * * *' },
       removeOnComplete: true,
-      removeOnFail: false,
+      removeOnFail: { count: 10 },
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 30_000 },
       jobId: 'expired-custom-status',
     },
   );
@@ -234,7 +270,9 @@ async function main(): Promise<void> {
     {
       repeat: { pattern: '30 3 * * *' },
       removeOnComplete: true,
-      removeOnFail: false,
+      removeOnFail: { count: 10 },
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 30_000 },
       jobId: 'federation-envelope-retention',
     },
   );
@@ -248,15 +286,26 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, 'shutting down worker');
-    await Promise.all([
+    // SHUTDOWN-DEADLINE: cap the graceful drain at 8s so a hung in-flight
+    // scan job (slow clamd, network stall) can't block past Docker's default
+    // stop_grace_period (10s) and trigger a SIGKILL that loses BullMQ locks
+    // for the active job.
+    const drainDeadline = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), 8_000),
+    );
+    const drain = Promise.all([
       worker.close(),
       maintenanceWorker.close(),
       maintenanceQueue.close(),
       federationOutboxHandle?.close() ?? Promise.resolve(),
-    ]);
-    // worker.close() above settles all in-flight jobs; only then is it safe
-    // to drop the Redis connections. `quit` waits for pending commands to be
-    // acked rather than `disconnect`'s fire-and-forget.
+    ]).then(() => 'drained' as const);
+    const result = await Promise.race([drain, drainDeadline]);
+    if (result === 'timeout') {
+      log.warn({ deadlineMs: 8_000 }, 'shutdown deadline hit; forcing exit');
+    }
+    // Only after the drain settles (or times out) is it safe to drop the
+    // Redis connections. `quit` waits for pending commands to be acked
+    // rather than `disconnect`'s fire-and-forget.
     try {
       await Promise.all([connection.quit(), gatewayPublisher.quit()]);
     } catch (err) {
@@ -264,7 +313,7 @@ async function main(): Promise<void> {
       connection.disconnect();
       gatewayPublisher.disconnect();
     }
-    process.exit(0);
+    process.exit(result === 'timeout' ? 1 : 0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
@@ -291,6 +340,22 @@ function createStorage(cfg: WorkerConfig): StorageBackend {
     quarantineBucket: cfg.S3_QUARANTINE_BUCKET,
     apiBaseUrl: cfg.API_BASE_URL,
   });
+}
+
+/**
+ * Strip credentials from a redis:// URL before logging. Logs aggregators
+ * (Loki / CloudWatch / Datadog) retain values indefinitely; the connection
+ * string can carry a password in the userinfo component.
+ */
+function redactRedisUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.username || u.password ? `${u.protocol}//[redacted]@${u.host}` : `${u.protocol}//${u.host}`;
+  } catch {
+    // If the URL doesn't parse (unusual scheme, ioredis-tolerated shorthand),
+    // fall back to a permissive token strip: drop anything between `://` and `@`.
+    return url.replace(/(\w+:\/\/)[^@\s]+@/, '$1[redacted]@');
+  }
 }
 
 void main();

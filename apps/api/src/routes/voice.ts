@@ -166,6 +166,17 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
       data: { screenSharing: false, cameraOn: false, selfMute: false, selfDeaf: false },
     });
 
+    // RACE: capture the prior channelId BEFORE the upsert so we can emit a
+    // leave-event scoped to the OLD channel below. The broker scopes
+    // VOICE_STATE_UPDATE by `channelId` (RT-001) for the per-recipient
+    // VIEW_CHANNEL check; viewers of the OLD channel who can't see the new
+    // one would otherwise never receive any signal that the user moved, so
+    // the avatar lingers in the old room until they reload.
+    const prior = await prisma.voiceState.findUnique({
+      where: { serverId_userId: { serverId: channel.serverId, userId: ctx.userId } },
+      select: { channelId: true },
+    });
+
     // Mirror voice state in DB so the UI shows who's in the channel.
     // Both branches reset transient flags — a fresh join starts with mic on,
     // camera off, screen off, regardless of what the previous session left behind.
@@ -196,6 +207,18 @@ export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Pr
         handRaisedAt: null,
       },
     });
+    // Emit a leave-event scoped to the OLD channel first, so viewers there
+    // evict the avatar. The client's applyVoiceState performs evict-then-
+    // place, so this carries the NEW voice state and clients update both
+    // channels coherently.
+    if (prior && prior.channelId && prior.channelId !== channel.id) {
+      gatewayBroker.publish({
+        type: 'VOICE_STATE_UPDATE',
+        serverId: channel.serverId,
+        channelId: prior.channelId,
+        data: voiceStatePayload(updated),
+      });
+    }
     gatewayBroker.publish({
       type: 'VOICE_STATE_UPDATE',
       serverId: channel.serverId,

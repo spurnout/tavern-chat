@@ -83,7 +83,23 @@ export function expandTemplate(
       if (m) {
         const label = m[1]!.trim().toLowerCase();
         const stat = sheet.stats?.find((s) => s.label.toLowerCase() === label);
-        if (stat) return stat.value;
+        if (stat) {
+          // SEC: generic stat values are user-controlled (free-text sheet
+          // fields). A value like "1d6+1d6+..." or 200 chars of garbage
+          // bypasses the dice parser's MAX_NOTATION_LENGTH (checked on the
+          // pre-expansion template, not the post-expansion notation). Only
+          // numbers and signed modifiers (`+3`, `-2`, `1d6 + 2`) are
+          // meaningful inside dice notation; reject anything else with a
+          // clear error rather than feed the parser content it can't
+          // safely handle. Cap length at 32 chars for the value itself.
+          const cleaned = stat.value.trim();
+          if (cleaned.length > 32 || !/^[-+\sd0-9]+$/i.test(cleaned)) {
+            throw new TemplateError(
+              `Stat "${label}" is not a valid dice modifier`,
+            );
+          }
+          return cleaned;
+        }
       }
     }
     throw new TemplateError(`Unknown template token: {${raw}}`);

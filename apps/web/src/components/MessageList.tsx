@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Bookmark, Dice5, Flag, Forward, History, MessageSquare, Pin, Trash2 } from 'lucide-react';
-import type { Message } from '@tavern/shared';
+import type { DiceTermResult, Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { useInbox } from '../lib/inbox-store.js';
@@ -258,14 +258,7 @@ function MessageRow({
     );
   }
   if (message.type === 'dice_roll') {
-    return (
-      <div className="rounded-md border border-subtle bg-surface px-3 py-2 text-sm">
-        <div className="flex items-center gap-2 text-mead">
-          <Dice5 size={16} />
-          <span className="font-mono">{message.content}</span>
-        </div>
-      </div>
-    );
+    return <DiceRollMessage message={message} />;
   }
   if (message.type === 'system') {
     return (
@@ -410,5 +403,66 @@ function MessageRow({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * Render a `dice_roll` message. When the API includes the inline `diceRoll`
+ * payload we show the per-die breakdown plus the total; on older messages
+ * (saved before the inline field landed, or surfaces that don't include it
+ * yet) we gracefully fall back to the raw notation in `content`.
+ */
+export function DiceRollMessage({ message }: { message: Message }): JSX.Element {
+  const roll = message.diceRoll;
+  return (
+    <div className="rounded-md border border-subtle bg-surface px-3 py-2 text-sm">
+      <div className="flex items-center gap-2 text-mead">
+        <Dice5 size={16} />
+        {roll ? (
+          <>
+            {roll.label ? <span className="font-medium">{roll.label}:</span> : null}
+            <span className="font-mono">{roll.notation}</span>
+            <span className="text-fg-muted">→</span>
+            <span className="font-mono text-fg">
+              <DiceTerms terms={roll.terms} />
+            </span>
+            <span className="text-fg-muted">=</span>
+            <span className="font-mono text-base font-semibold text-fg">{roll.total}</span>
+          </>
+        ) : (
+          <span className="font-mono">{message.content}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DiceTerms({ terms }: { terms: DiceTermResult[] }): JSX.Element {
+  return (
+    <>
+      {terms.map((term, i) => (
+        <span key={i}>
+          {i > 0 ? <span className="px-1 text-fg-muted">{term.sign === -1 ? '−' : '+'}</span> : null}
+          {term.kind === 'dice' ? (
+            <span>
+              [
+              {term.rolls.map((die, j) => (
+                <span key={j}>
+                  {j > 0 ? ', ' : ''}
+                  <span
+                    className={die.kept ? '' : 'text-fg-muted line-through decoration-fg-muted'}
+                  >
+                    {die.value}
+                  </span>
+                </span>
+              ))}
+              ]
+            </span>
+          ) : (
+            <span>{Math.abs(term.value)}</span>
+          )}
+        </span>
+      ))}
+    </>
   );
 }

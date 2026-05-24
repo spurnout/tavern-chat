@@ -14,9 +14,14 @@ const envSchema = z.object({
   /** ClamAV is optional; when unset, scanning is skipped (per ALLOW_UNSCANNED_UPLOADS). */
   CLAMAV_HOST: optionalString,
   CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
+  /**
+   * Default false: matches apps/api/src/config.ts. The worker still scans if
+   * CLAMAV_HOST is configured; setting this to true skips scanning when
+   * clamd is unreachable (dev only).
+   */
   ALLOW_UNSCANNED_UPLOADS: z
     .enum(['true', 'false'])
-    .default('true')
+    .default('false')
     .transform((v) => v === 'true'),
 
   STORAGE_BACKEND: z.enum(['local', 's3']).default('local'),
