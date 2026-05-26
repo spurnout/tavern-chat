@@ -16,6 +16,42 @@ export interface S3StorageConfig {
    * S3-compatible store without exposing the bucket publicly.
    */
   apiBaseUrl: string;
+  /**
+   * Optional public-facing S3 endpoint, used ONLY for generating presigned
+   * URLs the browser hits directly (currently: presignPut).
+   *
+   * Why two endpoints: the api/worker normally reach the object store via an
+   * internal hostname (e.g. `http://garage:3900` inside docker-compose),
+   * which is fast and stays on the private network. But a browser uploading
+   * directly to that URL fails two ways: it can't resolve the Docker DNS
+   * name, and an HTTPS page can't fetch an http:// resource (mixed-content
+   * block). Naively rewriting the URL host AFTER signing doesn't work
+   * either — AWS sig v4 signs the `Host` header, so the URL must be signed
+   * against the host the browser will actually send.
+   *
+   * When set, presignPut signs against this endpoint while internal ops
+   * (getObject, statObject, copyObject, putObject, ensureBuckets) keep using
+   * `endpoint` — so the hot path doesn't acquire an extra TLS handshake or
+   * a hop through the reverse proxy.
+   *
+   * Defaults to `endpoint` (single-endpoint behaviour) when unset.
+   */
+  publicEndpoint?: string;
+  /** SSL flag for `publicEndpoint`. Defaults to `useSsl` when unset. */
+  publicUseSsl?: boolean;
+}
+
+function makeClient(endpoint: string, useSsl: boolean, cfg: S3StorageConfig): S3Client {
+  const url = new URL(endpoint);
+  const opts: ClientOptions = {
+    endPoint: url.hostname,
+    port: Number(url.port) || (useSsl ? 443 : 80),
+    useSSL: useSsl,
+    accessKey: cfg.accessKey,
+    secretKey: cfg.secretKey,
+    region: cfg.region,
+  };
+  return new S3Client(opts);
 }
 
 /**
@@ -31,20 +67,15 @@ export class S3StorageBackend extends StorageBackend {
   readonly quarantineBucket: string;
 
   private readonly client: S3Client;
+  private readonly presignClient: S3Client;
   private readonly apiBaseUrl: string;
 
   constructor(cfg: S3StorageConfig) {
     super();
-    const url = new URL(cfg.endpoint);
-    const opts: ClientOptions = {
-      endPoint: url.hostname,
-      port: Number(url.port) || (cfg.useSsl ? 443 : 80),
-      useSSL: cfg.useSsl,
-      accessKey: cfg.accessKey,
-      secretKey: cfg.secretKey,
-      region: cfg.region,
-    };
-    this.client = new S3Client(opts);
+    this.client = makeClient(cfg.endpoint, cfg.useSsl, cfg);
+    this.presignClient = cfg.publicEndpoint
+      ? makeClient(cfg.publicEndpoint, cfg.publicUseSsl ?? cfg.useSsl, cfg)
+      : this.client;
     this.mainBucket = cfg.mainBucket;
     this.quarantineBucket = cfg.quarantineBucket;
     this.apiBaseUrl = cfg.apiBaseUrl.replace(/\/$/, '');
@@ -68,7 +99,7 @@ export class S3StorageBackend extends StorageBackend {
     sizeBytes: number,
     expirySeconds = 600,
   ): Promise<UploadTicket> {
-    const url = await this.client.presignedPutObject(bucket, key, expirySeconds);
+    const url = await this.presignClient.presignedPutObject(bucket, key, expirySeconds);
     return {
       url,
       method: 'PUT',

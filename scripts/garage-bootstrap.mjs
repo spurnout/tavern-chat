@@ -233,4 +233,23 @@ if (!anonOk) {
   );
 }
 
+// 6. Best-effort: apply CORS so cross-origin browser PUTs work. Required
+// whenever the web app and S3 endpoint are on different origins (always the
+// case in prod with a separate garage.* subdomain). Harmless to apply in dev
+// even when STORAGE_BACKEND=local — operators flipping to s3 mid-session
+// then don't have to remember a second command. Non-fatal on failure; the
+// operator can rerun `pnpm garage:cors` directly with more diagnostics.
+const corsResult = spawnSync(
+  process.execPath,
+  [path.join(__dirname, 'garage-cors.mjs')],
+  { encoding: 'utf-8' },
+);
+if (corsResult.status !== 0) {
+  console.warn('garage-bootstrap: WARN — CORS apply failed (non-fatal). Re-run `pnpm garage:cors` for details.');
+  if (corsResult.stdout) console.warn(corsResult.stdout.trim());
+  if (corsResult.stderr) console.warn(corsResult.stderr.trim());
+} else {
+  console.info(corsResult.stdout.trim());
+}
+
 console.info('garage-bootstrap: done.');

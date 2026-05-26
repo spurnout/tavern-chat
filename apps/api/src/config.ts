@@ -109,6 +109,27 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Optional public-facing endpoint, used ONLY when signing presigned URLs
+   * for the browser (currently: upload PUT). Falls back to S3_ENDPOINT when
+   * unset (single-endpoint setup, fine when the same hostname is reachable
+   * from both the api process and the user's browser).
+   *
+   * When the api/worker run in docker-compose and reach Garage via the
+   * internal `garage:3900` service hostname, that hostname is unreachable
+   * from the browser AND the page is HTTPS — Chrome blocks the PUT as mixed
+   * content. Rewriting the URL host after signing doesn't work either: AWS
+   * sig v4 signs the Host header, so the URL must be SIGNED against the host
+   * the browser will actually send. Setting this var to a public HTTPS
+   * hostname (e.g. https://garage.example.com proxied by Traefik to garage)
+   * makes browser uploads work without changing internal traffic.
+   */
+  S3_PUBLIC_ENDPOINT: optionalString,
+  /** SSL flag for `S3_PUBLIC_ENDPOINT`. Falls back to S3_USE_SSL. */
+  S3_PUBLIC_USE_SSL: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
 
   // LiveKit ------------------------------------------------------------------
   /** Optional. When blank, voice/video routes return 503. */

@@ -332,6 +332,8 @@ function createStorage(cfg: WorkerConfig): StorageBackend {
       mainBucket: cfg.S3_BUCKET,
       quarantineBucket: cfg.S3_QUARANTINE_BUCKET,
       apiBaseUrl: cfg.API_BASE_URL,
+      publicEndpoint: cfg.S3_PUBLIC_ENDPOINT,
+      publicUseSsl: cfg.S3_PUBLIC_USE_SSL,
     });
   }
   return new LocalStorageBackend({

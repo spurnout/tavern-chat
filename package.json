@@ -42,7 +42,8 @@
     "docker:build": "docker compose -f infra/docker/docker-compose.yml --profile apps build",
     "docker:down": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit down",
     "docker:logs": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit logs -f",
-    "garage:bootstrap": "node scripts/garage-bootstrap.mjs"
+    "garage:bootstrap": "node scripts/garage-bootstrap.mjs",
+    "garage:cors": "node scripts/garage-cors.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

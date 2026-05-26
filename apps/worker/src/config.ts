@@ -41,6 +41,24 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  /**
+   * Optional public-facing endpoint, used ONLY when signing presigned URLs
+   * for the browser. Falls back to S3_ENDPOINT when unset (single-endpoint
+   * setup). See packages/media/src/storage/s3.ts for the full rationale —
+   * tl;dr: the api/worker can reach the bucket on an internal Docker hostname
+   * but the browser can't, and AWS sig v4 signs the Host header so post-hoc
+   * URL rewriting fails signature checks.
+   *
+   * The worker never presigns for browser consumption today; this var is
+   * accepted here for symmetry with the api config (single .env), so the
+   * worker doesn't refuse to start when an operator sets it for the api.
+   */
+  S3_PUBLIC_ENDPOINT: optionalString,
+  /** SSL flag for `S3_PUBLIC_ENDPOINT`. Falls back to S3_USE_SSL. */
+  S3_PUBLIC_USE_SSL: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
 
   /**
    * Retention window for `AuditLogEntry` rows. Beyond this age, the
