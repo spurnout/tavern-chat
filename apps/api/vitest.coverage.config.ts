@@ -46,11 +46,11 @@ export default defineConfig({
       reporter: ['text-summary', 'json-summary', 'lcov'],
       reportsDirectory: './coverage',
       // Ratchet floor for MERGED unit+integration coverage. Climbs as route/
-      // service tests land (2026-05-29: 46.7→52.1→57.3→61.9→66.3→70.0→74.1% st via integration
+      // service tests land (2026-05-29: 46.7→52.1→57.3→61.9→66.3→70.0→74.1→76.4% st via integration
       // batches). May only go up. Requires Docker — without the integration
       // project this under-reports and fails, so it's the CI / Docker-up api
       // gate, not the no-Docker root gate.
-      thresholds: { statements: 73, branches: 80, functions: 78, lines: 73 },
+      thresholds: { statements: 75, branches: 81, functions: 79, lines: 75 },
     },
   },
 });
