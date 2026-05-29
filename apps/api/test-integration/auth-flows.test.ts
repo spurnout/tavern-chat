@@ -31,7 +31,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type PrismaClient } from '@prisma/client';
 import { ulid } from '@tavern/shared';
-import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
+import { isDockerAvailable, resetDb, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
 
 let ctx: IntegrationContext | null = null;
 let prisma: PrismaClient;
@@ -145,12 +145,11 @@ const tokensOf = (res: { json: () => unknown }): Tokens => (res.json() as OkBody
 describe.skipIf(!dockerOk)('auth flows — integration (real Postgres + app.inject)', () => {
   beforeEach(async () => {
     if (!dockerOk) return;
-    // Order matters for FK constraints: child rows before parents.
-    await prisma.passwordReset.deleteMany({});
-    await prisma.session.deleteMany({});
-    await prisma.serverMember.deleteMany({});
-    await prisma.invite.deleteMany({});
-    await prisma.user.deleteMany({});
+    // Full truncate (CASCADE) — order-independent. The integration suite shares
+    // one testcontainer (singleFork) with unstable file ordering, so a
+    // preceding file can leave rows that block targeted deletes (e.g. a Server
+    // whose ownerUserId restricts user.deleteMany → P2003).
+    await resetDb(prisma);
   });
 
   // --------------------------------------------------------------------------

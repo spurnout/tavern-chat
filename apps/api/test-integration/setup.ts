@@ -164,3 +164,25 @@ export async function isDockerAvailable(): Promise<boolean> {
   }
   return globalSlot.__tavern_integration_docker_probe__;
 }
+
+/**
+ * Truncate every application table (CASCADE) for a guaranteed clean slate,
+ * independent of cross-file execution order. The integration suite shares one
+ * Postgres testcontainer (singleFork) and Vitest's file order is NOT stable
+ * (it sorts by cached timings), so a preceding file can leave rows that block
+ * another file's targeted deletes — e.g. a leftover Server whose ownerUserId
+ * restricts `user.deleteMany`, throwing P2003. Calling resetDb() in a
+ * beforeEach sidesteps every such ordering hazard.
+ *
+ * Table names come from pg_tables (not user input), so the dynamic TRUNCATE is
+ * safe. _prisma_migrations is preserved so the pushed schema stays intact.
+ */
+export async function resetDb(prisma: PrismaClient): Promise<void> {
+  const tables = await prisma.$queryRaw<Array<{ tablename: string }>>`
+    SELECT tablename FROM pg_tables
+    WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'
+  `;
+  if (tables.length === 0) return;
+  const quoted = tables.map((t) => `"public"."${t.tablename}"`).join(', ');
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${quoted} RESTART IDENTITY CASCADE`);
+}
