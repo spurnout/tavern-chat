@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '@prisma/client';
 import {
   isDockerAvailable,
@@ -60,6 +60,18 @@ function envForB(dbUrl: string): NodeJS.ProcessEnv {
 }
 
 describe.skipIf(!dockerOk)('two-instance federation smoke test', () => {
+  beforeEach(async () => {
+    if (!dockerOk || !ctxA) return;
+    // The primary container (ctxA) is shared across the whole integration run.
+    // Other files (e.g. federation-peering) leave 'peered' remoteInstance rows
+    // for these hosts behind — they only clean in their own beforeEach, not
+    // after their last test. Reset A's peering tables (FK-safe order: envelope
+    // log references remoteInstance) so this file's pending_inbound assertion
+    // reads a fresh row rather than a stale 'peered' one.
+    await ctxA.prisma.federationEnvelopeLog.deleteMany({});
+    await ctxA.prisma.remoteInstance.deleteMany({});
+  });
+
   it('appA and appB have isolated databases via prismaOverride', async () => {
     // Build two isolated apps with their own prisma clients
     const appA = await buildApp({

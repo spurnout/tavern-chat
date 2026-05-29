@@ -920,7 +920,9 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.update)', 
     await seedFederatedMessage({ fx, messageId, content: 'before edit' });
 
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
-    const editedAt = new Date('2026-05-19T13:00:00.000Z').toISOString();
+    // Relative to now so it stays within the 5-min federation clock-skew
+    // window (MAX_CLOCK_SKEW_MS); a fixed date eventually ages out and 400s.
+    const editedAt = new Date(Date.now() - 60_000).toISOString();
     const envelope = buildMsgUpdateEnvelope({
       fx,
       messageId,
@@ -1142,7 +1144,9 @@ describe.skipIf(!dockerOk)('P3-8 — POST /_federation/event (message.delete)', 
       },
     });
 
-    const deletedAt = new Date('2026-05-19T14:00:00.000Z').toISOString();
+    // Relative to now — must be within MAX_CLOCK_SKEW_MS (5 min) or the
+    // inbound handler rejects it; a fixed date rots.
+    const deletedAt = new Date(Date.now() - 60_000).toISOString();
     const envelope = buildMsgDeleteEnvelope({ fx, messageId, deletedAt });
 
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
@@ -5343,7 +5347,9 @@ describe.skipIf(!dockerOk)('P5-8 — POST /_federation/event (dm.message.update)
     await seedFederatedDmMessage({ fx, messageId, content: 'before edit' });
 
     const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
-    const editedAt = new Date('2026-05-20T10:00:00.000Z').toISOString();
+    // Relative to now — within the 5-min federation clock-skew window; a
+    // fixed date eventually ages out and the handler 400s.
+    const editedAt = new Date(Date.now() - 60_000).toISOString();
     const envelope = buildDmMessageUpdateEnvelope({
       fx,
       dmChannelId: fx.dmChannelId,
@@ -5558,7 +5564,8 @@ describe.skipIf(!dockerOk)('P5-8 — POST /_federation/event (dm.message.delete)
       },
     });
 
-    const deletedAt = new Date('2026-05-20T11:00:00.000Z').toISOString();
+    // Relative to now — within MAX_CLOCK_SKEW_MS (5 min); a fixed date rots.
+    const deletedAt = new Date(Date.now() - 60_000).toISOString();
     const envelope = buildDmMessageDeleteEnvelope({
       fx,
       dmChannelId: fx.dmChannelId,
