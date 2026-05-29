@@ -254,14 +254,22 @@ export async function unbanMember(input: {
  * path. Expired bans are not considered active and are cleaned up inline so
  * the table stays bounded.
  */
-export async function isBanned(serverId: string, userId: string): Promise<boolean> {
-  const ban = await prisma.serverBan.findUnique({
+export async function isBanned(
+  serverId: string,
+  userId: string,
+  // Defaults to the module Prisma client. Pass a transaction client (`tx`)
+  // to re-check the ban inside an interactive transaction (e.g. the
+  // invite-consume path closes a TOCTOU window by re-checking against the
+  // same transactional view before writing the membership row).
+  client: Pick<typeof prisma, 'serverBan'> = prisma,
+): Promise<boolean> {
+  const ban = await client.serverBan.findUnique({
     where: { serverId_userId: { serverId, userId } },
   });
   if (!ban) return false;
   if (ban.expiresAt && ban.expiresAt <= new Date()) {
     // Best-effort cleanup; failures are non-fatal (next check will retry).
-    await prisma.serverBan
+    await client.serverBan
       .delete({ where: { serverId_userId: { serverId, userId } } })
       .catch(() => undefined);
     return false;

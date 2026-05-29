@@ -74,6 +74,20 @@ export const messageSchema = z.object({
   threadId: idSchema.nullable().optional(),
   /** True when this message is itself the root of a thread (Phase 3.1). */
   isThreadRoot: z.boolean().optional(),
+  /**
+   * Set on thread-root messages so the chat view can render a clickable
+   * thread footer (reply count + last activity) without a second round-trip.
+   * Null/absent on non-root messages and on a freshly-created root before
+   * any replies exist.
+   */
+  threadSummary: z
+    .object({
+      threadId: idSchema,
+      replyCount: z.number().int().nonnegative(),
+      lastActivityAt: z.string().datetime(),
+    })
+    .nullable()
+    .optional(),
   /** Wave 2 #2 — inline preview of the parent message when this is a reply. */
   replyTo: z
     .object({

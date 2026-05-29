@@ -18,6 +18,10 @@ import {
 import { ok } from '../lib/responses.js';
 import { serializeMessage, type MessageRow } from '../lib/serializers.js';
 import {
+  loadThreadSummariesForRootIds,
+  loadThreadSummaryForRootId,
+} from '../lib/thread-summary.js';
+import {
   getChannelPermissions,
   requireChannelPermission,
 } from '../services/permissions-service.js';
@@ -91,6 +95,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
 
     const where = {
       channelId,
+      threadId: null,
       deletedAt: null,
       ...(query.before ? { id: { lt: query.before } } : {}),
       ...(query.after ? { id: { gt: query.after } } : {}),
@@ -133,7 +138,21 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     });
 
     const ordered = useAscOrder ? [...messages].reverse() : messages;
-    reply.send(ok(ordered.map((m: MessageRow) => serializeMessage(m, ctx.userId))));
+    // Wave-thread: decorate root messages with their thread footer payload
+    // so the chat view can render the "N replies" badge without a per-row
+    // round-trip. Two queries flat, regardless of page size.
+    const rootIds = ordered.filter((m) => m.isThreadRoot).map((m) => m.id);
+    const summaries = await loadThreadSummariesForRootIds(rootIds);
+    reply.send(
+      ok(
+        ordered.map((m: MessageRow) =>
+          serializeMessage(
+            { ...m, threadSummary: m.isThreadRoot ? summaries.get(m.id) ?? null : null },
+            ctx.userId,
+          ),
+        ),
+      ),
+    );
   });
 
   // Create a message --------------------------------------------------------
@@ -232,8 +251,9 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
       }
     }
 
-    // Idempotency via nonce: if the same (channelId, nonce) was used recently,
-    // return the existing message.
+    // Idempotency via nonce: only replay the same author's main-room send.
+    // The DB key is channel-wide, so a thread reply with the same nonce must
+    // not be returned as a room message.
     if (body.nonce) {
       const existing = await prisma.message.findUnique({
         where: { channelId_nonce: { channelId, nonce: body.nonce } },
@@ -261,6 +281,13 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         },
       });
       if (existing) {
+        if (
+          existing.authorId !== ctx.userId ||
+          existing.threadId !== null ||
+          existing.deletedAt !== null
+        ) {
+          throw TavernError.validation('Nonce already used');
+        }
         reply.status(200).send(ok(serializeMessage(existing as MessageRow, ctx.userId)));
         return;
       }
@@ -682,7 +709,17 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
         },
       });
     });
-    const dto = serializeMessage(updated as MessageRow, ctx.userId);
+    // Preserve the thread footer on edit so the broadcast doesn't erase the
+    // badge — without this, MESSAGE_UPDATE would replace the cached root
+    // message with one missing `threadSummary`, and the chat view would drop
+    // the "N replies" affordance until a refetch.
+    const threadSummary = updated.isThreadRoot
+      ? await loadThreadSummaryForRootId(updated.id)
+      : null;
+    const dto = serializeMessage(
+      { ...(updated as MessageRow), threadSummary },
+      ctx.userId,
+    );
     if (message.dmChannelId) {
       gatewayBroker.publish({
         type: 'DM_MESSAGE_UPDATE',

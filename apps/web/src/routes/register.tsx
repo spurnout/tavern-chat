@@ -2,6 +2,19 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
 import { useAuth } from '../lib/auth.js';
+import {
+  clearPendingInvite,
+  normalizeInviteCode,
+  pendingInviteMatchesCode,
+  readPendingInvite,
+  shouldResumePendingInviteAfterRegistration,
+} from '../lib/pending-invite.js';
+
+function inviteCodeFromLocation(): string {
+  if (typeof window === 'undefined') return '';
+  const query = new URLSearchParams(window.location.search);
+  return normalizeInviteCode(query.get('inviteCode') ?? query.get('invite') ?? '');
+}
 
 export function RegisterPage(): JSX.Element {
   const register = useAuth((s) => s.register);
@@ -10,10 +23,21 @@ export function RegisterPage(): JSX.Element {
   const error = useAuth((s) => s.error);
   const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const navigate = useNavigate();
+  const [initialInviteCode, setInitialInviteCode] = useState(() => {
+    const queryCode = inviteCodeFromLocation();
+    return queryCode || readPendingInvite()?.code || '';
+  });
 
   useEffect(() => {
     if (status === 'idle') void refreshAuth();
   }, [status, refreshAuth]);
+
+  useEffect(() => {
+    const queryCode = inviteCodeFromLocation();
+    const pendingCode = readPendingInvite()?.code ?? '';
+    const next = queryCode || pendingCode;
+    if (next) setInitialInviteCode(next);
+  }, []);
 
   // Fresh instance: send to /bootstrap instead of asking for an invite that
   // doesn't exist yet.
@@ -28,8 +52,13 @@ export function RegisterPage(): JSX.Element {
     displayName: '',
     email: '',
     password: '',
-    inviteCode: '',
+    inviteCode: initialInviteCode,
   });
+
+  useEffect(() => {
+    if (!initialInviteCode) return;
+    setForm((f) => (f.inviteCode ? f : { ...f, inviteCode: initialInviteCode }));
+  }, [initialInviteCode]);
 
   function bind<K extends keyof typeof form>(key: K) {
     return {
@@ -41,8 +70,20 @@ export function RegisterPage(): JSX.Element {
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
+    const req = { ...form, inviteCode: normalizeInviteCode(form.inviteCode) };
     try {
-      await register(form);
+      await register(req);
+      const pending = readPendingInvite();
+      if (pending) {
+        clearPendingInvite();
+        if (
+          pendingInviteMatchesCode(pending, req.inviteCode) &&
+          shouldResumePendingInviteAfterRegistration(pending)
+        ) {
+          window.location.assign(pending.path);
+          return;
+        }
+      }
       await navigate({ to: '/app' });
     } catch {
       /* error surfaced via store */
@@ -63,7 +104,12 @@ export function RegisterPage(): JSX.Element {
 
           <label className="block text-sm">
             <span className="mb-1 inline-block text-fg-muted">Invite code</span>
-            <input className="input font-mono uppercase" required disabled={busy} {...bind('inviteCode')} />
+            <input
+              className="input font-mono uppercase"
+              required
+              disabled={busy}
+              {...bind('inviteCode')}
+            />
           </label>
 
           <label className="block text-sm">
@@ -94,9 +140,7 @@ export function RegisterPage(): JSX.Element {
             />
           </label>
 
-          {error && status === 'error' ? (
-            <p className="text-sm text-danger">{error}</p>
-          ) : null}
+          {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
 
           <button className="btn-primary w-full" type="submit" disabled={busy}>
             {busy ? 'Creating account…' : 'Create account'}

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { KeyRound, LogIn } from 'lucide-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { TavernLogo } from '../components/TavernLogo.js';
 import { useAuth } from '../lib/auth.js';
 import { api } from '../lib/api-client.js';
+import { clearPendingInvite, readPendingInvite } from '../lib/pending-invite.js';
 
 export function LoginPage(): JSX.Element {
   const login = useAuth((s) => s.login);
@@ -33,12 +34,21 @@ export function LoginPage(): JSX.Element {
     }
   }, [needsBootstrap, navigate]);
 
+  const continueAfterAuth = useCallback((): boolean => {
+    const pending = readPendingInvite();
+    if (!pending) return false;
+    clearPendingInvite();
+    window.location.assign(pending.path);
+    return true;
+  }, []);
+
   // Already signed in? Skip ahead.
   useEffect(() => {
     if (status === 'authenticated') {
+      if (continueAfterAuth()) return;
       void navigate({ to: '/app', replace: true });
     }
-  }, [status, navigate]);
+  }, [continueAfterAuth, status, navigate]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
@@ -48,6 +58,7 @@ export function LoginPage(): JSX.Element {
         setStagedToken(r.stagedToken);
         return;
       }
+      if (continueAfterAuth()) return;
       await navigate({ to: '/app' });
     } catch {
       /* error surfaced via store */
@@ -59,6 +70,7 @@ export function LoginPage(): JSX.Element {
     if (!stagedToken) return;
     try {
       await loginTotp(stagedToken, code.trim());
+      if (continueAfterAuth()) return;
       await navigate({ to: '/app' });
     } catch {
       /* error surfaced via store */
@@ -72,6 +84,7 @@ export function LoginPage(): JSX.Element {
       // If the user cancelled the platform prompt the store leaves us idle
       // without an error; only navigate when we actually got a session.
       if (useAuth.getState().status === 'authenticated') {
+        if (continueAfterAuth()) return;
         await navigate({ to: '/app' });
       }
     } catch {
@@ -118,62 +131,60 @@ export function LoginPage(): JSX.Element {
             </button>
           </form>
         ) : (
-        <form className="card space-y-4" onSubmit={onSubmit}>
-          <h1 className="font-serif text-xl font-medium">Welcome back</h1>
-          <label className="block text-sm">
-            <span className="mb-1 inline-block text-fg-muted">Username or email</span>
-            <input
-              className="input"
-              autoComplete="username"
-              value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
-              required
-              disabled={busy}
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 inline-block text-fg-muted">Password</span>
-            <input
-              className="input"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={busy}
-            />
-          </label>
-          {error && status === 'error' ? (
-            <p className="text-sm text-danger">{error}</p>
-          ) : null}
-          <button className="btn-primary w-full" type="submit" disabled={busy}>
-            {busy ? 'Signing in…' : 'Sign in'}
-          </button>
-          {webauthnSupported ? (
-            <button
-              type="button"
-              className="btn-ghost w-full"
-              onClick={() => void onPasskeySignIn()}
-              disabled={busy || !identifier.trim()}
-              title={!identifier.trim() ? 'Enter your username first' : 'Use a passkey'}
-            >
-              <KeyRound size={14} className="mr-1.5 inline-block" />
-              Sign in with passkey
+          <form className="card space-y-4" onSubmit={onSubmit}>
+            <h1 className="font-serif text-xl font-medium">Welcome back</h1>
+            <label className="block text-sm">
+              <span className="mb-1 inline-block text-fg-muted">Username or email</span>
+              <input
+                className="input"
+                autoComplete="username"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                required
+                disabled={busy}
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="mb-1 inline-block text-fg-muted">Password</span>
+              <input
+                className="input"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                disabled={busy}
+              />
+            </label>
+            {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
+            <button className="btn-primary w-full" type="submit" disabled={busy}>
+              {busy ? 'Signing in…' : 'Sign in'}
             </button>
-          ) : null}
-          <SsoSignInButton />
-          <p className="text-center text-sm">
-            <Link to="/forgot-password" className="text-mead hover:underline">
-              Forgot your password?
-            </Link>
-          </p>
-          <p className="text-center text-sm text-fg-muted">
-            Have an invite?{' '}
-            <Link to="/register" className="text-mead hover:underline">
-              Create an account
-            </Link>
-          </p>
-        </form>
+            {webauthnSupported ? (
+              <button
+                type="button"
+                className="btn-ghost w-full"
+                onClick={() => void onPasskeySignIn()}
+                disabled={busy || !identifier.trim()}
+                title={!identifier.trim() ? 'Enter your username first' : 'Use a passkey'}
+              >
+                <KeyRound size={14} className="mr-1.5 inline-block" />
+                Sign in with passkey
+              </button>
+            ) : null}
+            <SsoSignInButton />
+            <p className="text-center text-sm">
+              <Link to="/forgot-password" className="text-mead hover:underline">
+                Forgot your password?
+              </Link>
+            </p>
+            <p className="text-center text-sm text-fg-muted">
+              Have an invite?{' '}
+              <Link to="/register" className="text-mead hover:underline">
+                Create an account
+              </Link>
+            </p>
+          </form>
         )}
       </div>
     </div>
@@ -205,10 +216,7 @@ function SsoSignInButton(): JSX.Element | null {
   }, []);
   if (!enabled) return null;
   return (
-    <a
-      href="/api/auth/sso/start"
-      className="btn-ghost block w-full text-center"
-    >
+    <a href="/api/auth/sso/start" className="btn-ghost block w-full text-center">
       <LogIn size={14} className="mr-1.5 inline-block" />
       {label}
     </a>

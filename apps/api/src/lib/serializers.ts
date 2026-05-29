@@ -286,6 +286,18 @@ export interface MessageRow {
   /** Phase 3.1 — thread membership. */
   threadId?: string | null;
   isThreadRoot?: boolean;
+  /**
+   * Pre-computed thread footer payload for root messages. Callers are
+   * responsible for setting this when `isThreadRoot` is true (batch via
+   * `loadThreadSummariesForRootIds` in list endpoints, single fetch in edit
+   * paths). When omitted on a root, the wire field is null and the client
+   * still shows a "View thread" affordance based on `isThreadRoot` alone.
+   */
+  threadSummary?: {
+    threadId: string;
+    replyCount: number;
+    lastActivityAt: Date;
+  } | null;
   /** Wave 2 #5 — forwarded-from provenance. */
   forwardedFromMessageId?: string | null;
   forwardedFromChannelId?: string | null;
@@ -362,6 +374,13 @@ export function serializeMessage(row: MessageRow, viewerId: string): Message {
     pollId: row.poll?.id ?? null,
     threadId: row.threadId ?? null,
     isThreadRoot: row.isThreadRoot ?? false,
+    threadSummary: row.threadSummary
+      ? {
+          threadId: row.threadSummary.threadId,
+          replyCount: row.threadSummary.replyCount,
+          lastActivityAt: row.threadSummary.lastActivityAt.toISOString(),
+        }
+      : null,
     replyTo: row.replyTo
       ? {
           id: row.replyTo.id,

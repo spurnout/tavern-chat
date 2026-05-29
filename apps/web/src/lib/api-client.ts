@@ -25,8 +25,14 @@ class TokenStore {
 
   get accessExpiresAt(): number | null {
     if (typeof sessionStorage === 'undefined') return null;
-    const v = sessionStorage.getItem(TokenStore.ACCESS_EXP_KEY);
-    return v ? Number(v) : null;
+    try {
+      const v = sessionStorage.getItem(TokenStore.ACCESS_EXP_KEY);
+      if (!v) return null;
+      const parsed = Number(v);
+      return Number.isFinite(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
   }
 
   /** True iff we believe we have a valid live session (subject to server confirmation). */
@@ -38,17 +44,27 @@ class TokenStore {
   set(tokens: TokenPair): void {
     this.memoryAccessToken = tokens.accessToken;
     if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.setItem(
-        TokenStore.ACCESS_EXP_KEY,
-        String(new Date(tokens.accessTokenExpiresAt).getTime()),
-      );
+      try {
+        sessionStorage.setItem(
+          TokenStore.ACCESS_EXP_KEY,
+          String(new Date(tokens.accessTokenExpiresAt).getTime()),
+        );
+      } catch {
+        // The timestamp is only a non-secret refresh hint. If storage is
+        // unavailable, keep the in-memory token and let normal 401 refresh
+        // handling discover expiry.
+      }
     }
   }
 
   clear(): void {
     this.memoryAccessToken = null;
     if (typeof sessionStorage !== 'undefined') {
-      sessionStorage.removeItem(TokenStore.ACCESS_EXP_KEY);
+      try {
+        sessionStorage.removeItem(TokenStore.ACCESS_EXP_KEY);
+      } catch {
+        /* ignore unavailable storage */
+      }
     }
   }
 }

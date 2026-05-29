@@ -20,11 +20,12 @@ export class GatewayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1_000;
   private lastSeq = 0;
+  private currentSessionId: string | null = null;
   /**
    * The sessionId carried in the previous connection's HELLO. When the
    * socket drops and we reconnect, we send this back via RESUME so the
    * server can splice the buffered events from the orphaned session onto
-   * the new socket. Cleared on explicit close() and on INVALID_SESSION.
+   * the new socket. Cleared on explicit close().
    */
   private resumeSessionId: string | null = null;
   private status: 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed' = 'idle';
@@ -73,6 +74,7 @@ export class GatewayClient {
 
   close(): void {
     this.setStatus('closed');
+    this.currentSessionId = null;
     this.resumeSessionId = null;
     this.lastSeq = 0;
     if (this.reconnectTimer) {
@@ -134,6 +136,7 @@ export class GatewayClient {
       case GatewayOp.HELLO: {
         const d = payload.d as { sessionId: string; heartbeatIntervalMs: number };
         this.startHeartbeat(d.heartbeatIntervalMs);
+        this.currentSessionId = d.sessionId;
         // If we held onto a prior sessionId, ask the server to resume it.
         // Otherwise this is a fresh connection — IDENTIFY normally.
         if (this.resumeSessionId && this.lastSeq > 0) {
@@ -150,8 +153,10 @@ export class GatewayClient {
         return;
       case GatewayOp.INVALID_SESSION:
         // Server says the resume target is gone (e.g. BUFFER_GAP). Drop our
-        // resume hint and re-IDENTIFY from scratch.
-        this.resumeSessionId = null;
+        // previous resume hint and re-IDENTIFY from scratch on this socket,
+        // but keep the current HELLO sessionId so a later disconnect from
+        // the newly-identified socket can still use RESUME.
+        this.resumeSessionId = this.currentSessionId;
         this.lastSeq = 0;
         this.identify();
         return;

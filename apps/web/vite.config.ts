@@ -31,5 +31,19 @@ export default defineConfig({
     // unminified TS source (and internal API/token field names) to every
     // visitor. See docs/REVIEW/frontend.md FE-01.
     sourcemap: 'hidden',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('livekit-client')) return 'vendor-livekit';
+          if (id.includes('@radix-ui')) return 'vendor-radix';
+          if (id.includes('@tanstack')) return 'vendor-tanstack';
+          if (id.includes('highlight.js') || id.includes('lowlight')) return 'vendor-markdown';
+          if (id.includes('lucide-react')) return 'vendor-icons';
+          if (id.includes('react') || id.includes('react-dom')) return 'vendor-react';
+          return 'vendor';
+        },
+      },
+    },
   },
 });

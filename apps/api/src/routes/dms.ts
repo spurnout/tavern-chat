@@ -354,7 +354,7 @@ export async function registerDmRoutes(
         throw new TavernError('CONTENT_HELD', 'Your posting privileges are temporarily locked', 403);
       }
 
-      // Idempotency via nonce — same pattern as server messages.
+      // Idempotency via nonce — only replay the same author's live DM send.
       if (body.nonce) {
         const existing = await prisma.message.findUnique({
           where: { dmChannelId_nonce: { dmChannelId, nonce: body.nonce } },
@@ -366,6 +366,9 @@ export async function registerDmRoutes(
           },
         });
         if (existing) {
+          if (existing.authorId !== ctx.userId || existing.deletedAt !== null) {
+            throw TavernError.validation('Nonce already used');
+          }
           reply.status(200).send(ok(serializeMessage(existing as MessageRow, ctx.userId)));
           return;
         }

@@ -5,8 +5,65 @@ import sanitizeHtml from 'sanitize-html';
 import { idSchema, Permission, TavernError, ulid } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
 import { serializeMessage, type MessageRow } from '../lib/serializers.js';
+import { loadThreadSummaryForRootId } from '../lib/thread-summary.js';
 import { requireChannelPermission } from '../services/permissions-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
+
+/**
+ * Prisma include block used to hydrate a thread-root message for a broadcast.
+ * Mirrors the include shapes used in messages.ts so `serializeMessage` has
+ * everything it needs.
+ */
+const ROOT_MESSAGE_INCLUDE = {
+  attachments: { select: { id: true } },
+  reactions: { select: { emoji: true, userId: true } },
+  author: { select: { id: true, displayName: true, username: true } },
+  diceRoll: { select: { resultJson: true, label: true } },
+  poll: { select: { id: true } },
+  replyTo: {
+    select: {
+      id: true,
+      content: true,
+      deletedAt: true,
+      author: { select: { displayName: true } },
+    },
+  },
+  forwardedFrom: {
+    select: {
+      id: true,
+      channelId: true,
+      author: { select: { displayName: true } },
+    },
+  },
+} as const;
+
+/**
+ * Re-broadcast a thread-root message with its current threadSummary so chat
+ * clients refresh the "N replies" badge live. Best-effort: a failure here
+ * never fails the originating HTTP request — the local row and thread are
+ * already committed.
+ */
+async function broadcastRootMessageUpdate(
+  rootMessageId: string,
+  viewerId: string,
+): Promise<void> {
+  const row = await prisma.message.findUnique({
+    where: { id: rootMessageId },
+    include: ROOT_MESSAGE_INCLUDE,
+  });
+  if (!row || row.deletedAt) return;
+  const threadSummary = await loadThreadSummaryForRootId(rootMessageId);
+  const dto = serializeMessage(
+    { ...(row as MessageRow), threadSummary },
+    viewerId,
+  );
+  gatewayBroker.publish({
+    type: 'MESSAGE_UPDATE',
+    serverId: row.serverId ?? undefined,
+    channelId: row.channelId ?? undefined,
+    data: dto,
+  });
+}
 
 const createBodySchema = z.object({
   title: z.string().min(1).max(120).optional(),
@@ -109,7 +166,10 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
           id: threadId,
           channelId,
           rootMessageId: messageId,
-          title: body.title ?? null,
+          // Strip any HTML from the title for parity with message content
+          // (defense-in-depth: titles are rendered as text today, but may be
+          // surfaced elsewhere or shipped over federation).
+          title: body.title ? sanitizeContent(body.title) : null,
           createdBy: ctx.userId,
         },
       });
@@ -124,6 +184,16 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
       type: 'THREAD_CREATE',
       channelId,
       data: serializeThread(thread),
+    });
+    // Refresh the root message in every connected client's cache so the
+    // chat view picks up `isThreadRoot=true` and renders the "N replies"
+    // footer immediately, without needing a channel refetch.
+    await broadcastRootMessageUpdate(messageId, ctx.userId).catch((err: unknown) => {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      app.log.warn(
+        { err: errObj, rootMessageId: messageId, channelId },
+        'thread-root broadcast failed after thread create (thread already committed)',
+      );
     });
     reply.status(201).send(ok(serializeThread(thread)));
   });
@@ -148,7 +218,7 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
     const updated = await prisma.thread.update({
       where: { id },
       data: {
-        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.title !== undefined ? { title: sanitizeContent(body.title) } : {}),
         ...(body.archived === true ? { archivedAt: new Date() } : {}),
         ...(body.archived === false ? { archivedAt: null } : {}),
       },
@@ -226,6 +296,13 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
         },
       });
       if (existing) {
+        if (
+          existing.authorId !== ctx.userId ||
+          existing.threadId !== id ||
+          existing.deletedAt !== null
+        ) {
+          throw TavernError.validation('Nonce already used');
+        }
         reply.status(200).send(ok(serializeMessage(existing as MessageRow, ctx.userId)));
         return;
       }
@@ -270,6 +347,15 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
       serverId: result.serverId,
       channelId: thread.channelId,
       data: dto,
+    });
+    // Bump the root message broadcast so the chat view's thread footer
+    // re-renders with the new reply count and lastActivityAt.
+    await broadcastRootMessageUpdate(thread.rootMessageId, ctx.userId).catch((err: unknown) => {
+      const errObj = err instanceof Error ? err : new Error(String(err));
+      app.log.warn(
+        { err: errObj, rootMessageId: thread.rootMessageId, channelId: thread.channelId },
+        'thread-root broadcast failed after thread reply (reply already committed)',
+      );
     });
     reply.status(201).send(ok(dto));
   });

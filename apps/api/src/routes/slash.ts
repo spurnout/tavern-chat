@@ -90,13 +90,20 @@ export async function registerSlashRoutes(app: FastifyInstance): Promise<void> {
       need === 0n ? Permission.SEND_MESSAGES : need,
     );
 
-    // Idempotency by nonce, same shape as message create.
+    // Idempotency by nonce: replay only this author's main-room slash output.
     if (body.nonce) {
       const existing = await prisma.message.findUnique({
         where: { channelId_nonce: { channelId, nonce: body.nonce } },
-        select: { id: true },
+        select: { id: true, authorId: true, threadId: true, deletedAt: true },
       });
       if (existing) {
+        if (
+          existing.authorId !== ctx.userId ||
+          existing.threadId !== null ||
+          existing.deletedAt !== null
+        ) {
+          throw TavernError.validation('Nonce already used');
+        }
         reply
           .status(200)
           .send(ok({ kind: 'message', messageId: existing.id } satisfies SlashExecuteResponse));

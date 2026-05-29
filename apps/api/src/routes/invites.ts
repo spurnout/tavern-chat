@@ -17,6 +17,7 @@ import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import { fanOutMemberAdd } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
+import { isBanned } from '../services/ban-service.js';
 
 // Federation Phase 4 — remote-user identity is `localpart@host`. The regex is
 // intentionally duplicated from packages/shared/src/federation/{messages,
@@ -253,7 +254,10 @@ export async function registerInviteRoutes(
     const { id } = z.object({ id: idSchema }).parse(req.params);
     const invite = await prisma.invite.findUnique({ where: { id } });
     if (!invite) throw TavernError.notFound();
-    if (invite.serverId) {
+    if (invite.createdById === ctx.userId) {
+      // Invite creators can revoke their own links. MANAGE_SERVER / instance
+      // admin remains the override for links created by someone else.
+    } else if (invite.serverId) {
       await requireServerPermission(invite.serverId, ctx.userId, Permission.MANAGE_SERVER);
     } else {
       const me = await prisma.user.findUnique({
@@ -279,13 +283,20 @@ export async function registerInviteRoutes(
   // Use an invite to join a server.
   app.post('/api/invites/:code/join', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
-    const { code } = z.object({ code: z.string().min(4).max(64) }).parse(req.params);
+    const { code: rawCode } = z.object({ code: z.string().min(4).max(64) }).parse(req.params);
+    const code = rawCode.trim().toUpperCase();
     const invite = await prisma.invite.findUnique({ where: { code } });
     if (!invite || invite.revokedAt || (invite.expiresAt && invite.expiresAt < new Date())) {
       throw new TavernError('INVALID_INVITE', 'Invite is invalid or expired', 400);
     }
-    if (invite.maxUses !== null && invite.uses >= invite.maxUses) {
-      throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
+    // Instance-scoped invites are registration tickets — they don't redeem to
+    // a server. An authenticated user landing here already belongs to the
+    // instance, so we ack the call as a no-op with `serverId: null` instead of
+    // 400ing. The client uses null to mean "you're already in, go home." No
+    // `uses` increment, no audit, no MEMBER_ADD: nothing was consumed.
+    if (invite.scope === 'instance') {
+      reply.send(ok({ serverId: null }));
+      return;
     }
     if (invite.scope !== 'server' || !invite.serverId) {
       throw TavernError.validation('Invite is not server-scoped');
@@ -294,7 +305,17 @@ export async function registerInviteRoutes(
     const existing = await prisma.serverMember.findUnique({
       where: { serverId_userId: { serverId: invite.serverId, userId: ctx.userId } },
     });
-    if (!existing) {
+    if (existing) {
+      reply.send(ok({ serverId: invite.serverId }));
+      return;
+    }
+    if (invite.maxUses !== null && invite.uses >= invite.maxUses) {
+      throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
+    }
+    if (await isBanned(invite.serverId, ctx.userId)) {
+      throw new TavernError('MEMBER_BANNED', 'You are banned from this server', 403);
+    }
+    {
       // RACE: atomic check-and-increment for maxUses. The plain check above
       // is a UX-friendly fast-fail; under N concurrent redeems on
       // `maxUses=1` it can let all N pass. Inside the transaction we
@@ -302,19 +323,26 @@ export async function registerInviteRoutes(
       // only the first writer wins. Mirrors the registration flow in
       // auth-service which already uses this pattern.
       const newMember = await prisma.$transaction(async (tx) => {
-        if (invite.maxUses !== null) {
-          const consumed = await tx.invite.updateMany({
-            where: { id: invite.id, uses: { lt: invite.maxUses } },
-            data: { uses: { increment: 1 } },
-          });
-          if (consumed.count === 0) {
-            throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
-          }
-        } else {
-          await tx.invite.update({
-            where: { id: invite.id },
-            data: { uses: { increment: 1 } },
-          });
+        // TOCTOU: the pre-transaction ban check above is a UX fast-fail. A
+        // moderator could ban this user in the window between that check and
+        // the membership write — and the ban table is the only gate (there's
+        // no DB constraint stopping a banned user from being a member). Re-
+        // check against the transactional view before creating the row.
+        if (await isBanned(invite.serverId!, ctx.userId, tx)) {
+          throw new TavernError('MEMBER_BANNED', 'You are banned from this server', 403);
+        }
+        const consumed = await tx.invite.updateMany({
+          where: {
+            id: invite.id,
+            revokedAt: null,
+            scope: 'server',
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+            ...(invite.maxUses !== null ? { uses: { lt: invite.maxUses } } : {}),
+          },
+          data: { uses: { increment: 1 } },
+        });
+        if (consumed.count === 0) {
+          throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
         }
         return tx.serverMember.create({
           data: { serverId: invite.serverId!, userId: ctx.userId },
@@ -342,11 +370,7 @@ export async function registerInviteRoutes(
               originInstanceId: true,
             },
           });
-          if (
-            serverRow &&
-            serverRow.federationEnabled &&
-            serverRow.originInstanceId === null
-          ) {
+          if (serverRow && serverRow.federationEnabled && serverRow.originInstanceId === null) {
             const joiner = await prisma.user.findUnique({
               where: { id: ctx.userId },
               select: { username: true, displayName: true },

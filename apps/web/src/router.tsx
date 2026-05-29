@@ -200,12 +200,13 @@ const adminFederationRoute = createRoute({
   ),
 });
 
-// P4-16 — invite redemption surface. Hosted under the AuthGate so the user
-// is guaranteed to be logged in (federated previews need a session). The
-// `?host=…` query param flips the handler into the federated preview-modal
-// flow; without it, the legacy local-join flow runs.
+// P4-16 — invite redemption surface. Kept outside the AuthGate so fresh
+// invitees can land on /invites/:code, create an account, and return here to
+// redeem. The component itself boots auth before deciding whether to register
+// or join. The `?host=…` query param flips the handler into the federated
+// preview-modal flow; without it, the local join flow runs.
 const inviteRoute = createRoute({
-  getParentRoute: () => appLayoutRoute,
+  getParentRoute: () => rootRoute,
   path: '/invites/$code',
   component: InvitePage,
 });
@@ -217,6 +218,7 @@ const routeTree = rootRoute.addChildren([
   registerRoute,
   forgotPasswordRoute,
   resetPasswordRoute,
+  inviteRoute,
   appLayoutRoute.addChildren([
     appHomeRoute,
     serverHomeRoute,
@@ -231,7 +233,6 @@ const routeTree = rootRoute.addChildren([
     dmThreadRoute,
     accountSettingsRoute,
     adminFederationRoute,
-    inviteRoute,
   ]),
 ]);
 

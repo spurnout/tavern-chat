@@ -14,7 +14,12 @@ export const passwordSchema = z
 
 export const emailSchema = z.string().email().max(254);
 
-export const inviteCodeSchema = z.string().min(4).max(64);
+export const inviteCodeSchema = z
+  .string()
+  .trim()
+  .min(4)
+  .max(64)
+  .transform((code) => code.toUpperCase());
 
 export const registerRequestSchema = z.object({
   username: usernameSchema,

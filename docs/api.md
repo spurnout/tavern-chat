@@ -52,7 +52,7 @@ JWT claims: HS256-signed, `iss=tavern`, `aud=tavern-api` (access) or
 |--------|------|------------|-------|
 | GET    | `/auth/bootstrap-status` | 30/min | True only while `User.count = 0`. Unauthenticated. |
 | POST   | `/auth/bootstrap` | 5 / 5 min | First-run admin creation. 409 once any user exists. |
-| POST   | `/auth/register` | 10/min | Invite-only. Atomic invite consume (SEC-002); server-scoped invites refused (SEC-018). Sets `tv_refresh` cookie. |
+| POST   | `/auth/register` | 10/min | Invite-only. Atomic invite consume (SEC-002). Instance invites create an account; server invites create an account and server membership. Sets `tv_refresh` cookie. |
 | POST   | `/auth/login` | 10/min | Username or email + password. Failed-attempt counter (SEC-006) locks for 15 min after 10. Sets `tv_refresh` cookie. |
 | POST   | `/auth/refresh` | 20/min | Reads `tv_refresh` cookie (or body `refreshToken` for deprecation runway). Rotates: replay of the old token revokes the session. Sets a fresh cookie. |
 | POST   | `/auth/logout` | n/a (authenticated) | Revokes the calling session; clears the cookie. |
@@ -148,6 +148,13 @@ future; `null` = permanent.
 | POST   | `/invites` | `CREATE_INVITES` (server-scoped) or instance admin (instance-scoped) |
 | DELETE | `/invites/:id` | invite creator or `MANAGE_SERVER` |
 | POST   | `/invites/:code/join` | authenticated; refuses if user is banned from the target server |
+
+`POST /invites/:code/join` returns `{ serverId: string \| null }`. For a
+server-scoped invite, `serverId` is the joined server. For an
+instance-scoped invite — which is a registration ticket, not a join target —
+an already-authenticated caller gets `{ serverId: null }` as a no-op
+acknowledgement (no `uses` increment, no audit, no membership change). Clients
+should treat `null` as "you're already on this instance, go home."
 
 ## Uploads & attachments
 

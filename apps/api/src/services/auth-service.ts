@@ -120,6 +120,7 @@ export class AuthService {
   async register(req: RegisterRequest, ctx: SessionContext): Promise<TokenPair> {
     const usernameLower = req.username.toLowerCase();
     const emailLower = req.email.toLowerCase();
+    const inviteCode = req.inviteCode.trim().toUpperCase();
 
     if (usernameLower.length < NAME_LIMITS.MIN_USERNAME) {
       throw TavernError.validation('Username too short');
@@ -130,8 +131,16 @@ export class AuthService {
     // inside the transaction below; that is what prevents the race where two
     // registrations consume a maxUses:1 invite concurrently (SEC-002).
     const inviteLookup = await prisma.invite.findUnique({
-      where: { code: req.inviteCode },
-      select: { id: true, scope: true, revokedAt: true, expiresAt: true, uses: true, maxUses: true },
+      where: { code: inviteCode },
+      select: {
+        id: true,
+        scope: true,
+        serverId: true,
+        revokedAt: true,
+        expiresAt: true,
+        uses: true,
+        maxUses: true,
+      },
     });
     if (!inviteLookup || inviteLookup.revokedAt) {
       throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite is invalid or expired', 400);
@@ -142,15 +151,8 @@ export class AuthService {
     if (inviteLookup.maxUses !== null && inviteLookup.uses >= inviteLookup.maxUses) {
       throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite has been fully used', 400);
     }
-    // Server-scoped invites are for adding existing users to a server; they
-    // are not registration tickets. Only instance-scoped invites may be used
-    // to create an account (SEC-018).
-    if (inviteLookup.scope !== 'instance') {
-      throw new TavernError(
-        ErrorCodes.INVALID_INVITE,
-        'This invite cannot be used for registration',
-        400,
-      );
+    if (inviteLookup.scope === 'server' && !inviteLookup.serverId) {
+      throw new TavernError(ErrorCodes.INVALID_INVITE, 'Invite is invalid or expired', 400);
     }
 
     const existing = await prisma.user.findFirst({
@@ -177,14 +179,12 @@ export class AuthService {
         where: {
           id: inviteLookup.id,
           revokedAt: null,
-          scope: 'instance',
+          scope: inviteLookup.scope,
           OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
           // maxUses is immutable for the lifetime of an invite, so reading
           // it into a literal here doesn't introduce a TOCTOU window. If
           // maxUses is null the invite has unlimited uses.
-          ...(inviteLookup.maxUses !== null
-            ? { uses: { lt: inviteLookup.maxUses } }
-            : {}),
+          ...(inviteLookup.maxUses !== null ? { uses: { lt: inviteLookup.maxUses } } : {}),
         },
         data: { uses: { increment: 1 } },
       });
@@ -202,6 +202,11 @@ export class AuthService {
           passwordHash,
         },
       });
+      if (inviteLookup.scope === 'server') {
+        await tx.serverMember.create({
+          data: { serverId: inviteLookup.serverId!, userId: u.id },
+        });
+      }
       return u;
     });
 
@@ -235,10 +240,7 @@ export class AuthService {
    * admin can hand out. Atomic: only succeeds while User.count = 0; a
    * second concurrent call gets CONFLICT.
    */
-  async bootstrap(
-    req: BootstrapRequest,
-    sessionCtx: SessionContext,
-  ): Promise<TokenPair> {
+  async bootstrap(req: BootstrapRequest, sessionCtx: SessionContext): Promise<TokenPair> {
     const usernameLower = req.username.toLowerCase();
     const emailLower = req.email.toLowerCase();
 
@@ -261,93 +263,93 @@ export class AuthService {
     // check + the `user.create()` atomically observable as a single unit.
     await prisma.$transaction(
       async (tx) => {
-      const count = await tx.user.count();
-      if (count > 0) {
-        throw new TavernError(
-          ErrorCodes.CONFLICT,
-          'This instance has already been initialised',
-          409,
-        );
-      }
+        const count = await tx.user.count();
+        if (count > 0) {
+          throw new TavernError(
+            ErrorCodes.CONFLICT,
+            'This instance has already been initialised',
+            409,
+          );
+        }
 
-      await tx.user.create({
-        data: {
-          id: userId,
-          username: req.username,
-          usernameLower,
-          displayName: req.displayName,
-          email: req.email,
-          emailLower,
-          passwordHash,
-          isInstanceAdmin: true,
-        },
-      });
+        await tx.user.create({
+          data: {
+            id: userId,
+            username: req.username,
+            usernameLower,
+            displayName: req.displayName,
+            email: req.email,
+            emailLower,
+            passwordHash,
+            isInstanceAdmin: true,
+          },
+        });
 
-      await tx.server.create({
-        data: {
-          id: serverId,
-          ownerUserId: userId,
-          name: serverName,
-          description: 'Pull up a chair, friend.',
-        },
-      });
-      await tx.role.create({
-        data: {
-          id: everyoneRoleId,
-          serverId,
-          name: '@everyone',
-          color: 0,
-          position: 0,
-          isEveryone: true,
-          permissions: new Prisma.Decimal(serializePermissions(PERMISSION_DEFAULT_EVERYONE)),
-        },
-      });
-      await tx.server.update({
-        where: { id: serverId },
-        data: { defaultRoleId: everyoneRoleId },
-      });
-      await tx.serverMember.create({ data: { serverId, userId } });
-      await tx.channel.create({
-        data: {
-          id: lobbyChannelId,
-          serverId,
-          type: 'text',
-          name: 'lobby',
-          topic: 'Welcome to the Tavern.',
-          position: 0,
-        },
-      });
-      await tx.channel.create({
-        data: {
-          id: voiceChannelId,
-          serverId,
-          type: 'voice',
-          name: 'Voice Hall',
-          position: 1,
-        },
-      });
-      await tx.safetyPolicy.create({ data: { serverId } });
+        await tx.server.create({
+          data: {
+            id: serverId,
+            ownerUserId: userId,
+            name: serverName,
+            description: 'Pull up a chair, friend.',
+          },
+        });
+        await tx.role.create({
+          data: {
+            id: everyoneRoleId,
+            serverId,
+            name: '@everyone',
+            color: 0,
+            position: 0,
+            isEveryone: true,
+            permissions: new Prisma.Decimal(serializePermissions(PERMISSION_DEFAULT_EVERYONE)),
+          },
+        });
+        await tx.server.update({
+          where: { id: serverId },
+          data: { defaultRoleId: everyoneRoleId },
+        });
+        await tx.serverMember.create({ data: { serverId, userId } });
+        await tx.channel.create({
+          data: {
+            id: lobbyChannelId,
+            serverId,
+            type: 'text',
+            name: 'lobby',
+            topic: 'Welcome to the Tavern.',
+            position: 0,
+          },
+        });
+        await tx.channel.create({
+          data: {
+            id: voiceChannelId,
+            serverId,
+            type: 'voice',
+            name: 'Voice Hall',
+            position: 1,
+          },
+        });
+        await tx.safetyPolicy.create({ data: { serverId } });
 
-      await tx.invite.create({
-        data: {
-          id: inviteId,
-          code: inviteCode,
-          scope: 'instance',
-          createdById: userId,
-        },
-      });
+        await tx.invite.create({
+          data: {
+            id: inviteId,
+            code: inviteCode,
+            scope: 'instance',
+            createdById: userId,
+          },
+        });
 
-      await tx.message.create({
-        data: {
-          id: ulid(),
-          serverId,
-          channelId: lobbyChannelId,
-          authorId: userId,
-          type: 'system',
-          content: `Welcome to ${serverName}.`,
-        },
-      });
-    },
+        await tx.message.create({
+          data: {
+            id: ulid(),
+            serverId,
+            channelId: lobbyChannelId,
+            authorId: userId,
+            type: 'system',
+            content: `Welcome to ${serverName}.`,
+          },
+        });
+      },
       { isolationLevel: 'Serializable' },
     );
 
@@ -380,11 +382,7 @@ export class AuthService {
     if (user.loginLockedUntil && user.loginLockedUntil > new Date()) {
       // Account locked from previous failures — reject without even checking
       // the password so distributed attackers can't keep probing.
-      throw new TavernError(
-        ErrorCodes.INVALID_CREDENTIALS,
-        'Invalid credentials',
-        401,
-      );
+      throw new TavernError(ErrorCodes.INVALID_CREDENTIALS, 'Invalid credentials', 401);
     }
 
     if (!user.passwordHash) {
@@ -500,9 +498,7 @@ export class AuthService {
     // Fall through to backup-code path. Atomic consumption: we recompute the
     // remaining list ourselves but write it conditional on the array still
     // matching what we read, which makes the read-modify-write idempotent.
-    const backup = Array.isArray(user.totpBackupCodes)
-      ? (user.totpBackupCodes as string[])
-      : [];
+    const backup = Array.isArray(user.totpBackupCodes) ? (user.totpBackupCodes as string[]) : [];
     const provided = hashBackupCode(trimmed);
     const idx = backup.indexOf(provided);
     if (idx >= 0) {
@@ -678,9 +674,7 @@ export class AuthService {
     // Fire-and-forget: mail dispatch must not block the HTTP response (it
     // would otherwise become a side-channel for "this address exists"
     // based on timing).
-    void this.deps.mail
-      .send({ to: user.email, subject, text, html })
-      .catch(() => undefined);
+    void this.deps.mail.send({ to: user.email, subject, text, html }).catch(() => undefined);
   }
 
   /**
@@ -717,7 +711,11 @@ export class AuthService {
     }
     // Remote users have no local password — they cannot reset via this path.
     if (!user.passwordHash) {
-      throw new TavernError(ErrorCodes.INVALID_RESET_TOKEN, 'Reset link is invalid or has expired', 400);
+      throw new TavernError(
+        ErrorCodes.INVALID_RESET_TOKEN,
+        'Reset link is invalid or has expired',
+        400,
+      );
     }
     // Refuse no-op resets so the user gets an explicit signal rather than
     // a misleading success when they reuse their old password.

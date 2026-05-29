@@ -88,6 +88,8 @@ interface RealtimeState {
   serversById: Record<string, Server>;
   channelsByServer: Record<string, Channel[]>;
   messagesByChannel: Record<string, Message[]>;
+  /** threadId -> messages array, kept sorted by id like messagesByChannel. */
+  messagesByThread: Record<string, Message[]>;
   /** channelId -> map of userId -> last typing timestamp (ms) */
   typingByChannel: Record<string, Record<string, number>>;
   /**
@@ -195,6 +197,9 @@ interface RealtimeState {
   setMessages: (channelId: string, messages: Message[]) => void;
   upsertMessage: (message: Message) => void;
   removeMessage: (channelId: string, id: string) => void;
+  setThreadMessages: (threadId: string, messages: Message[]) => void;
+  upsertThreadMessage: (message: Message) => void;
+  removeThreadMessage: (id: string) => void;
   noteTyping: (channelId: string, userId: string, ts: number) => void;
   expireTyping: (channelId: string, before: number) => void;
   applyVoiceState: (state: VoiceStateGatewayPayload) => void;
@@ -270,6 +275,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
   serversById: {},
   channelsByServer: {},
   messagesByChannel: {},
+  messagesByThread: {},
   typingByChannel: {},
   voiceStatesByChannel: {},
   currentVoice: null,
@@ -404,6 +410,19 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
         };
         break;
       }
+      for (const [threadId, list] of Object.entries(s.messagesByThread)) {
+        const idx = list.findIndex((m) => m.id === messageId);
+        if (idx < 0) continue;
+        const current = list[idx];
+        if (!current) continue;
+        const next = [...list];
+        next[idx] = patch(current);
+        updates.messagesByThread = {
+          ...(updates.messagesByThread ?? s.messagesByThread),
+          [threadId]: next,
+        };
+        break;
+      }
       for (const [dmChannelId, list] of Object.entries(s.messagesByDmChannel)) {
         const idx = list.findIndex((m) => m.id === messageId);
         if (idx < 0) continue;
@@ -488,16 +507,19 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     set((s) => ({
       messagesByChannel: {
         ...s.messagesByChannel,
-        [channelId]: [...messages].sort((a, b) => a.id.localeCompare(b.id)),
+        [channelId]: messages
+          .filter((m) => !m.threadId)
+          .sort((a, b) => a.id.localeCompare(b.id)),
       },
     })),
 
   upsertMessage: (message) =>
     set((s) => {
       // upsertMessage handles server-channel messages only; DM messages
-      // come through upsertDmMessage. Skip null-channelId rows defensively.
+      // come through upsertDmMessage and thread replies come through
+      // upsertThreadMessage. Skip null-channelId rows defensively.
       const key = message.channelId;
-      if (!key) return s;
+      if (!key || message.threadId) return s;
       const list = s.messagesByChannel[key] ?? [];
       const idx = list.findIndex((m) => m.id === message.id);
       let next: Message[];
@@ -521,6 +543,44 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
           [channelId]: list.filter((m) => m.id !== id),
         },
       };
+    }),
+
+  setThreadMessages: (threadId, messages) =>
+    set((s) => ({
+      messagesByThread: {
+        ...s.messagesByThread,
+        [threadId]: [...messages].sort((a, b) => a.id.localeCompare(b.id)),
+      },
+    })),
+
+  upsertThreadMessage: (message) =>
+    set((s) => {
+      const key = message.threadId;
+      if (!key) return s;
+      const list = s.messagesByThread[key] ?? [];
+      const idx = list.findIndex((m) => m.id === message.id);
+      let next: Message[];
+      if (idx >= 0) {
+        next = [...list];
+        next[idx] = message;
+      } else {
+        next = [...list, message].sort((a, b) => a.id.localeCompare(b.id));
+      }
+      return {
+        messagesByThread: { ...s.messagesByThread, [key]: next },
+      };
+    }),
+
+  removeThreadMessage: (id) =>
+    set((s) => {
+      let changed = false;
+      const next: Record<string, Message[]> = {};
+      for (const [threadId, list] of Object.entries(s.messagesByThread)) {
+        const filtered = list.filter((m) => m.id !== id);
+        next[threadId] = filtered;
+        if (filtered.length !== list.length) changed = true;
+      }
+      return changed ? { messagesByThread: next } : s;
     }),
 
   setProfile: (userId, profile) =>

@@ -124,16 +124,28 @@ function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
     }
     case 'MESSAGE_CREATE': {
       const msg = data as Message;
+      if (msg.threadId) {
+        store.upsertThreadMessage(msg);
+        maybePlayMessageSound(msg);
+        return;
+      }
       store.upsertMessage(msg);
       maybePlayMessageSound(msg);
       return;
     }
-    case 'MESSAGE_UPDATE':
-      store.upsertMessage(data as Message);
+    case 'MESSAGE_UPDATE': {
+      const msg = data as Message;
+      if (msg.threadId) {
+        store.upsertThreadMessage(msg);
+      } else {
+        store.upsertMessage(msg);
+      }
       return;
+    }
     case 'MESSAGE_DELETE': {
       const d = data as { id: string; channelId: string };
       store.removeMessage(d.channelId, d.id);
+      store.removeThreadMessage(d.id);
       return;
     }
     case 'REACTION_ADD':

@@ -5,6 +5,7 @@ import { toast } from '../lib/toast.js';
 import { useAuth } from '../lib/auth.js';
 import { useRealtime } from '../lib/store.js';
 import { FederatedInvitePreviewModal } from '../components/FederatedInvitePreviewModal.js';
+import { normalizeInviteCode, savePendingInvite } from '../lib/pending-invite.js';
 
 /**
  * Federation Phase 4 / P4-16 — invite URL handler.
@@ -20,17 +21,18 @@ import { FederatedInvitePreviewModal } from '../components/FederatedInvitePrevie
  * peer's den."
  *
  * Auth: this route lives outside the AppShell so it can render either before
- * the user is logged in (in which case we redirect to /login, preserving the
- * invite for after sign-in) or once authenticated. The simplest path right
- * now is to require auth — federated invites only make sense for logged-in
- * users on a particular instance.
+ * the user is logged in (in which case we send them to registration with the
+ * invite preserved for after account creation) or once authenticated.
  */
 export function InvitePage(): JSX.Element {
-  const { code } = useParams({ strict: false }) as { code?: string };
+  const params = useParams({ strict: false }) as { code?: string };
+  const code = params.code ? normalizeInviteCode(params.code) : undefined;
   // useSearch's strict-mode-off form returns the query object; TanStack Router
   // doesn't type-narrow the param shape without a route schema, so we cast.
   const search = useSearch({ strict: false }) as { host?: string };
   const me = useAuth((s) => s.me);
+  const authStatus = useAuth((s) => s.status);
+  const bootstrapAuth = useAuth((s) => s.bootstrap);
   const upsertServer = useRealtime((s) => s.upsertServer);
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +41,18 @@ export function InvitePage(): JSX.Element {
 
   const host = typeof search.host === 'string' && search.host.length > 0 ? search.host : null;
 
+  useEffect(() => {
+    if (authStatus === 'idle') void bootstrapAuth();
+  }, [authStatus, bootstrapAuth]);
+
+  useEffect(() => {
+    if (!code) return;
+    if (authStatus === 'unauthenticated' || authStatus === 'error') {
+      savePendingInvite(code, host);
+      void navigate({ to: '/register', replace: true });
+    }
+  }, [authStatus, code, host, navigate]);
+
   // Local-invite path: redeem immediately on mount. We don't wait for user
   // confirmation here — the original /invites/:code shape predates federation
   // and assumed a single-click join. Preserving that UX for non-federated
@@ -46,18 +60,26 @@ export function InvitePage(): JSX.Element {
   // step for local invites too if the host server has a join-gate.)
   useEffect(() => {
     if (!code || host) return; // federated path handled by modal
-    if (!me) {
-      void navigate({ to: '/login' });
+    if (!me || authStatus !== 'authenticated') {
       return;
     }
     let cancelled = false;
     setJoining(true);
-    api<{ serverId: string }>(`/invites/${encodeURIComponent(code)}/join`, {
+    api<{ serverId: string | null }>(`/invites/${encodeURIComponent(code)}/join`, {
       method: 'POST',
       body: {},
     })
       .then(async ({ serverId }) => {
         if (cancelled) return;
+        // Instance-scoped invite redeemed by an already-authenticated user:
+        // the backend returns `serverId: null` because there is no server to
+        // join. Send them home with a soft acknowledgement instead of
+        // trying to fetch `/servers/null`.
+        if (serverId === null) {
+          toast.success("You're already at this Tavern.");
+          await navigate({ to: '/app' });
+          return;
+        }
         // Pull the fresh server row so the sidebar can render it without a
         // /servers refetch (the gateway also fires a MEMBER_ADD broadcast but
         // SERVER_ADD is not synthesised for local joins).
@@ -80,7 +102,7 @@ export function InvitePage(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [code, host, me, navigate, upsertServer]);
+  }, [authStatus, code, host, me, navigate, upsertServer]);
 
   // Federated path: open the modal on mount. When the user closes/cancels
   // we send them home (the URL no longer represents a usable state once
@@ -88,12 +110,11 @@ export function InvitePage(): JSX.Element {
   // the modal.
   useEffect(() => {
     if (!code || !host) return;
-    if (!me) {
-      void navigate({ to: '/login' });
+    if (!me || authStatus !== 'authenticated') {
       return;
     }
     setPreviewOpen(true);
-  }, [code, host, me, navigate]);
+  }, [authStatus, code, host, me]);
 
   if (!code) {
     return (
@@ -126,7 +147,11 @@ export function InvitePage(): JSX.Element {
 
   return (
     <div className="grid h-full place-items-center p-12 text-sm text-fg-muted">
-      {error ? <p className="text-danger">{error}</p> : joining ? 'Joining the den…' : null}
+      {error ? (
+        <p className="text-danger">{error}</p>
+      ) : joining || authStatus === 'idle' || authStatus === 'loading' ? (
+        'Joining the den…'
+      ) : null}
     </div>
   );
 }

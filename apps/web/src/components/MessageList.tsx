@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Bookmark, Dice5, Flag, Forward, History, MessageSquare, Pin, Trash2 } from 'lucide-react';
+import {
+  Bookmark,
+  ChevronRight,
+  Dice5,
+  Flag,
+  Forward,
+  History,
+  MessageSquare,
+  Pin,
+  Trash2,
+} from 'lucide-react';
 import type { DiceTermResult, Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
@@ -331,6 +341,11 @@ function MessageRow({
         {message.attachmentIds.map((id) => (
           <AttachmentView key={id} id={id} />
         ))}
+        <ThreadFooter
+          summary={message.threadSummary ?? null}
+          isThreadRoot={message.isThreadRoot ?? false}
+          onOpen={onOpenThread}
+        />
         <ReactionBar message={message} />
       </div>
       <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
@@ -435,6 +450,55 @@ export function DiceRollMessage({ message }: { message: Message }): JSX.Element 
       </div>
     </div>
   );
+}
+
+/**
+ * Clickable footer rendered below a thread-root message. Shows the reply
+ * count and last activity if we have a summary; falls back to a plain
+ * "View thread" affordance when the root has been promoted but no replies
+ * have landed yet (or for older messages the API hasn't backfilled).
+ *
+ * Always-visible (not hover-gated) so a started thread feels permanent and
+ * discoverable.
+ */
+function ThreadFooter({
+  summary,
+  isThreadRoot,
+  onOpen,
+}: {
+  summary: Message['threadSummary'];
+  isThreadRoot: boolean;
+  onOpen: () => void;
+}): JSX.Element | null {
+  if (!isThreadRoot && !summary) return null;
+  const count = summary?.replyCount ?? 0;
+  const countLabel = count === 0 ? 'View thread' : `${count} ${count === 1 ? 'reply' : 'replies'}`;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={count > 0 ? `Open thread with ${count} ${count === 1 ? 'reply' : 'replies'}` : 'Open thread'}
+      className="mt-1 inline-flex items-center gap-1.5 rounded-md border border-subtle bg-tint-ember px-2 py-1 text-xs text-ember transition-base hover:border-ember focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
+    >
+      <MessageSquare size={12} className="shrink-0" aria-hidden />
+      <span className="font-medium">{countLabel}</span>
+      {summary && count > 0 ? (
+        <>
+          <span className="text-fg-muted">·</span>
+          <span className="text-fg-muted">Last reply {threadTimeAgo(summary.lastActivityAt)}</span>
+        </>
+      ) : null}
+      <ChevronRight size={12} className="ml-0.5 shrink-0 text-fg-muted" aria-hidden />
+    </button>
+  );
+}
+
+function threadTimeAgo(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 60_000) return 'just now';
+  if (diffMs < 60 * 60_000) return `${Math.round(diffMs / 60_000)}m ago`;
+  if (diffMs < 24 * 60 * 60_000) return `${Math.round(diffMs / (60 * 60_000))}h ago`;
+  return `${Math.round(diffMs / (24 * 60 * 60_000))}d ago`;
 }
 
 function DiceTerms({ terms }: { terms: DiceTermResult[] }): JSX.Element {

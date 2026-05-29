@@ -3,6 +3,7 @@ import { Send, X } from 'lucide-react';
 import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { useRealtime } from '../lib/store.js';
 
 interface Thread {
   id: string;
@@ -21,6 +22,8 @@ interface Props {
   onClose: () => void;
 }
 
+const EMPTY_MESSAGES: never[] = [];
+
 function randomNonce(): string {
   const bytes = new Uint8Array(8);
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(bytes);
@@ -34,7 +37,10 @@ function randomNonce(): string {
  */
 export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Element {
   const [thread, setThread] = useState<Thread | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const messagesByThread = useRealtime((s) => s.messagesByThread);
+  const messages = messagesByThread[threadId] ?? EMPTY_MESSAGES;
+  const setThreadMessages = useRealtime((s) => s.setThreadMessages);
+  const upsertThreadMessage = useRealtime((s) => s.upsertThreadMessage);
   const [content, setContent] = useState('');
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -44,8 +50,7 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
     api<Message[]>(`/threads/${threadId}/messages`)
       .then((data) => {
         if (cancelled) return;
-        // Reverse so oldest is first in our local list (the API returns desc).
-        setMessages([...data].reverse());
+        setThreadMessages(threadId, data);
       })
       .catch(() => {
         if (!cancelled) toast.error('Could not load thread.');
@@ -53,7 +58,7 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
     return () => {
       cancelled = true;
     };
-  }, [threadId]);
+  }, [setThreadMessages, threadId]);
 
   useEffect(() => {
     // Best-effort: fetch the thread itself to render the title.
@@ -83,7 +88,7 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
         method: 'POST',
         body: { content: trimmed, nonce: randomNonce() },
       });
-      setMessages((prev) => [...prev, created]);
+      upsertThreadMessage(created);
       setContent('');
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not post to thread');
