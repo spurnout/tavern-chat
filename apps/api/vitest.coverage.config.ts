@@ -45,11 +45,12 @@ export default defineConfig({
       exclude: ['src/**/*.d.ts', 'src/index.ts'],
       reporter: ['text-summary', 'json-summary', 'lcov'],
       reportsDirectory: './coverage',
-      // Ratchet floor for MERGED unit+integration coverage (baseline 2026-05-29
-      // from CI: 46.7% st / 72.5% br / 64.1% fn). May only go up. Requires
-      // Docker — without the integration project this under-reports and fails,
-      // so this is the CI / Docker-up api gate, not the no-Docker root gate.
-      thresholds: { statements: 46, branches: 71, functions: 63, lines: 46 },
+      // Ratchet floor for MERGED unit+integration coverage. Raised 2026-05-29
+      // after +145 route integration tests (slash/polls/account/sessions/dms/
+      // inbox) took it to 52.1% st / 75.6% br / 66.2% fn. May only go up.
+      // Requires Docker — without the integration project this under-reports
+      // and fails, so this is the CI / Docker-up api gate, not the root gate.
+      thresholds: { statements: 51, branches: 74, functions: 65, lines: 51 },
     },
   },
 });
