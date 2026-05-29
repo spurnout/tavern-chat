@@ -38,7 +38,7 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
 
 - **Phase:** 1 (review)
 - **Trigger:** before public deployment if not earlier
-- **What:** Current guard rejects bare IPv4, IPv6, `localhost`, and dotless hostnames. Doesn't reject `*.local`, `*.internal`, RFC 1918 hostnames pointing at private IPs, or DNS rebinding tricks. A DNS resolution check (resolve hostname, refuse private IP ranges) is the strict fix. Defer until the route is publicly reachable.
+- **What:** Current guard rejects bare IPv4, IPv6, `localhost`, and dotless hostnames. A best-effort DNS resolution check (rejects hosts resolving ONLY to private/loopback ranges) is already in place, and `*.local` (mDNS, RFC 6762) + `*.localhost` (RFC 6761) are now rejected synchronously (2026-05-29 — they otherwise NXDOMAIN past the DNS check and reach the LAN). **Remaining:** `*.internal` / other private-use TLDs, and DNS-rebinding/TOCTOU (the resolution check races the later fetch). Low severity given the private-IP DNS check.
 
 ### 7. Avatar URLs in federated profile responses
 
@@ -266,6 +266,19 @@ Living list of non-blocking work surfaced during federation rollout. Each item h
   string.
 
 ## Resolved
+
+### Phase 4 pre-prod review (2026-05-29)
+
+Verified the pre-prod checklist against live code — most items were already implemented in earlier phases (the doc lagged the code):
+
+- **#1 key fingerprint:** DONE — `FederationPeeringService.listPeers()` returns `keyFingerprint` (truncated SHA-256 of `instanceKey`, colon-hex), rendered as a "Fingerprint" column in `PeersTable.tsx`.
+- **#2 per-route rate limits:** DONE — `/_federation/peering` is capped at 10/min and `/.well-known/tavern-federation` at 60/min via per-route `config.rateLimit` (not the global 300/min).
+- **#3 `FederationEnvelopeLog` retention sweep:** DONE — `apps/worker` schedules a daily (`30 3 * * *`) `federation-envelope-retention` repeatable job that batch-prunes rows with `receivedAt` older than 30 days, using the `(peerInstanceId, receivedAt)` index.
+- **#4 `window.prompt` revoke-reason:** DONE — replaced by `RevokePeerModal` in `admin-federation-page.tsx`.
+- **#6 `assertValidPeerHost` (partial):** `*.local` / `*.localhost` now rejected synchronously (this review); the private-IP DNS check was already present. `*.internal` + DNS-rebinding remain (low severity).
+- **#16 dead-letter UI:** DONE — `admin-federation-page.tsx` lists failed outbox jobs with retry/discard, backed by `/api/admin/federation/dead-letters`.
+
+**Remaining pre-prod gap:** #7 (federated avatar/icon URLs 401) — needs a public media proxy, signed URLs, or inline bytes; coordinate with #12 (CSP) and #23 (icon scope). A design decision, deferred per the original note.
 
 ### Phase 2 post-review fix-up
 
