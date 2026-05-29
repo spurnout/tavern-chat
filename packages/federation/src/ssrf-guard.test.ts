@@ -120,10 +120,30 @@ describe('assertValidPeerHost — synchronous rejections (no DNS)', () => {
     );
   });
 
+  it('rejects an mDNS .local hostname (RFC 6762)', async () => {
+    await expect(assertValidPeerHost('printer.local')).rejects.toThrow(/\.local/i);
+    await expect(assertValidPeerHost('My-NAS.LOCAL')).rejects.toThrow(/\.local/i);
+    await expect(assertValidPeerHost('host.sub.local')).rejects.toThrow(/\.local/i);
+  });
+
+  it('rejects a .localhost loopback hostname (RFC 6761)', async () => {
+    await expect(assertValidPeerHost('app.localhost')).rejects.toThrow(/localhost/i);
+  });
+
+  it('still allows a real domain that merely contains "local" mid-label', async () => {
+    // `foo.local.example.com` ends with .com — it is NOT an mDNS name.
+    resolve4.mockResolvedValue(['93.184.216.34']);
+    resolve6.mockResolvedValue([]);
+    await expect(
+      assertValidPeerHost('foo.local.example.com'),
+    ).resolves.toBeUndefined();
+  });
+
   it('does not consult DNS for synchronously-rejected hosts', async () => {
     await expect(assertValidPeerHost('localhost')).rejects.toThrow();
     await expect(assertValidPeerHost('10.0.0.1')).rejects.toThrow();
     await expect(assertValidPeerHost('intranet')).rejects.toThrow();
+    await expect(assertValidPeerHost('printer.local')).rejects.toThrow();
     expect(resolve4).not.toHaveBeenCalled();
     expect(resolve6).not.toHaveBeenCalled();
   });

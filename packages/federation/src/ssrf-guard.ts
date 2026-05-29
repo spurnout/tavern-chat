@@ -61,6 +61,14 @@ export async function assertValidPeerHost(host: string): Promise<void> {
   if (!host.includes('.')) {
     throw new Error('peer host must be a fully-qualified domain');
   }
+  // Reject mDNS / loopback special-use suffixes. `*.local` (RFC 6762 mDNS) and
+  // `*.localhost` (RFC 6761) name link-local / loopback hosts that must never be
+  // federation peers. Crucially, public resolvers return NXDOMAIN for these, so
+  // without this synchronous check they would slip past the DNS guard below
+  // (NXDOMAIN allows through) and reach an internal host on the LAN.
+  if (lower.endsWith('.local') || lower.endsWith('.localhost')) {
+    throw new Error('peer host cannot be an mDNS/loopback (.local/.localhost) name');
+  }
 
   // DNS resolution (best-effort — NXDOMAIN / network errors allow through,
   // letting the fetch fail naturally at connection time).
