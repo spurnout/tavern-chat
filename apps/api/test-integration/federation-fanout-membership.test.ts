@@ -312,7 +312,7 @@ describe.skipIf(!dockerOk)('P4-10 — outbound fan-out (membership add/remove)',
 
     // Mint a local invite owned by the server owner.
     const inviteId = ulid();
-    const inviteCode = `INV-${ulid().slice(-8).toLowerCase()}`;
+    const inviteCode = `INV-${ulid().slice(-8)}`;
     await prisma.invite.create({
       data: {
         id: inviteId,
@@ -372,7 +372,7 @@ describe.skipIf(!dockerOk)('P4-10 — outbound fan-out (membership add/remove)',
     const fx = await makeFixture({ peerCount: 2 });
 
     const inviteId = ulid();
-    const inviteCode = `INV-${ulid().slice(-8).toLowerCase()}`;
+    const inviteCode = `INV-${ulid().slice(-8)}`;
     await prisma.invite.create({
       data: {
         id: inviteId,
@@ -429,7 +429,7 @@ describe.skipIf(!dockerOk)('P4-10 — outbound fan-out (membership add/remove)',
     const fx = await makeFixture({ isMirror: true });
 
     const inviteId = ulid();
-    const inviteCode = `INV-${ulid().slice(-8).toLowerCase()}`;
+    const inviteCode = `INV-${ulid().slice(-8)}`;
     await prisma.invite.create({
       data: {
         id: inviteId,
@@ -482,7 +482,7 @@ describe.skipIf(!dockerOk)('P4-10 — outbound fan-out (membership add/remove)',
     // Mint a federated invite (`any_peer` scope) so B's join_request is
     // accepted by A.
     const inviteId = ulid();
-    const inviteCode = `INV-${ulid().slice(-8).toLowerCase()}`;
+    const inviteCode = `INV-${ulid().slice(-8)}`;
     await prisma.invite.create({
       data: {
         id: inviteId,
@@ -684,7 +684,7 @@ describe.skipIf(!dockerOk)('P4-10 — outbound fan-out (membership add/remove)',
     const fx = await makeFixture({ federationEnabled: false });
 
     const inviteId = ulid();
-    const inviteCode = `INV-${ulid().slice(-8).toLowerCase()}`;
+    const inviteCode = `INV-${ulid().slice(-8)}`;
     await prisma.invite.create({
       data: {
         id: inviteId,
