@@ -131,7 +131,6 @@ export async function registerServerTemplateRoutes(app: FastifyInstance): Promis
           ownerUserId: ctx.userId,
           name: body.name,
           description: payload.server.description ?? null,
-          defaultRoleId: everyoneId,
         },
       });
       await tx.role.create({
@@ -143,6 +142,15 @@ export async function registerServerTemplateRoutes(app: FastifyInstance): Promis
           position: 0,
           isEveryone: true,
         },
+      });
+      // Link @everyone as the server default only now that the role row exists.
+      // Server.defaultRoleId carries an immediate FK to Role, so setting it
+      // inside the server.create above (before the role is inserted) violates
+      // Server_defaultRoleId_fkey. Mirrors the create -> role -> update order
+      // used by routes/servers.ts.
+      await tx.server.update({
+        where: { id: newServerId },
+        data: { defaultRoleId: everyoneId },
       });
       await tx.serverMember.create({
         data: { serverId: newServerId, userId: ctx.userId },
