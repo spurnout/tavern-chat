@@ -9,10 +9,16 @@ import { makeFakeDb, makeFakePrismaClient } from './helpers.js';
 const hoisted = vi.hoisted(() => {
   // We can't import helpers here (vi.hoisted runs before module evaluation),
   // so we just allocate empty objects and fill them later from the test setup.
-  const fakeDb: { users: Map<string, unknown>; sessions: Map<string, unknown>; invites: Map<string, unknown> } = {
+  const fakeDb: {
+    users: Map<string, unknown>;
+    sessions: Map<string, unknown>;
+    invites: Map<string, unknown>;
+    serverMembers: Map<string, unknown>;
+  } = {
     users: new Map(),
     sessions: new Map(),
     invites: new Map(),
+    serverMembers: new Map(),
   };
   return { fakeDb, fakePrismaRef: { current: null as unknown } };
 });
@@ -29,6 +35,7 @@ const fakePrisma = makeFakePrismaClient(fakeDb);
 hoisted.fakeDb.users = fakeDb.users as unknown as Map<string, unknown>;
 hoisted.fakeDb.sessions = fakeDb.sessions as unknown as Map<string, unknown>;
 hoisted.fakeDb.invites = fakeDb.invites as unknown as Map<string, unknown>;
+hoisted.fakeDb.serverMembers = fakeDb.serverMembers as unknown as Map<string, unknown>;
 hoisted.fakePrismaRef.current = fakePrisma;
 
 import { buildApp } from '../src/app.js';
@@ -80,6 +87,7 @@ beforeEach(async () => {
   fakeDb.users.clear();
   fakeDb.sessions.clear();
   fakeDb.invites.clear();
+  fakeDb.serverMembers.clear();
   const inviteId = ulid();
   fakeDb.invites.set(inviteId, {
     id: inviteId,
@@ -135,13 +143,52 @@ describe('POST /api/auth/register', () => {
       },
     });
     expect(res.statusCode).toBe(201);
-    const body = res.json() as { ok: true; data: { tokens: { accessToken: string; refreshToken: string } } };
+    const body = res.json() as {
+      ok: true;
+      data: { tokens: { accessToken: string; refreshToken: string } };
+    };
     expect(body.ok).toBe(true);
     expect(body.data.tokens.accessToken).toBeTruthy();
     expect(body.data.tokens.refreshToken).toBeTruthy();
     expect(fakeDb.users.size).toBe(1);
     expect(fakeDb.sessions.size).toBe(1);
     expect(Array.from(fakeDb.invites.values())[0]?.uses).toBe(1);
+    await app.close();
+  });
+
+  it('accepts a server invite for account creation and joins that server', async () => {
+    const serverInviteId = ulid();
+    fakeDb.invites.set(serverInviteId, {
+      id: serverInviteId,
+      code: 'SERVER-INVITE',
+      scope: 'server',
+      serverId: 'server-1',
+      channelId: null,
+      createdById: null,
+      maxUses: 1,
+      uses: 0,
+      expiresAt: null,
+      revokedAt: null,
+      createdAt: new Date(),
+    });
+
+    const app = await makeApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: {
+        username: 'serverguest',
+        displayName: 'Server Guest',
+        email: 'serverguest@example.com',
+        password: 'hunter22hunter22',
+        inviteCode: 'server-invite',
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const user = Array.from(fakeDb.users.values()).find((u) => u.username === 'serverguest');
+    expect(user).toBeTruthy();
+    expect(fakeDb.serverMembers.has(`server-1:${user!.id}`)).toBe(true);
+    expect(fakeDb.invites.get(serverInviteId)?.uses).toBe(1);
     await app.close();
   });
 
@@ -269,7 +316,12 @@ describe('POST /api/auth/login', () => {
       displayName: 'Bob',
       email: 'bob@example.com',
       emailLower: 'bob@example.com',
-      passwordHash: await argon2.hash('correct-horse', { type: argon2.argon2id, memoryCost: 1 << 14, timeCost: 2, parallelism: 1 }),
+      passwordHash: await argon2.hash('correct-horse', {
+        type: argon2.argon2id,
+        memoryCost: 1 << 14,
+        timeCost: 2,
+        parallelism: 1,
+      }),
       isInstanceAdmin: false,
       avatarAttachmentId: null,
       bio: null,

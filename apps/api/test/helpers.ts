@@ -57,6 +57,7 @@ export interface FakeDb {
   users: Map<string, UserRow>;
   sessions: Map<string, SessionRow>;
   invites: Map<string, InviteRow>;
+  serverMembers: Map<string, { serverId: string; userId: string; joinedAt: Date }>;
 }
 
 export function makeFakeDb(): FakeDb {
@@ -64,13 +65,20 @@ export function makeFakeDb(): FakeDb {
     users: new Map(),
     sessions: new Map(),
     invites: new Map(),
+    serverMembers: new Map(),
   };
 }
 
 export function makeFakePrismaClient(db: FakeDb) {
   return {
     user: {
-      async findUnique({ where, select }: { where: { id?: string; email?: string }; select?: Record<string, boolean> }) {
+      async findUnique({
+        where,
+        select,
+      }: {
+        where: { id?: string; email?: string };
+        select?: Record<string, boolean>;
+      }) {
         let row: UserRow | undefined;
         if (where.id) row = db.users.get(where.id);
         else if (where.email) {
@@ -94,7 +102,9 @@ export function makeFakePrismaClient(db: FakeDb) {
         const matches = (u: UserRow): boolean => {
           if (!where) return true;
           if (where.OR) {
-            return where.OR.some((cond) => matchesCondition(u as unknown as Record<string, unknown>, cond));
+            return where.OR.some((cond) =>
+              matchesCondition(u as unknown as Record<string, unknown>, cond),
+            );
           }
           return matchesCondition(u as unknown as Record<string, unknown>, where);
         };
@@ -129,13 +139,7 @@ export function makeFakePrismaClient(db: FakeDb) {
         db.users.set(row.id, row);
         return row;
       },
-      async update({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<UserRow>;
-      }) {
+      async update({ where, data }: { where: { id: string }; data: Partial<UserRow> }) {
         const existing = db.users.get(where.id);
         if (!existing) throw new Error('User not found');
         const updated = { ...existing, ...data, updatedAt: new Date() };
@@ -161,7 +165,11 @@ export function makeFakePrismaClient(db: FakeDb) {
         }
         return session;
       },
-      async create({ data }: { data: Omit<SessionRow, 'createdAt' | 'revokedAt'> & { revokedAt?: Date | null } }) {
+      async create({
+        data,
+      }: {
+        data: Omit<SessionRow, 'createdAt' | 'revokedAt'> & { revokedAt?: Date | null };
+      }) {
         const row: SessionRow = {
           ...data,
           revokedAt: data.revokedAt ?? null,
@@ -170,13 +178,7 @@ export function makeFakePrismaClient(db: FakeDb) {
         db.sessions.set(row.id, row);
         return row;
       },
-      async update({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Partial<SessionRow>;
-      }) {
+      async update({ where, data }: { where: { id: string }; data: Partial<SessionRow> }) {
         const existing = db.sessions.get(where.id);
         if (!existing) throw new Error('Session not found');
         const updated = { ...existing, ...data };
@@ -221,7 +223,13 @@ export function makeFakePrismaClient(db: FakeDb) {
         if (!row) return null;
         return projectRow(row, select);
       },
-      async update({ where, data }: { where: { id: string }; data: { uses?: { increment: number } } }) {
+      async update({
+        where,
+        data,
+      }: {
+        where: { id: string };
+        data: { uses?: { increment: number } };
+      }) {
         const existing = db.invites.get(where.id);
         if (!existing) throw new Error('Invite not found');
         const updated: InviteRow = {
@@ -257,7 +265,8 @@ export function makeFakePrismaClient(db: FakeDb) {
           if (where.OR) {
             const expOk = where.OR.some((cond) => {
               if (cond.expiresAt === null) return i.expiresAt === null;
-              if (cond.expiresAt && cond.expiresAt.gt) return i.expiresAt !== null && i.expiresAt > cond.expiresAt.gt;
+              if (cond.expiresAt && cond.expiresAt.gt)
+                return i.expiresAt !== null && i.expiresAt > cond.expiresAt.gt;
               return false;
             });
             if (!expOk) continue;
@@ -273,7 +282,27 @@ export function makeFakePrismaClient(db: FakeDb) {
         return { count };
       },
     },
-    async $transaction<T>(fn: (tx: ReturnType<typeof makeFakePrismaClient>) => Promise<T>): Promise<T> {
+    serverMember: {
+      async create({ data }: { data: { serverId: string; userId: string } }) {
+        const row = { serverId: data.serverId, userId: data.userId, joinedAt: new Date() };
+        db.serverMembers.set(`${row.serverId}:${row.userId}`, row);
+        return row;
+      },
+      async findUnique({
+        where,
+      }: {
+        where: { serverId_userId: { serverId: string; userId: string } };
+      }) {
+        return (
+          db.serverMembers.get(
+            `${where.serverId_userId.serverId}:${where.serverId_userId.userId}`,
+          ) ?? null
+        );
+      },
+    },
+    async $transaction<T>(
+      fn: (tx: ReturnType<typeof makeFakePrismaClient>) => Promise<T>,
+    ): Promise<T> {
       // No isolation: tests don't need it.
       return fn(this as unknown as ReturnType<typeof makeFakePrismaClient>);
     },
@@ -284,7 +313,10 @@ function matchesCondition(row: Record<string, unknown>, cond: Record<string, unk
   return Object.entries(cond).every(([k, v]) => row[k] === v);
 }
 
-function projectRow<T extends Record<string, unknown>>(row: T, select?: Record<string, boolean>): T {
+function projectRow<T extends Record<string, unknown>>(
+  row: T,
+  select?: Record<string, boolean>,
+): T {
   if (!select) return row;
   const out: Record<string, unknown> = {};
   for (const [k, want] of Object.entries(select)) {
