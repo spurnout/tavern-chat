@@ -21,7 +21,7 @@
     "predev:worker": "pnpm ensure-env",
     "dev:worker": "pnpm --filter @tavern/worker dev",
     "test": "pnpm -r test",
-    "test:coverage": "pnpm --filter @tavern/shared --filter @tavern/web --filter @tavern/api test:coverage",
+    "test:coverage": "pnpm --filter @tavern/shared --filter @tavern/web --filter @tavern/api --filter @tavern/federation test:coverage",
     "test:integration": "pnpm --filter @tavern/api test:integration",
     "test:e2e": "pnpm --filter @tavern/e2e test:e2e",
     "walkthrough": "pnpm --filter @tavern/e2e test:walkthrough && pnpm --filter @tavern/e2e walkthrough:assemble",

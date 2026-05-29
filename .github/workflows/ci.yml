@@ -95,6 +95,7 @@ jobs:
           name: coverage
           path: |
             packages/shared/coverage/
+            packages/federation/coverage/
             apps/web/coverage/
             apps/api/coverage/
             apps/api/coverage-integration/
