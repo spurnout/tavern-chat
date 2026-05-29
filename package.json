@@ -59,7 +59,9 @@
   },
   "pnpm": {
     "overrides": {
-      "@tanstack/history": "1.161.6"
+      "@tanstack/history": "1.161.6",
+      "ws": "^8.20.1",
+      "protobufjs": "^7.5.8"
     },
     "auditConfig": {
       "ignoreGhsas": [
