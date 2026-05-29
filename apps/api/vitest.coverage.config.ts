@@ -50,7 +50,7 @@ export default defineConfig({
       // batches). May only go up. Requires Docker — without the integration
       // project this under-reports and fails, so it's the CI / Docker-up api
       // gate, not the no-Docker root gate.
-      thresholds: { statements: 56, branches: 76, functions: 67, lines: 56 },
+      thresholds: { statements: 61, branches: 77, functions: 70, lines: 61 },
     },
   },
 });
