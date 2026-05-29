@@ -99,7 +99,10 @@ describe('GatewayClient resume state', () => {
     ready(first, 1);
 
     first.emitClose();
-    vi.advanceTimersByTime(2_000);
+    // Flush the scheduled reconnect. The delay carries ±20% random jitter
+    // (gateway-client scheduleReconnect), so advancing by a fixed amount can
+    // miss it and leave sockets[1] uncreated — run the pending timer instead.
+    vi.runOnlyPendingTimers();
 
     const second = sockets[1]!;
     hello(second, 'session-b');
@@ -118,7 +121,7 @@ describe('GatewayClient resume state', () => {
     ready(second, 2);
 
     second.emitClose();
-    vi.advanceTimersByTime(4_000);
+    vi.runOnlyPendingTimers();
 
     const third = sockets[2]!;
     hello(third, 'session-c');
