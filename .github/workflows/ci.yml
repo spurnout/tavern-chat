@@ -71,20 +71,17 @@ jobs:
 
       - run: pnpm test
 
-      # Coverage gate. Re-runs the three instrumented unit suites (shared,
-      # web/lib, api services+lib) with coverage enabled so the ratchet-from-
-      # baseline thresholds in each vitest.config are enforced, and emits
-      # text/json-summary/lcov reports.
+      # Coverage gate for the no-Docker workspaces: shared, web/lib, federation
+      # (ratchet-from-baseline thresholds enforced in each vitest.config).
       - run: pnpm test:coverage
 
-      # Integration tests boot their own Postgres testcontainer (so they're
-      # isolated from the `postgres` service used above for the migrate step).
-      # The testcontainers library uses the Docker socket exposed by the
-      # ubuntu-latest GitHub runner image — no extra service config needed.
-      # Run WITH coverage (routes/gateway execute in-process via app.inject);
-      # report-only for now — a threshold will be set once the baseline is
-      # confirmed against a clean CI run.
-      - run: pnpm --filter @tavern/api test:integration:coverage
+      # api MERGED coverage: one run over the unit + integration projects
+      # (vitest.coverage.config.ts). The integration suite boots its own
+      # Postgres testcontainer via the runner's Docker socket and exercises
+      # routes/gateway/services in-process (app.inject), so combining both
+      # projects yields api's real coverage. Report-only until the baseline is
+      # confirmed against a clean CI run, then a ratchet threshold is set.
+      - run: pnpm --filter @tavern/api test:coverage
 
       - run: pnpm build
 
