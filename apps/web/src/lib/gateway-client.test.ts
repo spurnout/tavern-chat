@@ -132,4 +132,31 @@ describe('GatewayClient resume state', () => {
 
     client.close();
   });
+
+  it('reports ready after a successful RESUME (server replays without a fresh READY)', () => {
+    const statuses: string[] = [];
+    const client = new GatewayClient({
+      url: 'ws://tavern.test/gateway',
+      onDispatch: () => undefined,
+      onStatusChange: (s) => statuses.push(s),
+    });
+
+    client.connect();
+    const first = sockets[0]!;
+    hello(first, 'session-a');
+    ready(first, 1);
+
+    first.emitClose();
+    vi.runOnlyPendingTimers();
+    const second = sockets[1]!;
+    statuses.length = 0; // isolate the resume transition
+    hello(second, 'session-b');
+
+    // RESUME (not IDENTIFY) is sent, and the client surfaces 'ready' even
+    // though a successful resume replays buffered events with no fresh READY.
+    expect(second.sent.at(-1)).toMatchObject({ op: GatewayOp.RESUME });
+    expect(statuses).toContain('ready');
+
+    client.close();
+  });
 });

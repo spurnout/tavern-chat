@@ -85,7 +85,24 @@ export function stopRealtime(): void {
   useRealtime.getState().setReady(false);
 }
 
+/**
+ * Guard the dispatch loop: a single malformed payload must not throw out of
+ * the WebSocket 'message' handler (which would surface as an uncaught error
+ * and could leave the store half-updated). Drop the offending event instead —
+ * dev gets a console hint, production stays silent. Mirrors the per-event
+ * safeParse skips already used for VOICE_STATE_UPDATE / PRESENCE_UPDATE.
+ */
 function handleDispatch(event: GatewayDispatchEventName, data: unknown): void {
+  try {
+    dispatchEvent(event, data);
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.warn(`[realtime] dispatch handler for ${event} threw; dropping event`, err);
+    }
+  }
+}
+
+function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
   const store = useRealtime.getState();
   switch (event) {
     case 'READY': {

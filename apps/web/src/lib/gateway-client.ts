@@ -141,6 +141,14 @@ export class GatewayClient {
         // Otherwise this is a fresh connection — IDENTIFY normally.
         if (this.resumeSessionId && this.lastSeq > 0) {
           this.resume(this.resumeSessionId, this.lastSeq);
+          // A successful resume replays buffered events but the server does
+          // NOT send a fresh READY ("they don't need a fresh READY" — gateway
+          // RESUME path). READY is otherwise the only place backoff + the
+          // 'ready' status reset, so do it here: the socket reconnected and we
+          // hold a live session. If the server rejects the resume
+          // (INVALID_SESSION) we re-IDENTIFY and the ensuing READY reaffirms.
+          this.backoffMs = 1_000;
+          this.setStatus('ready');
         } else {
           this.identify();
         }
