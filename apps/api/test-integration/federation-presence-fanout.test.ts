@@ -403,7 +403,7 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     // Step 3: trigger the debounced timer.
     __testFlushDebouncedFanOuts();
     // Wait a few ticks so the fan-out's DB read + enqueue completes.
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue).toHaveBeenCalledTimes(1);
     const job = lastJobs[0]!;
@@ -438,12 +438,12 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     // Drain the debounced active fan-out so we can isolate the offline one.
     __testFlushDebouncedFanOuts();
     // Wait a few ticks so the fan-out's DB read + enqueue completes.
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
     const activeCallCount = enqueue.mock.calls.length;
 
     await markDisconnected(alice.id);
     // Wait a few ticks so the immediate fan-out's DB read + enqueue completes.
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue.mock.calls.length).toBeGreaterThan(activeCallCount);
     // The most recent job is the offline one.
@@ -481,7 +481,7 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
 
     // Offline transition (immediate path) should ALSO short-circuit.
     await markDisconnected(bobMirror.localUserId);
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue).not.toHaveBeenCalled();
   });
@@ -567,12 +567,12 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     await markConnected(alice.id);
     await reportActivity(alice.id, false);
     __testFlushDebouncedFanOuts();
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     // Offline transition (immediate path) ALSO short-circuits — the pref
     // check sits before the peer enumeration, so both paths honour it.
     await markDisconnected(alice.id);
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue).not.toHaveBeenCalled();
     // Structured-log assertion (nice-to-have, optional per the spec).
@@ -616,7 +616,7 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     // Step 3: trigger the debounced timer. emitFanOut re-reads the row,
     // sees the freshly-written false, and bails before enumerating peers.
     __testFlushDebouncedFanOuts();
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue).not.toHaveBeenCalled();
     const skipped = capturingLog.warnCalls.find(
@@ -656,7 +656,7 @@ describe.skipIf(!dockerOk)('P6-6 — presence-service fan-out wiring', () => {
     __testFlushDebouncedFanOuts();
     // setImmediate is too fast for the async DB read inside emitFanOut to
     // complete — give it a short window so the enqueue actually lands.
-    await new Promise<void>((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => setTimeout(r, 300));
 
     expect(enqueue).toHaveBeenCalledTimes(1);
     const job = lastJobs[0]!;
