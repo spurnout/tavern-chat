@@ -21,6 +21,7 @@
     "predev:worker": "pnpm ensure-env",
     "dev:worker": "pnpm --filter @tavern/worker dev",
     "test": "pnpm -r test",
+    "test:coverage": "pnpm --filter @tavern/shared --filter @tavern/web --filter @tavern/api test:coverage",
     "test:integration": "pnpm --filter @tavern/api test:integration",
     "test:e2e": "pnpm --filter @tavern/e2e test:e2e",
     "walkthrough": "pnpm --filter @tavern/e2e test:walkthrough && pnpm --filter @tavern/e2e walkthrough:assemble",
@@ -29,7 +30,7 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "typecheck": "pnpm -r typecheck",
-    "ci": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm build",
+    "ci": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:coverage && pnpm test:integration && pnpm build",
     "db:generate": "pnpm --filter @tavern/db generate",
     "db:migrate": "pnpm ensure-env && node scripts/with-env.mjs pnpm --filter @tavern/db migrate",
     "db:migrate:dev": "pnpm ensure-env && node scripts/with-env.mjs pnpm --filter @tavern/db migrate:dev",
@@ -49,6 +50,7 @@
     "@types/node": "^22.9.0",
     "@typescript-eslint/eslint-plugin": "^8.13.0",
     "@typescript-eslint/parser": "^8.13.0",
+    "@vitest/coverage-v8": "3.2.4",
     "eslint": "^9.14.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -60,7 +62,9 @@
       "@tanstack/history": "1.161.6"
     },
     "auditConfig": {
-      "ignoreGhsas": ["GHSA-rmmr-r34h-pfm5"]
+      "ignoreGhsas": [
+        "GHSA-rmmr-r34h-pfm5"
+      ]
     }
   }
 }

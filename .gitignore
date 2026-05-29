@@ -16,6 +16,7 @@ build/
 
 # Test
 coverage/
+coverage-integration/
 .nyc_output/
 e2e/test-results/
 e2e/playwright-report/

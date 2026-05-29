@@ -16,5 +16,17 @@ export default defineConfig({
     hookTimeout: 120_000,
     pool: 'forks',
     poolOptions: { forks: { singleFork: true } },
+    coverage: {
+      provider: 'v8',
+      all: true,
+      // Integration tests run the API in-process (app.inject), so v8 captures
+      // route + gateway + service execution. Report-only for now; a ratchet
+      // threshold will be set from a clean full-suite CI run (the suite is
+      // resource-starved when the full local Docker stack is also up).
+      include: ['src/routes/**/*.ts', 'src/gateway/**/*.ts', 'src/services/**/*.ts'],
+      exclude: ['src/**/*.d.ts'],
+      reporter: ['text-summary', 'json-summary', 'lcov'],
+      reportsDirectory: './coverage-integration',
+    },
   },
 });
