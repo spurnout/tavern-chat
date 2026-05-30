@@ -379,6 +379,12 @@ model Server {
   name                String
   description         String?
   iconAttachmentId    String?
+  // Resolved, peer-fetchable public URL for the server icon. Single source of
+  // truth for rendering: local servers derive it from `iconAttachmentId` via
+  // the storage backend (ready attachments only); mirror servers store the
+  // URL received from their home instance (they hold no local attachment).
+  // Null when there is no icon, or a local icon attachment is not yet `ready`.
+  iconUrl             String?
   defaultRoleId       String?  @unique
   // Federation Phase 3: per-Tavern opt-in. When false, no messages are
   // fanned out to peers even if the channel mode would allow it.

@@ -183,7 +183,7 @@ export async function previewFederatedInvite(
       ownerUserId: true,
       name: true,
       description: true,
-      iconAttachmentId: true,
+      iconUrl: true,
       federationEnabled: true,
     },
   });
@@ -238,24 +238,11 @@ export async function previewFederatedInvite(
     serverId: server.id,
     name: server.name,
     description: server.description,
-    iconUrl: deriveServerIconUrl(server.iconAttachmentId, selfHost),
+    // #23 — `Server.iconUrl` is the resolved public capability URL (maintained
+    // on icon writes / scan-complete); the preview forwards it directly.
+    iconUrl: server.iconUrl ?? null,
     ownerRemoteUserId: `${owner.username}@${selfHost}`,
     inviterRemoteUserId: `${inviterUsername}@${selfHost}`,
     channelCount,
   };
-}
-
-/**
- * Construct the public icon URL for a server. Returns null when no icon
- * has been set. Matches `FederationProfileService.deriveAvatarUrl` so
- * snapshot logic in P4-6 / P4-7 stays in sync.
- *
- * URL shape: `https://{selfHost}/api/attachments/{iconAttachmentId}`
- */
-export function deriveServerIconUrl(
-  iconAttachmentId: string | null,
-  selfHost: string,
-): string | null {
-  if (!iconAttachmentId) return null;
-  return `https://${selfHost}/api/attachments/${iconAttachmentId}`;
 }

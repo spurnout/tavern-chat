@@ -85,6 +85,7 @@ function envFor(dbUrl: string): NodeJS.ProcessEnv {
 async function seedFederatedServer(opts?: {
   channelCount?: number;
   iconAttachmentId?: string | null;
+  iconUrl?: string | null;
   description?: string | null;
   peerHosts?: string[];
 }): Promise<{
@@ -114,6 +115,7 @@ async function seedFederatedServer(opts?: {
       name: 'Federated Tavern',
       description: opts?.description ?? 'A place to gather',
       iconAttachmentId: opts?.iconAttachmentId ?? null,
+      iconUrl: opts?.iconUrl ?? null,
       federationEnabled: true,
     },
   });
@@ -227,11 +229,14 @@ describe.skipIf(!dockerOk)('GET /_federation/invite-preview/:code', () => {
     await app.close();
   });
 
-  it('uses the home host in qualified ids + builds iconUrl from PUBLIC_BASE_URL', async () => {
-    const iconId = ulid();
+  it('uses the home host in qualified ids + forwards the resolved Server.iconUrl (#23)', async () => {
+    // The preview now emits the pre-resolved `Server.iconUrl` capability URL
+    // (maintained on icon writes / scan-complete), not a hand-built
+    // `/api/attachments/:id` path — the latter 404'd on every backend.
+    const iconUrl = `https://${SELF_HOST}/api/_attachments/main/${ulid()}.png`;
     const { ownerId, ownerUsername, serverId } = await seedFederatedServer({
       channelCount: 1,
-      iconAttachmentId: iconId,
+      iconUrl,
     });
     const code = await createInvite({
       serverId,
@@ -246,7 +251,7 @@ describe.skipIf(!dockerOk)('GET /_federation/invite-preview/:code', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.data.iconUrl).toBe(`https://${SELF_HOST}/api/attachments/${iconId}`);
+    expect(body.data.iconUrl).toBe(iconUrl);
     expect(body.data.ownerRemoteUserId).toBe(`${ownerUsername}@${SELF_HOST}`);
     await app.close();
   });

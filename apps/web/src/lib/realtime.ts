@@ -114,6 +114,9 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
           name: s.name,
           description: null,
           iconAttachmentId: s.iconAttachmentId,
+          // READY is a partial server (like `description`); the full icon URL
+          // arrives with the `/servers` fetch the shell fires on mount.
+          iconUrl: null,
           defaultRoleId: s.defaultRoleId ?? '',
           // READY currently sends a partial Server; default any missing flag
           // to false so the wire shape is forwards-compatible with older

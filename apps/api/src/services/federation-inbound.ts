@@ -122,7 +122,6 @@ import {
   verifyEnvelopeShape,
   type SignedEnvelope,
 } from './federation-envelopes.js';
-import { deriveServerIconUrl } from './federation-invite-preview.js';
 import { FederationMirrorService } from './federation-mirror.js';
 import { FederationProfileService } from './federation-profile.js';
 import { makeProfileBackedRemoteUserResolver } from './mirror-remote-user-resolver.js';
@@ -4225,7 +4224,7 @@ async function buildServerSnapshot(input: {
       ownerUserId: true,
       name: true,
       description: true,
-      iconAttachmentId: true,
+      iconUrl: true,
       federationEnabled: true,
       createdAt: true,
     },
@@ -4330,7 +4329,10 @@ async function buildServerSnapshot(input: {
     ownerRemoteUserId,
     name: server.name,
     description: server.description,
-    iconUrl: deriveServerIconUrl(server.iconAttachmentId, selfHost),
+    // #23 — `Server.iconUrl` already holds the resolved public capability URL
+    // (maintained on local icon writes / scan-complete), so the snapshot just
+    // forwards it. `?? null` normalises the schema's optional null default.
+    iconUrl: server.iconUrl ?? null,
     federationEnabled: true,
     channels,
     members,

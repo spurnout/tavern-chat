@@ -170,19 +170,17 @@ export class FederationMirrorService {
         ownerUserId: ownerLocal.id,
         name: input.name,
         description: input.description,
+        // Mirrors hold no LOCAL icon attachment — the icon lives on the home.
+        // We persist the home's public capability URL directly on `iconUrl`
+        // (#23); the web renders it as an `<img>` exactly like a local icon.
         iconAttachmentId: null,
+        iconUrl: input.iconUrl,
         // The mirror inherits the home's federation flag implicitly — the
         // home wouldn't have sent us this snapshot if federation were off.
         federationEnabled: true,
         originInstanceId,
       },
     });
-    // iconUrl is the home's public URL; we don't proxy attachments in
-    // Phase 4, so it's stored on the Server row indirectly via a future
-    // mirror-icon-attachment table. For now we keep the field on the
-    // input contract (so the envelope schema stays stable) but accept
-    // null in DB state — a follow-up will plumb the iconUrl through.
-    void input.iconUrl;
 
     await tx.role.create({
       data: {
@@ -277,10 +275,9 @@ export class FederationMirrorService {
     const data: Prisma.ServerUpdateInput = {};
     if (name !== undefined) data.name = name;
     if (description !== undefined) data.description = description;
-    // iconUrl is currently not persisted on the Server row directly (see the
-    // note in createMirrorServer). Accept the field for forward-compat with
-    // the envelope schema; a follow-up plumbs it through to an attachment.
-    void iconUrl;
+    // #23 — the home's public icon URL is stored directly on the mirror row
+    // (mirrors have no local attachment). `null` explicitly clears it.
+    if (iconUrl !== undefined) data.iconUrl = iconUrl;
 
     if (Object.keys(data).length === 0) return;
     await tx.server.update({ where: { id: serverId }, data });

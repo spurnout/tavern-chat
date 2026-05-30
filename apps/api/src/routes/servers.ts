@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { Prisma, prisma } from '@tavern/db';
+import { Prisma, prisma, resolveServerIconUrl } from '@tavern/db';
 import { z } from 'zod';
 import {
   createServerRequestSchema,
@@ -29,6 +29,7 @@ import { writeAuditEntry } from '../services/audit-service.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import { fanOutServerUpdate } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
+import type { StorageBackend } from '@tavern/media';
 
 interface ServerRouteDeps {
   /**
@@ -48,6 +49,13 @@ interface ServerRouteDeps {
   queues?: QueueClient;
   /** The local instance's federation host (e.g. `a.example`). */
   selfHost?: string | null;
+  /**
+   * Storage backend — resolves a local icon attachment id into the public
+   * `Server.iconUrl` when an icon is set via PATCH. Optional: when omitted
+   * (some unit harnesses) icon-URL resolution degrades to null rather than
+   * crashing; the production app always injects it.
+   */
+  storage?: StorageBackend;
 }
 
 export async function registerServerRoutes(
@@ -186,12 +194,28 @@ export async function registerServerRoutes(
     });
     if (!beforeRow) throw TavernError.notFound('Server not found');
 
+    // When the icon attachment changes, resolve its public URL up front so the
+    // column stays in lock-step with `iconAttachmentId`. Clearing the icon
+    // (null) clears the URL; setting it resolves via storage (null until the
+    // attachment is `ready` — `refreshServerIconsForAttachment` backfills it
+    // on scan-complete). When `storage` isn't wired (unit harness) we degrade
+    // to null rather than crashing.
+    const iconUrlPatch: { iconUrl?: string | null } =
+      body.iconAttachmentId !== undefined
+        ? {
+            iconUrl: deps.storage
+              ? await resolveServerIconUrl(body.iconAttachmentId, deps.storage)
+              : null,
+          }
+        : {};
+
     const updated = await prisma.server.update({
       where: { id },
       data: {
         ...(body.name !== undefined ? { name: body.name } : {}),
         ...(body.description !== undefined ? { description: body.description } : {}),
         ...(body.iconAttachmentId !== undefined ? { iconAttachmentId: body.iconAttachmentId } : {}),
+        ...iconUrlPatch,
         ...(body.federationEnabled !== undefined
           ? { federationEnabled: body.federationEnabled }
           : {}),
@@ -240,14 +264,13 @@ export async function registerServerRoutes(
           select: { username: true },
         });
         if (owner) {
-          // Coerce `iconAttachmentId` (a local row id) to the wire format's
-          // `iconUrl` field. Phase 4 has no resolved icon URL pipeline; for
-          // now we only thread through the field if the PATCH actually
-          // touched it AND it was explicitly cleared (null). When set to a
-          // local attachment id, we skip the iconUrl field (the wire schema
-          // expects a fully-qualified URL we don't synthesise yet — that
-          // ships with the icon-fetching work in a later phase).
-          const iconUrl = body.iconAttachmentId === null ? null : undefined;
+          // Send the resolved public icon URL to peers only when the PATCH
+          // actually touched the icon; leave it `undefined` (preserve the
+          // peer's current icon) otherwise. `updated.iconUrl` is the canonical
+          // capability URL — absolute and peer-fetchable — or null when the
+          // icon was cleared or its attachment isn't `ready` yet.
+          const iconUrl =
+            body.iconAttachmentId !== undefined ? updated.iconUrl : undefined;
           await fanOutServerUpdate({
             queues: deps.queues,
             selfHost: deps.selfHost,

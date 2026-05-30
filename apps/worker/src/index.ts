@@ -12,7 +12,7 @@ import {
   runScanJob,
   type StorageBackend,
 } from '@tavern/media';
-import { prisma } from '@tavern/db';
+import { prisma, refreshServerIconsForAttachment } from '@tavern/db';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { startFederationOutboxWorker } from './federation-outbox-worker.js';
 
@@ -98,6 +98,17 @@ async function main(): Promise<void> {
           .catch((err: unknown) => {
             log.warn({ err: err instanceof Error ? err.message : String(err) }, 'gateway publish failed');
           });
+        // #23 — backfill the resolved `Server.iconUrl` when a server-icon
+        // attachment finishes scanning. Fire-and-forget; independent of the
+        // gateway publish above.
+        void refreshServerIconsForAttachment(attachmentId, storage).catch(
+          (err: unknown) => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err), attachmentId },
+              'server-icon URL backfill failed',
+            );
+          },
+        );
       },
     });
   };

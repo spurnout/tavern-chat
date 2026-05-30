@@ -149,6 +149,20 @@ export function FederatedInvitePreviewModal({
         <p className="text-sm text-fg-muted">Loading invite…</p>
       ) : preview ? (
         <div className="space-y-3 text-sm">
+          <div className="flex items-center gap-3">
+            {preview.iconUrl ? (
+              <img
+                src={preview.iconUrl}
+                alt=""
+                className="h-12 w-12 rounded-2xl object-cover"
+              />
+            ) : (
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-raised font-serif text-lg font-bold text-fg">
+                {preview.name.slice(0, 2).toUpperCase()}
+              </div>
+            )}
+            <p className="font-medium text-fg">{preview.name}</p>
+          </div>
           {preview.description ? (
             <p className="text-fg">{preview.description}</p>
           ) : null}

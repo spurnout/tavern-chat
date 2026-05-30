@@ -511,6 +511,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
       queues,
       selfHost,
+      storage,
     });
     await registerChannelRoutes(app, {
       queues,

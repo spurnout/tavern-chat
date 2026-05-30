@@ -28,6 +28,7 @@ import {
   serializePermissions,
   ulid,
 } from '@tavern/shared';
+import { refreshServerIconsForAttachment } from '@tavern/db';
 import { isDockerAvailable, startPostgres, stopPostgres, type IntegrationContext } from './setup.js';
 
 let ctx: IntegrationContext | null = null;
@@ -107,6 +108,34 @@ async function makeServer(ownerId: string, extraEveryonePerms = 0n): Promise<Ser
 
 async function addMember(serverId: string, userId: string): Promise<void> {
   await prisma.serverMember.create({ data: { serverId, userId } });
+}
+
+/**
+ * Seed an icon Attachment row. Defaults to `ready` so PATCH resolves a public
+ * URL; pass `status: 'processing'` to exercise the not-yet-ready path. Cascade
+ * on `uploaderId` means the beforeEach user wipe cleans these up.
+ */
+async function makeIconAttachment(
+  uploaderId: string,
+  status: 'ready' | 'processing' = 'ready',
+): Promise<{ id: string; storageBucket: string; storageKey: string }> {
+  const id = ulid();
+  const storageBucket = 'main';
+  const storageKey = `icons/${id}.png`;
+  await prisma.attachment.create({
+    data: {
+      id,
+      uploaderId,
+      kind: 'image',
+      filename: 'icon.png',
+      mimeType: 'image/png',
+      sizeBytes: BigInt(1024),
+      storageBucket,
+      storageKey,
+      status,
+    },
+  });
+  return { id, storageBucket, storageKey };
 }
 
 function envFor(dbUrl: string): NodeJS.ProcessEnv {
@@ -636,6 +665,101 @@ describe.skipIf(!dockerOk)('server routes (apps/api/src/routes/servers.ts)', () 
           payload: { name: 'X' }, // min 2
         });
         expect(res.statusCode).toBe(400);
+      } finally {
+        await app.close();
+      }
+    });
+
+    // ---- #23 — server-icon URL resolution ---------------------------------
+
+    it('resolves Server.iconUrl from a ready icon attachment (200)', async () => {
+      const ownerId = await makeUser('owner');
+      const { serverId } = await makeServer(ownerId);
+      const icon = await makeIconAttachment(ownerId, 'ready');
+      const app = await buildTestApp();
+      try {
+        const token = await mintToken(ownerId);
+        const res = await app.inject({
+          method: 'PATCH',
+          url: `/api/servers/${serverId}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: { iconAttachmentId: icon.id },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as OkBody<{ iconAttachmentId: string | null; iconUrl: string | null }>;
+        expect(body.data.iconAttachmentId).toBe(icon.id);
+        // Resolved capability URL — absolute (PUBLIC_BASE_URL) + the storage key.
+        expect(body.data.iconUrl).toBeTruthy();
+        expect(body.data.iconUrl).toMatch(/^http:\/\/localhost:3001\//);
+        expect(body.data.iconUrl).toContain(encodeURIComponent(icon.storageKey));
+
+        const row = await prisma.server.findUniqueOrThrow({ where: { id: serverId } });
+        expect(row.iconUrl).toBe(body.data.iconUrl);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('stores a null iconUrl until the icon attachment is ready, then backfills on scan-complete (#23)', async () => {
+      const ownerId = await makeUser('owner');
+      const { serverId } = await makeServer(ownerId);
+      const icon = await makeIconAttachment(ownerId, 'processing');
+      const app = await buildTestApp();
+      try {
+        const token = await mintToken(ownerId);
+        const res = await app.inject({
+          method: 'PATCH',
+          url: `/api/servers/${serverId}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: { iconAttachmentId: icon.id },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as OkBody<{ iconUrl: string | null }>;
+        // Attachment not ready → never advertise unscanned bytes.
+        expect(body.data.iconUrl).toBeNull();
+
+        // Scan completes; the terminal-status hook backfills the URL.
+        await prisma.attachment.update({ where: { id: icon.id }, data: { status: 'ready' } });
+        const stub = {
+          getPublicUrl: (b: string, k: string) =>
+            `http://localhost:3001/api/_local-files/${b}/${encodeURIComponent(k)}`,
+        };
+        await refreshServerIconsForAttachment(icon.id, stub);
+
+        const row = await prisma.server.findUniqueOrThrow({ where: { id: serverId } });
+        expect(row.iconUrl).toBe(stub.getPublicUrl(icon.storageBucket, icon.storageKey));
+      } finally {
+        await app.close();
+      }
+    });
+
+    it('clears Server.iconUrl when the icon attachment is set to null (#23)', async () => {
+      const ownerId = await makeUser('owner');
+      const { serverId } = await makeServer(ownerId);
+      const icon = await makeIconAttachment(ownerId, 'ready');
+      const app = await buildTestApp();
+      try {
+        const token = await mintToken(ownerId);
+        // Set, then clear.
+        await app.inject({
+          method: 'PATCH',
+          url: `/api/servers/${serverId}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: { iconAttachmentId: icon.id },
+        });
+        const clearRes = await app.inject({
+          method: 'PATCH',
+          url: `/api/servers/${serverId}`,
+          headers: { authorization: `Bearer ${token}` },
+          payload: { iconAttachmentId: null },
+        });
+        expect(clearRes.statusCode).toBe(200);
+        const body = clearRes.json() as OkBody<{ iconAttachmentId: string | null; iconUrl: string | null }>;
+        expect(body.data.iconAttachmentId).toBeNull();
+        expect(body.data.iconUrl).toBeNull();
+
+        const row = await prisma.server.findUniqueOrThrow({ where: { id: serverId } });
+        expect(row.iconUrl).toBeNull();
       } finally {
         await app.close();
       }

@@ -306,13 +306,22 @@ function ServerRail({
             aria-label={s.name}
             title={s.name}
             className={cn(
-              'grid h-12 w-12 place-items-center rounded-2xl font-serif text-lg font-bold transition-base',
+              'grid h-12 w-12 place-items-center overflow-hidden rounded-2xl font-serif text-lg font-bold transition-base',
               active
                 ? 'bg-ember text-fg-on-accent rounded-xl'
                 : 'bg-raised text-fg hover:rounded-xl hover:bg-ember-hi hover:text-fg-on-accent',
             )}
           >
-            {s.name.slice(0, 2).toUpperCase()}
+            {s.iconUrl ? (
+              <img
+                src={s.iconUrl}
+                alt=""
+                className="h-full w-full object-cover"
+                loading="lazy"
+              />
+            ) : (
+              s.name.slice(0, 2).toUpperCase()
+            )}
           </Link>
         );
       })}

@@ -58,3 +58,12 @@ export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
 export async function disconnectPrisma(): Promise<void> {
   await _getOrCreate().$disconnect();
 }
+
+// Federation #23 — Server.iconUrl maintenance (resolve local icons via the
+// storage backend; backfill on scan-complete). Exported here so both the api
+// and the BullMQ worker can reach it.
+export {
+  resolveServerIconUrl,
+  refreshServerIconsForAttachment,
+  type IconUrlResolver,
+} from './server-icon.js';

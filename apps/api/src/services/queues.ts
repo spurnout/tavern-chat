@@ -16,7 +16,7 @@ import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { ClamAVScanner, runScanJob, type StorageBackend } from '@tavern/media';
 import type { FastifyBaseLogger } from 'fastify';
-import { prisma } from '@tavern/db';
+import { prisma, refreshServerIconsForAttachment } from '@tavern/db';
 import {
   dispatchOutboxJob,
   FederationOutboxPermanentError,
@@ -131,6 +131,17 @@ class InMemoryQueueClient implements QueueClient {
               userId: uploaderId,
               data: { attachmentId: id, status },
             });
+            // #23 — if this attachment is a server icon, backfill the resolved
+            // `Server.iconUrl` now that scanning is done. Fire-and-forget; a
+            // failure here must not affect the ready notification above.
+            void refreshServerIconsForAttachment(id, this.deps.storage).catch(
+              (err: unknown) => {
+                this.deps.logger.warn(
+                  { err: err instanceof Error ? err.message : String(err), attachmentId: id },
+                  'server-icon URL backfill failed',
+                );
+              },
+            );
           },
         },
       ).catch((err: unknown) => {

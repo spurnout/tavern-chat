@@ -35,6 +35,12 @@ interface ServerRow {
   name: string;
   description: string | null;
   iconAttachmentId: string | null;
+  /**
+   * Resolved public icon URL. Maintained on write (local icon set / scan-ready)
+   * or stored from the home (mirrors). Optional on the row shape because some
+   * legacy queries don't select it yet; treated as null when absent.
+   */
+  iconUrl?: string | null;
   defaultRoleId: string | null;
   /** P3-10 — per-Tavern federation opt-in. */
   federationEnabled: boolean;
@@ -63,6 +69,7 @@ export function serializeServer(row: ServerRow): ServerDto {
     name: row.name,
     description: row.description,
     iconAttachmentId: row.iconAttachmentId,
+    iconUrl: row.iconUrl ?? null,
     defaultRoleId: row.defaultRoleId ?? '',
     federationEnabled: row.federationEnabled,
     originInstanceId: row.originInstanceId ?? null,

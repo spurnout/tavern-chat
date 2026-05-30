@@ -9,6 +9,14 @@ export const serverSchema = z.object({
   name: z.string().min(NAME_LIMITS.MIN_SERVER_NAME).max(NAME_LIMITS.MAX_SERVER_NAME),
   description: z.string().max(NAME_LIMITS.MAX_DESCRIPTION).nullable(),
   iconAttachmentId: idSchema.nullable(),
+  /**
+   * Resolved, peer-fetchable public URL for the server icon, or null when no
+   * icon is set (or a local icon attachment is not yet `ready`). The web
+   * renders this as an `<img>` with an initials fallback; the raw
+   * `iconAttachmentId` above is retained for edit flows. Optional with a null
+   * default for forward-compat with clients pinned to an older server build.
+   */
+  iconUrl: z.string().url().nullable().default(null),
   defaultRoleId: idSchema,
   /**
    * Federation Phase 3 — per-Tavern opt-in. When false, no messages are

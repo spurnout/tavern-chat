@@ -204,6 +204,35 @@ describe.skipIf(!dockerOk)('FederationMirrorService', () => {
       expect(member).not.toBeNull();
     });
 
+    it('persists the home icon URL on the mirror Server row (#23)', async () => {
+      const { peerId, remoteUserId } = await seedPeerAndRemoteUser({
+        host: `peer-${ulid().toLowerCase()}.example`,
+        localpart: 'iris',
+      });
+      const service = buildService();
+      const serverId = ulid();
+      const iconUrl = `https://${'icons'}.example/api/_attachments/main/${ulid()}.png`;
+
+      await runTx((tx) =>
+        service.createMirrorServer({
+          tx,
+          serverId,
+          originInstanceId: peerId,
+          ownerRemoteUserId: remoteUserId,
+          name: 'Iconned Mirror',
+          description: null,
+          iconUrl,
+        }),
+      );
+
+      const server = await prisma.server.findUniqueOrThrow({
+        where: { id: serverId },
+      });
+      // Mirrors hold the home's public URL directly; no local attachment.
+      expect(server.iconUrl).toBe(iconUrl);
+      expect(server.iconAttachmentId).toBeNull();
+    });
+
     it('throws MirrorServerExistsError when serverId is already a mirror', async () => {
       const { peerId, remoteUserId } = await seedPeerAndRemoteUser({
         host: `peer-${ulid().toLowerCase()}.example`,
@@ -588,6 +617,52 @@ describe.skipIf(!dockerOk)('FederationMirrorService', () => {
       });
       expect(server.name).toBe('After');
       expect(server.description).toBe('after-desc');
+    });
+
+    it('updates and clears the icon URL when provided (#23)', async () => {
+      const owner = await seedPeerAndRemoteUser({
+        host: `peer-${ulid().toLowerCase()}.example`,
+        localpart: 'liam',
+      });
+      const service = buildService();
+      const serverId = ulid();
+      const firstIcon = `https://icons.example/api/_attachments/main/${ulid()}.png`;
+      await runTx((tx) =>
+        service.createMirrorServer({
+          tx,
+          serverId,
+          originInstanceId: owner.peerId,
+          ownerRemoteUserId: owner.remoteUserId,
+          name: 'Icon Update Mirror',
+          description: null,
+          iconUrl: firstIcon,
+        }),
+      );
+
+      // Change the icon URL.
+      const secondIcon = `https://icons.example/api/_attachments/main/${ulid()}.png`;
+      await runTx((tx) =>
+        service.updateMirrorServer(tx, { serverId, iconUrl: secondIcon }),
+      );
+      expect(
+        (await prisma.server.findUniqueOrThrow({ where: { id: serverId } })).iconUrl,
+      ).toBe(secondIcon);
+
+      // Omitting iconUrl leaves it untouched (only name changes).
+      await runTx((tx) =>
+        service.updateMirrorServer(tx, { serverId, name: 'Renamed' }),
+      );
+      expect(
+        (await prisma.server.findUniqueOrThrow({ where: { id: serverId } })).iconUrl,
+      ).toBe(secondIcon);
+
+      // Explicit null clears it.
+      await runTx((tx) =>
+        service.updateMirrorServer(tx, { serverId, iconUrl: null }),
+      );
+      expect(
+        (await prisma.server.findUniqueOrThrow({ where: { id: serverId } })).iconUrl,
+      ).toBeNull();
     });
   });
 
