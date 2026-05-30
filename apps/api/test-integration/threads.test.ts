@@ -192,4 +192,81 @@ describe.skipIf(!dockerOk)('thread title sanitization', () => {
       await app.close();
     }
   });
+
+  // ---- GET /api/threads/:id (single-thread fetch) -------------------------
+
+  it('fetches a single thread by id (200) for a channel member', async () => {
+    const userId = await makeUser('host');
+    const { channelId } = await makeServerWithChannel(userId);
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(userId);
+      const rootId = await postRootMessage(app, token, channelId);
+      const created = await app.inject({
+        method: 'POST',
+        url: `/api/channels/${channelId}/messages/${rootId}/threads`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { title: 'War council' },
+      });
+      const threadId = (created.json() as OkBody<{ id: string }>).data.id;
+
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${threadId}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as OkBody<{ id: string; channelId: string; title: string | null }>;
+      expect(body.data.id).toBe(threadId);
+      expect(body.data.channelId).toBe(channelId);
+      expect(body.data.title).toBe('War council');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns 404 for an unknown thread id', async () => {
+    const userId = await makeUser('host');
+    await makeServerWithChannel(userId);
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(userId);
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${ulid()}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('denies a non-member fetching a thread (not 200)', async () => {
+    const ownerId = await makeUser('host');
+    const outsiderId = await makeUser('outsider');
+    const { channelId } = await makeServerWithChannel(ownerId);
+    const app = await buildTestApp();
+    try {
+      const ownerToken = await mintToken(ownerId);
+      const rootId = await postRootMessage(app, ownerToken, channelId);
+      const created = await app.inject({
+        method: 'POST',
+        url: `/api/channels/${channelId}/messages/${rootId}/threads`,
+        headers: { authorization: `Bearer ${ownerToken}` },
+        payload: { title: 'Private' },
+      });
+      const threadId = (created.json() as OkBody<{ id: string }>).data.id;
+
+      const outsiderToken = await mintToken(outsiderId);
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/threads/${threadId}`,
+        headers: { authorization: `Bearer ${outsiderToken}` },
+      });
+      expect(res.statusCode).not.toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
 });

@@ -4,6 +4,7 @@ import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useRealtime } from '../lib/store.js';
+import { useAuth } from '../lib/auth.js';
 
 interface Thread {
   id: string;
@@ -20,6 +21,11 @@ interface Props {
   threadId: string;
   rootMessage?: Message | null;
   onClose: () => void;
+}
+
+interface PendingReply {
+  tempId: string;
+  content: string;
 }
 
 const EMPTY_MESSAGES: never[] = [];
@@ -41,12 +47,18 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
   const messages = messagesByThread[threadId] ?? EMPTY_MESSAGES;
   const setThreadMessages = useRealtime((s) => s.setThreadMessages);
   const upsertThreadMessage = useRealtime((s) => s.upsertThreadMessage);
+  const me = useAuth((s) => s.me);
   const [content, setContent] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  // Optimistic in-flight replies. Kept local (not in the store) so they never
+  // collide with the real message that arrives via the POST response or the
+  // gateway broadcast — each entry is dropped the moment its POST settles.
+  const [pending, setPending] = useState<PendingReply[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     api<Message[]>(`/threads/${threadId}/messages`)
       .then((data) => {
         if (cancelled) return;
@@ -54,6 +66,9 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
       })
       .catch(() => {
         if (!cancelled) toast.error('Could not load thread.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
@@ -61,41 +76,49 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
   }, [setThreadMessages, threadId]);
 
   useEffect(() => {
-    // Best-effort: fetch the thread itself to render the title.
-    // The list endpoint returns threads for a channel; we don't have a
-    // single-thread fetch, so derive what we can from the root message.
-    if (rootMessage?.channelId) {
-      api<Thread[]>(`/channels/${rootMessage.channelId}/threads`)
-        .then((threads) => {
-          const t = threads.find((x) => x.id === threadId);
-          if (t) setThread(t);
-        })
-        .catch(() => undefined);
-    }
-  }, [threadId, rootMessage?.channelId]);
+    // Resolve the thread itself (for the title) in one O(1) round-trip — works
+    // even when the panel is opened without a root message to anchor on.
+    let cancelled = false;
+    api<Thread>(`/threads/${threadId}`)
+      .then((t) => {
+        if (!cancelled) setThread(t);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  }, [messages.length, pending.length]);
 
   async function send(): Promise<void> {
     const trimmed = content.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
+    if (!trimmed) return;
+    const tempId = `temp-${randomNonce()}`;
+    // Optimistic: show the reply immediately and clear the box so the user can
+    // keep typing; reconcile when the POST resolves.
+    setPending((p) => [...p, { tempId, content: trimmed }]);
+    setContent('');
     try {
       const created = await api<Message>(`/threads/${threadId}/messages`, {
         method: 'POST',
         body: { content: trimmed, nonce: randomNonce() },
       });
       upsertThreadMessage(created);
-      setContent('');
+      setPending((p) => p.filter((x) => x.tempId !== tempId));
     } catch (err) {
+      setPending((p) => p.filter((x) => x.tempId !== tempId));
+      // Put the text back so the user can retry — unless they've already
+      // started composing something new.
+      setContent((c) => c || trimmed);
       toast.error(err instanceof ApiError ? err.message : 'Could not post to thread');
-    } finally {
-      setBusy(false);
     }
   }
+
+  const isEmpty = !loading && messages.length === 0 && pending.length === 0;
 
   return (
     <aside className="flex h-full w-96 max-w-[40vw] flex-col border-l border-subtle bg-sunken">
@@ -119,7 +142,9 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
         </div>
       ) : null}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
-        {messages.length === 0 ? (
+        {loading ? (
+          <p className="py-4 text-center text-sm text-fg-muted">Loading replies…</p>
+        ) : isEmpty ? (
           <p className="py-4 text-center text-sm text-fg-muted">No replies yet.</p>
         ) : (
           <ul className="space-y-2">
@@ -127,6 +152,12 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
               <li key={m.id} className="text-sm">
                 <span className="font-medium">{m.author.displayName}</span>{' '}
                 <span className="text-fg-muted">{m.content}</span>
+              </li>
+            ))}
+            {pending.map((p) => (
+              <li key={p.tempId} className="text-sm opacity-50">
+                <span className="font-medium">{me?.displayName ?? 'You'}</span>{' '}
+                <span className="text-fg-muted">{p.content}</span>
               </li>
             ))}
           </ul>
@@ -140,6 +171,7 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
         <div className="border-t border-subtle p-2">
           <div className="flex items-end gap-2">
             <textarea
+              autoFocus
               value={content}
               onChange={(e) => setContent(e.target.value)}
               onKeyDown={(e) => {
@@ -156,7 +188,7 @@ export function ThreadPanel({ threadId, rootMessage, onClose }: Props): JSX.Elem
               type="button"
               className="btn-primary"
               onClick={() => void send()}
-              disabled={busy || !content.trim()}
+              disabled={!content.trim()}
               aria-label="Send"
             >
               <Send size={14} />

@@ -134,6 +134,19 @@ export async function registerThreadRoutes(app: FastifyInstance): Promise<void> 
     reply.send(ok(threads.map(serializeThread)));
   });
 
+  // ---- Fetch a single thread --------------------------------------------
+  // Lets the thread side-panel resolve its own title in one O(1) round-trip
+  // (and without a root message to anchor on), instead of pulling the whole
+  // channel thread list and filtering client-side.
+  app.get('/api/threads/:id', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id } = z.object({ id: idSchema }).parse(req.params);
+    const thread = await prisma.thread.findUnique({ where: { id } });
+    if (!thread) throw TavernError.notFound('Thread not found');
+    await requireChannelPermission(thread.channelId, ctx.userId, Permission.VIEW_CHANNEL);
+    reply.send(ok(serializeThread(thread)));
+  });
+
   // ---- Create a thread from a message ------------------------------------
   app.post('/api/channels/:id/messages/:messageId/threads', async (req, reply) => {
     const ctx = await app.requireUser(req, reply);
