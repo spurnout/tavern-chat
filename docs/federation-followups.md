@@ -278,7 +278,9 @@ Verified the pre-prod checklist against live code — most items were already im
 - **#6 `assertValidPeerHost` (partial):** `*.local` / `*.localhost` now rejected synchronously (this review); the private-IP DNS check was already present. `*.internal` + DNS-rebinding remain (low severity).
 - **#16 dead-letter UI:** DONE — `admin-federation-page.tsx` lists failed outbox jobs with retry/discard, backed by `/api/admin/federation/dead-letters`.
 
-**Remaining pre-prod gap:** #7 (federated avatar/icon URLs 401) — needs a public media proxy, signed URLs, or inline bytes; coordinate with #12 (CSP) and #23 (icon scope). A design decision, deferred per the original note.
+- **#7 federated avatar URLs:** DONE — the original premise (attachments need auth) was **wrong**: the attachment route is an unauthenticated *capability* URL. The real bug was `FederationProfileService.deriveAvatarUrl` building a non-existent `/api/attachments/:id` path. It now emits `storage.getPublicUrl(bucket, key)` (absolute, peer-fetchable, both s3 and local backends) and only for `ready` attachments (never advertises unscanned bytes). `nginx.conf`'s example CSP gains `img-src https:` for #12. +2 integration tests.
+
+**Remaining (deferred — not pre-prod blockers):** #23 (Tavern *icon* byte/URL mirroring — `federation-mirror.ts` currently `void`s the received `iconUrl`; same fix pattern as #7 but broader surface) and #12's *production* CSP (owned by Traefik — must mirror the `img-src https:` allowance when avatar/icon federation is enabled).
 
 ### Phase 2 post-review fix-up
 

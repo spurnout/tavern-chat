@@ -404,6 +404,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
         keys: federationKeys!,
         userKeys: userKeys!,
         selfHost,
+        storage,
       });
       registerFederationProfileRoutes(app, { service: federationProfile });
       // P3-7 — inbound message-event endpoint. Re-uses the same profile

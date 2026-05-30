@@ -16,11 +16,14 @@ import type { FederationKeyStore } from './federation-keys.js';
 import type { UserKeyStore } from './user-keys.js';
 import { PeeringError, assertValidPeerHost } from './federation-peering.js';
 import { discoverInstance, postProfileEnvelope } from './federation-client.js';
+import type { StorageBackend } from '@tavern/media';
 
 export interface FederationProfileServiceOptions {
   keys: FederationKeyStore;
   userKeys: UserKeyStore;
   selfHost: string;
+  /** Storage backend — builds the public capability URL for avatar attachments. */
+  storage: StorageBackend;
   prisma?: PrismaClient;
 }
 
@@ -102,10 +105,11 @@ export class FederationProfileService {
       publicKeyRaw = raw;
     }
 
+    const avatarUrl = await this.deriveAvatarUrl(user.avatarAttachmentId);
     const responsePayload = {
       remoteUserId: `${user.username}@${this.opts.selfHost}`,
       displayName: user.displayName,
-      avatarUrl: this.deriveAvatarUrl(user.avatarAttachmentId) ?? undefined,
+      avatarUrl: avatarUrl ?? undefined,
       publicKey: `ed25519:${publicKeyRaw.toString('base64')}`,
     };
 
@@ -238,16 +242,24 @@ export class FederationProfileService {
   }
 
   /**
-   * Derive a public avatar URL from an attachment id. Returns null if no avatar.
-   * For Phase 2: simple URL based on PUBLIC_BASE_URL is enough — the peer just
-   * caches the URL.
+   * Derive a public avatar URL from an attachment id. Returns null when there
+   * is no avatar or the attachment is not `ready` (still scanning / rejected —
+   * we never advertise unscanned bytes to peers).
+   *
+   * Uses the storage backend's canonical public URL — the same unauthenticated
+   * capability URL the app serializes for local clients (`/api/_attachments/...`
+   * for s3, `/api/_local-files/...` for local), made absolute via
+   * PUBLIC_BASE_URL. A peer can fetch it directly. The previous hand-built
+   * `/api/attachments/:id` path did not exist on any backend and always 404'd.
    */
-  private deriveAvatarUrl(attachmentId: string | null): string | null {
+  private async deriveAvatarUrl(attachmentId: string | null): Promise<string | null> {
     if (!attachmentId) return null;
-    // The attachment lookup endpoint is at /api/attachments/:id — peers can
-    // fetch it directly. For Phase 2 we trust the existing attachment route to
-    // serve the right thing; we just construct a URL.
-    return `https://${this.opts.selfHost}/api/attachments/${attachmentId}`;
+    const att = await this.prisma.attachment.findUnique({
+      where: { id: attachmentId },
+      select: { storageBucket: true, storageKey: true, status: true },
+    });
+    if (!att || att.status !== 'ready') return null;
+    return this.opts.storage.getPublicUrl(att.storageBucket, att.storageKey);
   }
 }
 

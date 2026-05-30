@@ -118,6 +118,132 @@ describe.skipIf(!dockerOk)('federation profile — inbound (phase 2)', () => {
     await app.close();
   });
 
+  it('ready avatar → avatarUrl is the public capability URL (not the old /api/attachments path)', async () => {
+    const peerKp = generateKeyPair();
+    const peerHost = 'b.example';
+    await prisma.remoteInstance.create({
+      data: {
+        id: ulid(),
+        host: peerHost,
+        instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+        status: 'peered',
+        capabilities: ['messages'],
+        peeredAt: new Date(),
+      },
+    });
+
+    const userId = ulid();
+    const username = `bob-${userId.slice(-6).toLowerCase()}`;
+    await prisma.user.create({
+      data: {
+        id: userId,
+        username,
+        usernameLower: username,
+        displayName: 'Bob Test',
+        email: `${username}@example.com`,
+        emailLower: `${username}@example.com`,
+        passwordHash: 'x',
+      },
+    });
+    // A READY image attachment owned by the user, set as their avatar.
+    const attId = ulid();
+    const storageKey = `${userId}/${attId}/avatar.png`;
+    await prisma.attachment.create({
+      data: {
+        id: attId,
+        uploaderId: userId,
+        kind: 'image',
+        filename: 'avatar.png',
+        mimeType: 'image/png',
+        sizeBytes: BigInt(1234),
+        storageBucket: 'tavern-media',
+        storageKey,
+        status: 'ready',
+      },
+    });
+    await prisma.user.update({ where: { id: userId }, data: { avatarAttachmentId: attId } });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const envelope = buildSignedEnvelope({
+      eventType: 'profile.request',
+      fromInstance: peerHost,
+      toInstance: 'a.example',
+      payload: { localpart: username },
+      sign: (bytes) => edSign(bytes, peerKp.privateKey),
+    });
+    const res = await app.inject({ method: 'POST', url: '/_federation/profile', payload: envelope });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // Absolute, peer-fetchable URL via PUBLIC_BASE_URL. The test env uses the
+    // local storage backend → /api/_local-files/<bucket>/<urlencoded-key>.
+    expect(body.payload.avatarUrl).toBe(
+      `https://a.example/api/_local-files/tavern-media/${encodeURIComponent(storageKey)}`,
+    );
+
+    await app.close();
+  });
+
+  it('a non-ready (pending) avatar attachment yields no avatarUrl', async () => {
+    const peerKp = generateKeyPair();
+    const peerHost = 'b.example';
+    await prisma.remoteInstance.create({
+      data: {
+        id: ulid(),
+        host: peerHost,
+        instanceKey: exportPublicKeyRaw(peerKp.publicKey),
+        status: 'peered',
+        capabilities: ['messages'],
+        peeredAt: new Date(),
+      },
+    });
+
+    const userId = ulid();
+    const username = `carol-${userId.slice(-6).toLowerCase()}`;
+    await prisma.user.create({
+      data: {
+        id: userId,
+        username,
+        usernameLower: username,
+        displayName: 'Carol Test',
+        email: `${username}@example.com`,
+        emailLower: `${username}@example.com`,
+        passwordHash: 'x',
+      },
+    });
+    const attId = ulid();
+    await prisma.attachment.create({
+      data: {
+        id: attId,
+        uploaderId: userId,
+        kind: 'image',
+        filename: 'avatar.png',
+        mimeType: 'image/png',
+        sizeBytes: BigInt(1234),
+        storageBucket: 'tavern-media',
+        storageKey: `${userId}/${attId}/avatar.png`,
+        status: 'pending', // still scanning — must NOT be advertised to peers
+      },
+    });
+    await prisma.user.update({ where: { id: userId }, data: { avatarAttachmentId: attId } });
+
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+    const envelope = buildSignedEnvelope({
+      eventType: 'profile.request',
+      fromInstance: peerHost,
+      toInstance: 'a.example',
+      payload: { localpart: username },
+      sign: (bytes) => edSign(bytes, peerKp.privateKey),
+    });
+    const res = await app.inject({ method: 'POST', url: '/_federation/profile', payload: envelope });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.payload.avatarUrl == null).toBe(true);
+
+    await app.close();
+  });
+
   it('unknown user: peered peer but non-existent localpart → 404', async () => {
     const peerKp = generateKeyPair();
     const peerHost = 'b.example';
