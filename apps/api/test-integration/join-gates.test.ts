@@ -945,4 +945,34 @@ describe.skipIf(!dockerOk)('join-gate routes (apps/api/src/routes/join-gates.ts)
       await app.close();
     }
   });
+
+  it('POST .../review/:userId is 404 (not 500) when the target user has not submitted an answer', async () => {
+    const ownerId = await makeUser('owner');
+    const memberId = await makeUser('member');
+    const { serverId } = await makeServer(ownerId);
+    await addMember(serverId, memberId);
+    await makeJoinGate(serverId, { enabled: true });
+    // The member is on the server but never submitted a JoinGateAnswer, so the
+    // review handler has no row to update. It must 404, not fall through to 500.
+
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(ownerId);
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/servers/${serverId}/join-gate/review/${memberId}`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { approved: true },
+      });
+      expect(res.statusCode).toBe(404);
+
+      // No side effects: gatePassedAt must not have been stamped.
+      const member = await prisma.serverMember.findUniqueOrThrow({
+        where: { serverId_userId: { serverId, userId: memberId } },
+      });
+      expect(member.gatePassedAt).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
 });

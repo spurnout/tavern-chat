@@ -105,6 +105,13 @@ export async function registerJoinGateRoutes(app: FastifyInstance): Promise<void
     const body = reviewSchema.parse(req.body);
     await requireServerPermission(serverId, ctx.userId, Permission.MANAGE_MESSAGES);
 
+    // Without this guard, tx.joinGateAnswer.update on a missing row throws
+    // Prisma P2025, which the global handler maps to 500. Return 404 instead.
+    const existing = await prisma.joinGateAnswer.findUnique({
+      where: { serverId_userId: { serverId, userId } },
+    });
+    if (!existing) throw TavernError.notFound('No pending answer for this user');
+
     await prisma.$transaction(async (tx) => {
       await tx.joinGateAnswer.update({
         where: { serverId_userId: { serverId, userId } },
