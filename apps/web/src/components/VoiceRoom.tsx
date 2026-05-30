@@ -7,25 +7,7 @@ import {
   type RemoteParticipant,
   type TrackPublication,
 } from 'livekit-client';
-import {
-  Circle,
-  Hand,
-  Maximize2,
-  Mic,
-  MicOff,
-  Minimize2,
-  Monitor,
-  MonitorOff,
-  Music,
-  Pen,
-  PhoneOff,
-  Pin,
-  PinOff,
-  Users,
-  Video,
-  VideoOff,
-  Volume2,
-} from 'lucide-react';
+import { Volume2 } from 'lucide-react';
 import { Permission, type VoiceStateGatewayPayload } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
 import { playSound } from '../lib/sound.js';
@@ -47,17 +29,11 @@ import {
   onRecordingStarted,
   onRecordingStopped,
 } from '../lib/voice-events.js';
-import { MemberProfileTrigger } from './MemberProfileTrigger.js';
-import { ScreenShareSettingsPopover } from './ScreenShareSettingsPopover.js';
-import { SpeakingIndicator } from './SpeakingIndicator.js';
-import { SoundboardPanel } from './SoundboardPanel.js';
-import { BreakoutsPanel } from './BreakoutsPanel.js';
 import { RecordingConsentDialog } from './RecordingConsentDialog.js';
-import { RecordingControls } from './RecordingControls.js';
-import { WatchPartyPanel } from './WatchPartyPanel.js';
-import { Whiteboard } from './Whiteboard.js';
-import { LiveCaptions, CaptionsToggleButton } from './LiveCaptions.js';
 import { useCaptions, type CaptionLine } from '../lib/captions-store.js';
+import { PresenterLayout } from './voice/PresenterLayout.js';
+import { VoiceControlBar } from './voice/VoiceControlBar.js';
+import { VoiceParticipantGrid, type ParticipantRowData } from './voice/VoiceParticipantGrid.js';
 
 // Stable module-scoped fallback for the "no captions for this channel
 // yet" path. Same trap as the four selectors fixed in commit 7a9e99e:
@@ -665,147 +641,76 @@ export function VoiceRoom({
     </>
   );
 
-  const controlButtons = (
-    <>
-      <button
-        type="button"
-        className={muted ? 'btn-ghost' : 'btn-primary'}
-        onClick={() => void toggleMic()}
-        disabled={status !== 'connected'}
-        aria-pressed={!muted}
-        title={muted ? 'Unmute' : 'Mute'}
-      >
-        {muted ? <MicOff size={16} /> : <Mic size={16} />}
-      </button>
-      <button
-        type="button"
-        className={cameraOn ? 'btn-primary' : 'btn-ghost'}
-        onClick={() => void toggleCamera()}
-        disabled={status !== 'connected' || !allowed?.canPublishVideo}
-        aria-pressed={cameraOn}
-        title={cameraOn ? 'Stop camera' : 'Start camera'}
-      >
-        {cameraOn ? <Video size={16} /> : <VideoOff size={16} />}
-      </button>
-      <div className="flex items-center">
-        <button
-          type="button"
-          className={screenOn ? 'btn-primary' : 'btn-ghost'}
-          onClick={() => void toggleScreenShare()}
-          disabled={status !== 'connected' || !allowed?.canPublishScreenShare || shareInflight}
-          aria-pressed={screenOn}
-          title={
-            !allowed?.canPublishScreenShare
-              ? "Screen sharing isn't allowed in this room."
-              : screenOn
-                ? 'Stop sharing'
-                : 'Share your screen'
+  const participantRows: ParticipantRowData[] = participants.map((p) => {
+    const vs = voiceStatesByUser[p.identity];
+    const stageBadge: 'speaker' | 'audience' | null = isStage
+      ? (vs?.stagePosition ?? 'audience')
+      : null;
+    const handRaised = isStage && !!vs?.handRaisedAt;
+    const hostActions =
+      isStage && isStageHost && p.identity !== me?.id
+        ? {
+            onPromote: () =>
+              void api(`/voice/${channelId}/promote/${p.identity}`, {
+                method: 'POST',
+              }).catch((err) =>
+                toast.error(err instanceof Error ? err.message : 'Promote failed'),
+              ),
+            onDemote: () =>
+              void api(`/voice/${channelId}/demote/${p.identity}`, {
+                method: 'POST',
+              }).catch((err) =>
+                toast.error(err instanceof Error ? err.message : 'Demote failed'),
+              ),
           }
-        >
-          {screenOn ? <Monitor size={16} /> : <MonitorOff size={16} />}
-        </button>
-        <ScreenShareSettingsPopover
-          disabled={status !== 'connected' || !allowed?.canPublishScreenShare || screenOn || shareInflight}
-          value={shareOptions}
-          onChange={setShareOptions}
-          open={shareOptionsOpen}
-          onOpenChange={setShareOptionsOpen}
-        />
-      </div>
-      <div className="relative">
-        <button
-          type="button"
-          className={soundboardOpen ? 'btn-primary' : 'btn-ghost'}
-          onClick={() => setSoundboardOpen((v) => !v)}
-          disabled={status !== 'connected'}
-          aria-pressed={soundboardOpen}
-          title="Soundboard"
-        >
-          <Music size={16} />
-        </button>
-        {soundboardOpen ? (
-          <SoundboardPanel
-            serverId={serverId}
-            voiceChannelId={channelId}
-            onClose={() => setSoundboardOpen(false)}
-          />
-        ) : null}
-      </div>
-      <div className="relative">
-        <button
-          type="button"
-          className={whiteboardOpen ? 'btn-primary' : 'btn-ghost'}
-          onClick={() => setWhiteboardOpen((v) => !v)}
-          disabled={status !== 'connected'}
-          aria-pressed={whiteboardOpen}
-          title="Whiteboard"
-        >
-          <Pen size={16} />
-        </button>
-        {whiteboardOpen ? (
-          <Whiteboard
-            channelId={channelId}
-            serverId={serverId}
-            onClose={() => setWhiteboardOpen(false)}
-          />
-        ) : null}
-      </div>
-      <CaptionsToggleButton enabled={captionsOn} onToggle={() => setCaptionsOn((v) => !v)} />
-      <RecordingControls
-        channelId={channelId}
-        room={room}
-        meId={me?.id ?? ''}
-        participantIds={participants.map((p) => p.identity)}
-        isHost={isStageHost}
-      />
-      {isStageHost ? (
-        <div className="relative">
-          <button
-            type="button"
-            className={breakoutsOpen ? 'btn-primary' : 'btn-ghost'}
-            onClick={() => setBreakoutsOpen((v) => !v)}
-            disabled={status !== 'connected'}
-            aria-pressed={breakoutsOpen}
-            title="Breakouts"
-          >
-            <Users size={16} />
-          </button>
-          {breakoutsOpen ? (
-            <BreakoutsPanel
-              channelId={channelId}
-              participants={participants}
-              onClose={() => setBreakoutsOpen(false)}
-            />
-          ) : null}
-        </div>
-      ) : null}
-      {isStage && myStagePosition === 'audience' ? (
-        <button
-          type="button"
-          className={myHandRaisedAt ? 'btn-primary' : 'btn-ghost'}
-          onClick={() =>
-            void api(`/voice/${channelId}/${myHandRaisedAt ? 'lower-hand' : 'raise-hand'}`, {
-              method: 'POST',
-            }).catch((err) =>
-              toast.error(err instanceof Error ? err.message : 'Could not signal'),
-            )
-          }
-          disabled={status !== 'connected'}
-          aria-pressed={!!myHandRaisedAt}
-          title={myHandRaisedAt ? 'Lower hand' : 'Raise hand'}
-        >
-          <Hand size={16} />
-        </button>
-      ) : null}
-      <button
-        type="button"
-        className="btn-danger"
-        onClick={() => void leave()}
-        title="Leave the room"
-      >
-        <PhoneOff size={16} />
-      </button>
-    </>
+        : null;
+    return { participant: p, stageBadge, handRaised, hostActions };
+  });
+
+  const controlBar = (
+    <VoiceControlBar
+      status={status}
+      room={room}
+      allowed={allowed}
+      participants={participants}
+      muted={muted}
+      cameraOn={cameraOn}
+      screenOn={screenOn}
+      shareInflight={shareInflight}
+      shareOptions={shareOptions}
+      shareOptionsOpen={shareOptionsOpen}
+      soundboardOpen={soundboardOpen}
+      whiteboardOpen={whiteboardOpen}
+      captionsOn={captionsOn}
+      breakoutsOpen={breakoutsOpen}
+      isStage={isStage}
+      isStageHost={isStageHost}
+      myStagePosition={myStagePosition}
+      myHandRaisedAt={myHandRaisedAt}
+      channelId={channelId}
+      serverId={serverId}
+      meId={me?.id ?? ''}
+      onToggleMic={() => void toggleMic()}
+      onToggleCamera={() => void toggleCamera()}
+      onToggleScreenShare={() => void toggleScreenShare()}
+      onLeave={() => void leave()}
+      onSoundboardToggle={() => setSoundboardOpen((v) => !v)}
+      onWhiteboardToggle={() => setWhiteboardOpen((v) => !v)}
+      onCaptionsToggle={() => setCaptionsOn((v) => !v)}
+      onBreakoutsToggle={() => setBreakoutsOpen((v) => !v)}
+      onShareOptionsChange={setShareOptions}
+      onShareOptionsOpenChange={setShareOptionsOpen}
+      onRaiseHand={() =>
+        void api(`/voice/${channelId}/raise-hand`, { method: 'POST' }).catch((err) =>
+          toast.error(err instanceof Error ? err.message : 'Could not signal'),
+        )
+      }
+      onLowerHand={() =>
+        void api(`/voice/${channelId}/lower-hand`, { method: 'POST' }).catch((err) =>
+          toast.error(err instanceof Error ? err.message : 'Could not signal'),
+        )
+      }
+    />
   );
 
   // Minimized: collapse to a single-row bar. The LiveKit Room object lives in
@@ -828,7 +733,7 @@ export function VoiceRoom({
             <div className="truncate text-xs text-fg-muted">{statusLine}</div>
           </div>
         </button>
-        <div className="flex shrink-0 items-center gap-2">{controlButtons}</div>
+        <div className="flex shrink-0 items-center gap-2">{controlBar}</div>
       </div>
     );
   }
@@ -844,7 +749,7 @@ export function VoiceRoom({
             <div className="text-xs text-fg-muted">{statusLine}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">{controlButtons}</div>
+        <div className="flex items-center gap-2">{controlBar}</div>
       </header>
 
       {shareDropped ? (
@@ -877,476 +782,18 @@ export function VoiceRoom({
           serverId={serverId}
         />
       ) : (
-        <div className="relative flex flex-1 flex-col overflow-y-auto">
-          {status === 'connected' && !minimized ? (
-            <div className="px-4 pt-4">
-              <WatchPartyMount channelId={channelId} />
-            </div>
-          ) : null}
-          <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
-            {participants.map((p) => {
-              const vs = voiceStatesByUser[p.identity];
-              const stageBadge: 'speaker' | 'audience' | null = isStage
-                ? (vs?.stagePosition ?? 'audience')
-                : null;
-              const handRaised = isStage && !!vs?.handRaisedAt;
-              const hostActions =
-                isStage && isStageHost && p.identity !== me?.id
-                  ? {
-                      onPromote: () =>
-                        void api(`/voice/${channelId}/promote/${p.identity}`, {
-                          method: 'POST',
-                        }).catch((err) =>
-                          toast.error(err instanceof Error ? err.message : 'Promote failed'),
-                        ),
-                      onDemote: () =>
-                        void api(`/voice/${channelId}/demote/${p.identity}`, {
-                          method: 'POST',
-                        }).catch((err) =>
-                          toast.error(err instanceof Error ? err.message : 'Demote failed'),
-                        ),
-                    }
-                  : null;
-              return (
-                <ParticipantCameraTile
-                  key={p.identity}
-                  participant={p}
-                  serverId={serverId}
-                  stageBadge={stageBadge}
-                  handRaised={handRaised}
-                  hostActions={hostActions}
-                  recordingActive={recordingActive}
-                />
-              );
-            })}
-            {participants.length === 0 && status === 'connected' ? (
-              <div className="col-span-full grid place-items-center text-fg-muted">
-                Just you for now.
-              </div>
-            ) : null}
-          </div>
-          {status === 'connected' && !minimized ? (
-            <CaptionsMount
-              channelId={channelId}
-              enabled={captionsOn}
-              remoteLines={captionLines}
-            />
-          ) : null}
-        </div>
+        <VoiceParticipantGrid
+          channelId={channelId}
+          serverId={serverId}
+          status={status}
+          minimized={minimized}
+          rows={participantRows}
+          recordingActive={recordingActive}
+          captionsOn={captionsOn}
+          captionLines={captionLines}
+        />
       )}
     </div>
   );
 }
 
-function CaptionsMount({
-  channelId,
-  enabled,
-  remoteLines,
-}: {
-  channelId: string;
-  enabled: boolean;
-  remoteLines: ReturnType<typeof useCaptions.getState>['linesByChannel'][string];
-}): JSX.Element | null {
-  const me = useAuth((s) => s.me);
-  if (!me) return null;
-  return (
-    <LiveCaptions
-      channelId={channelId}
-      userId={me.id}
-      displayName={me.displayName || me.username}
-      enabled={enabled}
-      remoteLines={remoteLines ?? []}
-    />
-  );
-}
-
-function WatchPartyMount({ channelId }: { channelId: string }): JSX.Element | null {
-  const me = useAuth((s) => s.me);
-  if (!me) return null;
-  return <WatchPartyPanel channelId={channelId} userId={me.id} />;
-}
-
-interface PresenterLayoutProps {
-  active: { participant: ParticipantAny; pub: TrackPublication };
-  participants: ParticipantAny[];
-  pinnedIdentity: string | null;
-  onTogglePin: (identity: string) => void;
-  serverId: string;
-}
-
-function PresenterLayout({
-  active,
-  participants,
-  pinnedIdentity,
-  onTogglePin,
-  serverId,
-}: PresenterLayoutProps): JSX.Element {
-  const isPinned = pinnedIdentity === active.participant.identity;
-  return (
-    <div className="flex flex-1 min-h-0 flex-col">
-      <div className="flex-1 min-h-0 px-4 pt-4">
-        <ScreenShareTile
-          participant={active.participant}
-          publication={active.pub}
-          isPinned={isPinned}
-          onTogglePin={() => onTogglePin(active.participant.identity)}
-        />
-      </div>
-      <div className="flex shrink-0 gap-2 overflow-x-auto px-4 py-3">
-        {participants.map((p) => (
-          <div key={p.identity} className="w-32 shrink-0">
-            <ParticipantCameraTile participant={p} serverId={serverId} compact />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ParticipantCameraTile({
-  participant,
-  serverId,
-  compact = false,
-  stageBadge = null,
-  handRaised = false,
-  hostActions = null,
-  recordingActive = false,
-}: {
-  participant: ParticipantAny;
-  serverId: string;
-  compact?: boolean;
-  /** Wave 3 #25 — present on stage channels only. */
-  stageBadge?: 'speaker' | 'audience' | null;
-  handRaised?: boolean;
-  hostActions?: { onPromote: () => void; onDemote: () => void } | null;
-  /** Wave 3 #32 — show a red dot in the corner while recording is active. */
-  recordingActive?: boolean;
-}): JSX.Element {
-  const speaking = participant.isSpeaking;
-  const cameraTrack = participant.getTrackPublication(Track.Source.Camera);
-  const hasVideo = !!cameraTrack && !cameraTrack.isMuted && !!cameraTrack.track;
-
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  // Watching `cameraTrack?.track` (not just the publication object) matters:
-  // LiveKit can swap the underlying MediaStreamTrack on the same publication
-  // after a reconnect/codec switch, and we'd otherwise hold a dead reference.
-  const track = cameraTrack?.track;
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!track || !el || !hasVideo) return;
-    track.attach(el);
-    return () => {
-      track.detach(el);
-    };
-  }, [track, hasVideo]);
-
-  // Wave 3 #31 — per-user audio mixer. Sliders on remote participants only;
-  // your own outgoing level is set by the OS mic. Persisted by identity so
-  // a reconnect (or a re-join after navigating away) restores the chosen
-  // mix. Local-only — never sent to the server.
-  const [volume, setVolume] = useVoiceParticipantVolume(participant);
-
-  const displayName = participant.name ?? participant.identity;
-  return (
-    <div
-      role="status"
-      aria-label={`${displayName}${participant.isMicrophoneEnabled ? ', mic on' : ', mic off'}`}
-      className={`group relative aspect-video overflow-hidden rounded-md border bg-surface transition-base ${
-        speaking ? 'border-ember' : 'border-subtle'
-      }`}
-    >
-      {hasVideo ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={participant.isLocal}
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <div
-          className={`grid h-full place-items-center font-serif font-semibold ${compact ? 'text-base' : 'text-2xl'}`}
-        >
-          {displayName.slice(0, 2).toUpperCase()}
-        </div>
-      )}
-      {handRaised ? (
-        <span className="absolute left-1 top-1 rounded bg-tint-ember px-1.5 py-0.5 text-[10px] font-medium text-fg">
-          Hand raised
-        </span>
-      ) : null}
-      {recordingActive ? (
-        <span
-          className="absolute right-1 top-1 inline-flex items-center gap-1 rounded bg-overlay/80 px-1.5 py-0.5 text-[10px] text-fg"
-          title="This session is being recorded"
-        >
-          <Circle size={8} className="fill-rust text-rust" />
-          REC
-        </span>
-      ) : null}
-      {stageBadge === 'audience' ? (
-        <span className="absolute left-1 bottom-7 rounded bg-sunken/80 px-1.5 py-0.5 text-[10px] text-fg-muted">
-          Audience
-        </span>
-      ) : null}
-      {hostActions ? (
-        <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          {stageBadge === 'audience' ? (
-            <button
-              type="button"
-              onClick={hostActions.onPromote}
-              className="rounded bg-surface/90 px-2 py-0.5 text-[10px] hover:bg-raised"
-              title="Promote to speaker"
-            >
-              Promote
-            </button>
-          ) : null}
-          {stageBadge === 'speaker' ? (
-            <button
-              type="button"
-              onClick={hostActions.onDemote}
-              className="rounded bg-surface/90 px-2 py-0.5 text-[10px] hover:bg-raised"
-              title="Demote to audience"
-            >
-              Demote
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      <MemberProfileTrigger
-        userId={participant.identity}
-        serverId={serverId}
-        side="top"
-        align="start"
-      >
-        <button
-          type="button"
-          aria-label={`View profile of ${displayName}`}
-          className="absolute inset-x-0 bottom-0 flex w-full items-center justify-between bg-overlay/80 px-2 py-1 text-xs hover:bg-overlay/90 focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
-        >
-          <span className="truncate">{displayName}</span>
-          <span
-            aria-hidden
-            className={speaking ? 'text-ember' : 'text-fg-muted'}
-          >
-            {participant.isMicrophoneEnabled ? (
-              speaking ? <SpeakingIndicator /> : <Mic size={12} />
-            ) : (
-              <MicOff size={12} />
-            )}
-          </span>
-        </button>
-      </MemberProfileTrigger>
-      {!participant.isLocal && volume !== null ? (
-        <div className="group/vol pointer-events-none absolute right-1 top-1">
-          <button
-            type="button"
-            className="pointer-events-auto rounded bg-overlay/80 p-1 text-fg-muted hover:bg-overlay focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
-            aria-label={`Audio volume for ${displayName}`}
-            title={`Volume: ${Math.round(volume * 100)}%`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Volume2 size={12} />
-          </button>
-          <div className="pointer-events-auto absolute right-0 top-full mt-1 hidden rounded border border-subtle bg-surface p-2 shadow-lg group-hover/vol:block">
-            <label className="block text-[10px] uppercase tracking-wider text-fg-muted">
-              Volume
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={Math.round(volume * 100)}
-              onChange={(e) => setVolume(Number(e.target.value) / 100)}
-              className="mt-1 h-1 w-28 cursor-pointer accent-ember"
-              aria-label={`Volume for ${displayName}`}
-            />
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * Per-participant local audio volume, in [0, 1]. Persists to localStorage
- * keyed by participant identity so the mix survives reconnects. Returns
- * `null` for participants where setVolume isn't available (local participant
- * or older LiveKit clients) so the caller can hide the slider entirely.
- */
-function useVoiceParticipantVolume(
-  participant: ParticipantAny,
-): [number | null, (next: number) => void] {
-  const storageKey = `tavern.voiceVolume.${participant.identity}`;
-  const [volume, setLocalVolume] = useState<number | null>(() => {
-    if (participant.isLocal) return null;
-    if (typeof window === 'undefined') return 1;
-    const raw = window.localStorage.getItem(storageKey);
-    const parsed = raw ? Number(raw) : NaN;
-    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 1;
-  });
-
-  // Apply the (possibly persisted) volume on mount and whenever the
-  // participant identity changes. `setVolume` is on RemoteParticipant in
-  // LiveKit v2+; feature-detect so older clients silently no-op.
-  useEffect(() => {
-    if (participant.isLocal || volume === null) return;
-    const p = participant as { setVolume?: (v: number) => void };
-    if (typeof p.setVolume === 'function') {
-      p.setVolume(volume);
-    }
-  }, [participant, volume]);
-
-  function update(next: number): void {
-    const clamped = Math.max(0, Math.min(1, next));
-    setLocalVolume(clamped);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(storageKey, String(clamped));
-    }
-  }
-
-  return [volume, update];
-}
-
-function ScreenShareTile({
-  participant,
-  publication,
-  isPinned,
-  onTogglePin,
-}: {
-  participant: ParticipantAny;
-  publication: TrackPublication;
-  isPinned: boolean;
-  onTogglePin: () => void;
-}): JSX.Element {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
-
-  // Depend on `publication.track` rather than the publication object so a
-  // post-reconnect track replacement still re-attaches the live stream.
-  const track = publication.track;
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!track || !el) return;
-    try {
-      track.attach(el);
-    } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn('[voice] screen-share track.attach failed', err);
-      }
-    }
-    // Chrome on Windows leaves the local getDisplayMedia preview in an
-    // "attached but rendering all-black" state if the first capture frame
-    // arrives after the element has already painted. `track.attach()`
-    // already set srcObject; re-wrapping the same MediaStreamTrack in a
-    // fresh MediaStream forces the element to re-initialise its rendering
-    // pipeline, which consistently breaks Chrome out of the stuck state.
-    // The explicit play() is belt-and-suspenders on top of `autoPlay` —
-    // the AbortError if any is swallowed by the catch.
-    const mst = track.mediaStreamTrack;
-    if (mst) {
-      el.srcObject = new MediaStream([mst]);
-    }
-    void el.play().catch(() => {
-      // Autoplay can be rejected without a recent user gesture; starting
-      // a screen-share is itself a gesture so this should not fire.
-    });
-    if (import.meta.env.DEV) {
-      console.info('[voice] screen-share attached', {
-        isLocal: participant.isLocal,
-        readyState: mst?.readyState,
-        muted: mst?.muted,
-        enabled: mst?.enabled,
-        kind: mst?.kind,
-      });
-    }
-    return () => {
-      track.detach(el);
-    };
-  }, [track, participant.isLocal]);
-
-  useEffect(() => {
-    const onChange = (): void => {
-      setFullscreen(document.fullscreenElement === containerRef.current);
-    };
-    document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
-  }, []);
-
-  const toggleFullscreen = useCallback(async (): Promise<void> => {
-    const el = containerRef.current;
-    if (!el) return;
-    try {
-      if (document.fullscreenElement === el) {
-        await document.exitFullscreen();
-      } else {
-        // Safari ships a prefixed variant that TS doesn't model.
-        const req = (el as HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> })
-          .webkitRequestFullscreen;
-        if (el.requestFullscreen) await el.requestFullscreen();
-        else if (req) await req.call(el);
-      }
-    } catch {
-      // User-rejected or unsupported; nothing actionable.
-    }
-  }, []);
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>): void => {
-      if (e.key === 'f' || e.key === 'F') {
-        e.preventDefault();
-        void toggleFullscreen();
-      }
-    },
-    [toggleFullscreen],
-  );
-
-  const displayName = participant.name ?? participant.identity;
-  return (
-    <div
-      ref={containerRef}
-      role="region"
-      aria-label={`${displayName} is sharing their screen`}
-      tabIndex={0}
-      onKeyDown={onKeyDown}
-      className="relative h-full w-full overflow-hidden rounded-md border border-subtle bg-canvas focus:outline-none focus:ring-2 focus:ring-ember"
-    >
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted={participant.isLocal}
-        // `object-contain` matters for screen shares — `cover` would crop text.
-        className="h-full w-full object-contain"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-overlay/80 px-3 py-2 text-xs"
-      >
-        <span className="truncate">{displayName} · sharing their screen</span>
-      </div>
-      <div className="absolute right-2 top-2 flex gap-1">
-        <button
-          type="button"
-          onClick={onTogglePin}
-          className="rounded-md bg-overlay/80 p-1.5 text-fg hover:bg-overlay focus:outline-none focus:ring-2 focus:ring-ember"
-          aria-pressed={isPinned}
-          title={isPinned ? 'Unpin this share' : 'Pin this share'}
-        >
-          {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
-        </button>
-        <button
-          type="button"
-          onClick={() => void toggleFullscreen()}
-          className="rounded-md bg-overlay/80 p-1.5 text-fg hover:bg-overlay focus:outline-none focus:ring-2 focus:ring-ember"
-          aria-pressed={fullscreen}
-          title={fullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen (F)'}
-        >
-          {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
-      </div>
-    </div>
-  );
-}
