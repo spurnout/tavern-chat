@@ -496,7 +496,6 @@ model Role {
   server                  Server                @relation("ServerRoles", fields: [serverId], references: [id], onDelete: Cascade)
   serverAsDefault         Server?               @relation("ServerEveryoneRole")
   memberAssignments       ServerMemberRole[]
-  channelOverwrites       PermissionOverwrite[]
 
   @@unique([serverId, name])
   @@index([serverId])
@@ -618,13 +617,19 @@ model PermissionOverwrite {
   id          String              @id
   channelId   String
   targetType  OverwriteTargetType
+  // Discriminated reference: when targetType=role this is a Role.id, when
+  // targetType=user it's a User.id. It deliberately carries NO foreign key —
+  // a single column can't FK to two tables, and the old hard FK→Role made
+  // every USER overwrite violate the constraint (the route 500'd). IDs are
+  // ULIDs (never reused), so any overwrite whose target was later deleted is
+  // simply inert; role deletion clears its overwrites in app code (see
+  // routes/roles.ts), replacing the FK's former onDelete: Cascade.
   targetId    String
   allow       Decimal             @default(0) @db.Decimal(20, 0)
   deny        Decimal             @default(0) @db.Decimal(20, 0)
   createdAt   DateTime            @default(now())
 
   channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  role    Role?   @relation(fields: [targetId], references: [id], onDelete: Cascade, map: "PermissionOverwrite_role_fkey")
 
   @@unique([channelId, targetType, targetId])
   @@index([channelId])

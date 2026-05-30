@@ -121,7 +121,17 @@ export async function registerRoleRoutes(app: FastifyInstance): Promise<void> {
     if (!role) throw TavernError.notFound('Role not found');
     if (role.isEveryone) throw TavernError.validation('Cannot delete @everyone');
     await requireServerPermission(role.serverId, ctx.userId, Permission.MANAGE_ROLES);
-    await prisma.role.delete({ where: { id } });
+    // PermissionOverwrite.targetId no longer FKs to Role (it's a discriminated
+    // role-or-user reference), so deleting the role no longer cascades its
+    // channel overwrites. Clear them explicitly in one transaction to preserve
+    // the former onDelete: Cascade behaviour. Member-role assignments still
+    // cascade via the ServerMemberRole FK on Role.
+    await prisma.$transaction([
+      prisma.permissionOverwrite.deleteMany({
+        where: { targetType: 'role', targetId: id },
+      }),
+      prisma.role.delete({ where: { id } }),
+    ]);
     await writeAuditEntry({
       serverId: role.serverId,
       actorId: ctx.userId,

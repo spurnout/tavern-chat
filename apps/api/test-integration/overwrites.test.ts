@@ -330,15 +330,14 @@ describe.skipIf(!dockerOk)('overwrite routes (apps/api/src/routes/overwrites.ts)
       }
     });
 
-    // BUG (schema): PermissionOverwrite.targetId carries a hard FK to Role.id
-    // (`PermissionOverwrite_role_fkey`), so a USER overwrite — whose targetId is
-    // a user id, not a role id — can never persist: the upsert violates the FK
-    // and the route 500s. The route, the OverwriteTargetType enum, and the zod
-    // schema all advertise 'user' overwrites, so per-user channel overwrites are
-    // currently broken end-to-end. Characterized here until the schema is fixed
-    // (e.g. split targetId into nullable roleId/userId, or drop the role FK);
-    // when fixed this should become a 200 + persisted-row assertion.
-    it('BUG: a user overwrite currently 500s — targetId FK→Role rejects user targets', async () => {
+    // Regression: PermissionOverwrite.targetId used to carry a hard FK to
+    // Role.id (`PermissionOverwrite_role_fkey`), so a USER overwrite — whose
+    // targetId is a user id, not a role id — violated the constraint and the
+    // route 500'd, leaving per-user channel overwrites broken end-to-end even
+    // though the route, the OverwriteTargetType enum, and the zod schema all
+    // advertise them. The FK was dropped (targetId is now a discriminated
+    // role-or-user reference); user overwrites must persist like role ones.
+    it('a user overwrite persists (200 + row) — targetId no longer FK-bound to Role', async () => {
       const ownerId = await makeUser('owner');
       const memberId = await makeUser('member');
       const { serverId, channelId } = await makeServer(ownerId);
@@ -353,13 +352,17 @@ describe.skipIf(!dockerOk)('overwrite routes (apps/api/src/routes/overwrites.ts)
           headers: { authorization: `Bearer ${token}` },
           payload: { allow: '0', deny: serializePermissions(Permission.SEND_MESSAGES) },
         });
-        // The FK violation bubbles to the Fastify error handler as a 500.
-        expect(res.statusCode).toBe(500);
-        // Nothing was persisted.
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as OkBody<OverwriteDto>;
+        expect(body.data.targetType).toBe('user');
+        expect(body.data.targetId).toBe(memberId);
+        expect(body.data.deny).toBe(serializePermissions(Permission.SEND_MESSAGES));
+
         const row = await prisma.permissionOverwrite.findFirst({
           where: { channelId, targetType: 'user', targetId: memberId },
         });
-        expect(row).toBeNull();
+        expect(row).not.toBeNull();
+        expect(row?.deny.toString()).toBe(serializePermissions(Permission.SEND_MESSAGES));
       } finally {
         await app.close();
       }

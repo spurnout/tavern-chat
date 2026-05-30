@@ -464,6 +464,45 @@ describe.skipIf(!dockerOk)('role routes (apps/api/src/routes/roles.ts)', () => {
       }
     });
 
+    it('deleting a role clears its channel overwrites but leaves user overwrites', async () => {
+      // PermissionOverwrite.targetId no longer FKs to Role, so the former
+      // onDelete: Cascade is replaced by app-level cleanup in the route. A
+      // user overwrite (targetType=user) on the same channel must survive.
+      const ownerId = await makeUser('owner');
+      const memberId = await makeUser('member');
+      const { serverId, channelId } = await makeServer(ownerId);
+      await addMember(serverId, memberId);
+      const roleId = await makeRole(serverId, 'Doomed', 1);
+      await prisma.permissionOverwrite.create({
+        data: { id: ulid(), channelId, targetType: 'role', targetId: roleId },
+      });
+      await prisma.permissionOverwrite.create({
+        data: { id: ulid(), channelId, targetType: 'user', targetId: memberId },
+      });
+
+      const app = await buildTestApp();
+      try {
+        const token = await mintToken(ownerId);
+        const res = await app.inject({
+          method: 'DELETE',
+          url: `/api/roles/${roleId}`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(res.statusCode).toBe(200);
+
+        const roleOverwrite = await prisma.permissionOverwrite.findFirst({
+          where: { channelId, targetType: 'role', targetId: roleId },
+        });
+        expect(roleOverwrite).toBeNull();
+        const userOverwrite = await prisma.permissionOverwrite.findFirst({
+          where: { channelId, targetType: 'user', targetId: memberId },
+        });
+        expect(userOverwrite).not.toBeNull();
+      } finally {
+        await app.close();
+      }
+    });
+
     it('deleting the @everyone role returns 400 "Cannot delete @everyone"', async () => {
       const ownerId = await makeUser('owner');
       const { everyoneId } = await makeServer(ownerId);
