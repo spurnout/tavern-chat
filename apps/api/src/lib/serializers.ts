@@ -8,6 +8,8 @@ import type { Prisma } from '@tavern/db';
 import type { StorageBackend } from '@tavern/media';
 import {
   socialLinkSchema,
+  messageEmbedsSchema,
+  messageComponentsSchema,
   type Attachment,
   type Channel as ChannelDto,
   type DiceRollResult,
@@ -59,6 +61,15 @@ interface ServerRow {
    * default to null (the wire schema's nullable default).
    */
   originInstance?: { host: string } | null;
+  /**
+   * Parity gap #3 — system room for join messages. Optional on the row shape
+   * because legacy queries don't select it; treated as null when absent.
+   */
+  systemChannelId?: string | null;
+  /** Parity gap #4 — verification gate. Optional on the row shape; legacy
+   *  queries that don't select it serialize as the defaults. */
+  verificationLevel?: 'none' | 'email_verified' | 'account_age' | 'must_pass_gate';
+  verificationMinAccountAgeHours?: number;
   createdAt: Date;
 }
 
@@ -74,6 +85,9 @@ export function serializeServer(row: ServerRow): ServerDto {
     federationEnabled: row.federationEnabled,
     originInstanceId: row.originInstanceId ?? null,
     originInstanceHost: row.originInstance?.host ?? null,
+    systemChannelId: row.systemChannelId ?? null,
+    verificationLevel: row.verificationLevel ?? 'none',
+    verificationMinAccountAgeHours: row.verificationMinAccountAgeHours ?? 0,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -328,6 +342,11 @@ export interface MessageRow {
     channelId: string | null;
     author: { displayName: string };
   } | null;
+  /** Parity gap #2 — render-only embed/component jsonb columns. Present on
+   *  every message row (scalar columns ride existing includes); legacy
+   *  fixtures that omit them serialize as empty. */
+  embedsJson?: unknown;
+  componentsJson?: unknown;
 }
 
 export function serializeMessage(row: MessageRow, viewerId: string): Message {
@@ -403,6 +422,17 @@ export function serializeMessage(row: MessageRow, viewerId: string): Message {
           authorDisplayName: row.forwardedFrom.author.displayName,
         }
       : null,
+    // Parity gap #2 — defensively parse the jsonb blobs (same tolerant pattern
+    // as parseSocialLinks). Omit the keys entirely when empty so the existing
+    // wire shape is unchanged for plain messages.
+    ...(() => {
+      const embeds = messageEmbedsSchema.safeParse(row.embedsJson ?? []);
+      const components = messageComponentsSchema.safeParse(row.componentsJson ?? []);
+      const out: { embeds?: Message['embeds']; components?: Message['components'] } = {};
+      if (embeds.success && embeds.data.length > 0) out.embeds = embeds.data;
+      if (components.success && components.data.length > 0) out.components = components.data;
+      return out;
+    })(),
     createdAt: row.createdAt.toISOString(),
   };
 }

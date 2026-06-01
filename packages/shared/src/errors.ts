@@ -30,6 +30,10 @@ export const ErrorCodes = {
   MEMBER_TIMED_OUT: 'MEMBER_TIMED_OUT',
   ROLE_HIERARCHY: 'ROLE_HIERARCHY',
   MEMBER_BANNED: 'MEMBER_BANNED',
+  // Parity gap #3 — onboarding rules not yet accepted.
+  GATE_PENDING: 'GATE_PENDING',
+  // Parity gap #4 — member doesn't satisfy the tavern's verification tier.
+  VERIFICATION_REQUIRED: 'VERIFICATION_REQUIRED',
 
   // Uploads / media
   UPLOAD_BLOCKED: 'UPLOAD_BLOCKED',

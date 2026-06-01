@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
 import { diceTermResultSchema } from './dice.js';
+import { actionRowSchema, messageEmbedSchema, messageEmbedsSchema } from './embeds.js';
 import { MESSAGE_LIMITS } from '../constants.js';
 
 export const messageTypeSchema = z.enum([
@@ -107,6 +108,10 @@ export const messageSchema = z.object({
     })
     .nullable()
     .optional(),
+  /** Parity gap #2 — rich embeds. Optional/absent on plain messages. */
+  embeds: z.array(messageEmbedSchema).optional(),
+  /** Parity gap #2 — interactive component action rows. */
+  components: z.array(actionRowSchema).optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -119,6 +124,12 @@ export const createMessageRequestSchema = z
     nonce: z.string().min(1).max(64).optional(),
     /** Wave 2 #5 — when set, this message is a forward of an existing one. */
     forwardedFromMessageId: idSchema.optional(),
+    /**
+     * Parity gap #2 — author-supplied rich embeds. Gated on the EMBED_LINKS
+     * permission in the route. Interactive components are NOT accepted from
+     * end users (only webhooks / slash emit them).
+     */
+    embeds: messageEmbedsSchema.optional(),
   })
   .superRefine((data, ctx) => {
     // A message must carry SOMETHING: non-empty text, one or more attachments,

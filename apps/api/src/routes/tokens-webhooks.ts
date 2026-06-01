@@ -2,7 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { prisma } from '@tavern/db';
 import { z } from 'zod';
-import { idSchema, Permission, TavernError, ulid } from '@tavern/shared';
+import {
+  idSchema,
+  messageComponentsSchema,
+  messageEmbedsSchema,
+  Permission,
+  TavernError,
+  ulid,
+} from '@tavern/shared';
 import { ok } from '../lib/responses.js';
 import {
   requireChannelPermission,
@@ -37,9 +44,13 @@ const createWebhookSchema = z.object({
 });
 
 const webhookPostSchema = z.object({
-  content: z.string().min(1).max(4000),
+  // Content may be empty when an embed carries the payload (Discord-shaped).
+  content: z.string().max(4000).default(''),
   username: z.string().max(60).optional(),
   avatarUrl: z.string().url().max(512).optional(),
+  /** Parity gap #2 — webhooks are the primary embed/component producer. */
+  embeds: messageEmbedsSchema.optional(),
+  components: messageComponentsSchema.optional(),
 });
 
 function makeToken(prefix: 'pat' | 'bot'): { plaintext: string; hash: string } {
@@ -283,6 +294,9 @@ export async function registerTokenAndWebhookRoutes(app: FastifyInstance): Promi
       throw new TavernError('UNAUTHORIZED', 'Invalid webhook secret', 401);
     }
     const body = webhookPostSchema.parse(req.body);
+    if (!body.content.trim() && !(body.embeds?.length ?? 0)) {
+      throw TavernError.validation('Webhook message needs content or an embed');
+    }
 
     const messageId = ulid();
     // Webhook messages are posted under the webhook creator's identity so
@@ -297,7 +311,9 @@ export async function registerTokenAndWebhookRoutes(app: FastifyInstance): Promi
         channelId: wh.channelId,
         authorId: wh.createdBy,
         type: 'default',
-        content: displayPrefix + body.content,
+        content: body.content.trim() ? displayPrefix + body.content : displayPrefix.trimEnd(),
+        embedsJson: (body.embeds ?? []) as object,
+        componentsJson: (body.components ?? []) as object,
       },
       include: {
         attachments: { select: { id: true } },

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
 import { presenceSchema } from './presence.js';
+import { verificationLevelSchema } from './raid-protection.js';
 import { NAME_LIMITS } from '../constants.js';
 
 export const serverSchema = z.object({
@@ -44,6 +45,15 @@ export const serverSchema = z.object({
    * FK uses SetNull on delete — but defence-in-depth here).
    */
   originInstanceHost: z.string().nullable().default(null),
+  /**
+   * Parity gap #3 — system room for "X joined the tavern" messages. Null when
+   * disabled. Optional with a null default for forward-compat with clients
+   * pinned to an older server build.
+   */
+  systemChannelId: idSchema.nullable().default(null),
+  /** Parity gap #4 — posting verification gate. Defaults to 'none'. */
+  verificationLevel: verificationLevelSchema.default('none'),
+  verificationMinAccountAgeHours: z.number().int().min(0).default(0),
   createdAt: z.string().datetime(),
 });
 
@@ -61,6 +71,14 @@ export const updateServerRequestSchema = createServerRequestSchema.partial().ext
    * silently-stored flag that does nothing.
    */
   federationEnabled: z.boolean().optional(),
+  /**
+   * Parity gap #3 — set/clear the system room. The PATCH handler validates
+   * that the channel belongs to this tavern. Null clears it.
+   */
+  systemChannelId: idSchema.nullable().optional(),
+  /** Parity gap #4 — verification tier + account-age threshold (hours). */
+  verificationLevel: verificationLevelSchema.optional(),
+  verificationMinAccountAgeHours: z.number().int().min(0).max(8760).optional(),
 });
 
 export const memberUserSchema = z.object({

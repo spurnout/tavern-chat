@@ -194,6 +194,18 @@ export async function registerServerRoutes(
     });
     if (!beforeRow) throw TavernError.notFound('Server not found');
 
+    // Parity gap #3 — validate the system room belongs to this tavern before
+    // storing it. Null clears it (no validation needed).
+    if (body.systemChannelId) {
+      const channel = await prisma.channel.findUnique({
+        where: { id: body.systemChannelId },
+        select: { serverId: true },
+      });
+      if (!channel || channel.serverId !== id) {
+        throw TavernError.validation('That room is not part of this tavern');
+      }
+    }
+
     // When the icon attachment changes, resolve its public URL up front so the
     // column stays in lock-step with `iconAttachmentId`. Clearing the icon
     // (null) clears the URL; setting it resolves via storage (null until the
@@ -218,6 +230,15 @@ export async function registerServerRoutes(
         ...iconUrlPatch,
         ...(body.federationEnabled !== undefined
           ? { federationEnabled: body.federationEnabled }
+          : {}),
+        ...(body.systemChannelId !== undefined
+          ? { systemChannelId: body.systemChannelId }
+          : {}),
+        ...(body.verificationLevel !== undefined
+          ? { verificationLevel: body.verificationLevel }
+          : {}),
+        ...(body.verificationMinAccountAgeHours !== undefined
+          ? { verificationMinAccountAgeHours: body.verificationMinAccountAgeHours }
           : {}),
       },
       // P4-16 — broadcast the SERVER_UPDATE with `originInstanceHost`

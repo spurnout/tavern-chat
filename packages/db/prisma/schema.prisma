@@ -46,6 +46,10 @@ model User {
   displayName         String
   email               String    @unique
   emailLower          String    @unique
+  // Parity gap #4 — set when the address is confirmed. Backs the
+  // `email_verified` server verification tier. Null = unverified. Populated by
+  // OIDC sign-in (IdP-asserted) and a future email-confirm flow.
+  emailVerifiedAt     DateTime?
   passwordHash        String?
   avatarAttachmentId  String?
   bio                 String?
@@ -197,6 +201,11 @@ model User {
   breakoutMemberships   BreakoutMember[]           @relation("BreakoutMembership")
   recordingsCaptured    SessionRecording[]         @relation("Recorder")
   whiteboardsUpdated    Whiteboard[]               @relation("WhiteboardUpdater")
+  // Parity gap #1: one-directional, private member blocks.
+  blocksIssued          UserBlock[]                @relation("BlocksIssued")
+  blocksReceived        UserBlock[]                @relation("BlocksReceived")
+  // Parity gap #2: message component interactions (button/select presses).
+  messageInteractions   MessageInteraction[]
 
   @@unique([oidcIssuer, oidcSubject], map: "User_oidc_idx")
   @@index([customStatusExpiresAt], map: "User_customStatusExpiresAt_idx")
@@ -414,7 +423,17 @@ model Server {
   // Wave 3 #18 — mod log channel mirror. When set, moderation actions
   // publish a formatted message into this channel.
   modLogChannelId String?
+  // Parity gap #3 — system room. When set, "X joined the tavern" system
+  // messages are posted here on join. Null disables them. Same nullable
+  // channel-pointer convention as modLogChannelId.
+  systemChannelId String?
+  // Parity gap #4 — posting verification gate for new members. Deterministic,
+  // operator-set (no AI). See VerificationLevel.
+  verificationLevel             VerificationLevel @default(none)
+  verificationMinAccountAgeHours Int              @default(0)
   safetyPolicy   SafetyPolicy?
+  onboarding     ServerOnboarding?
+  raidProtection RaidProtectionConfig?
   bans           ServerBan[]
   memberNotificationPreferences ServerMemberNotificationPreference[]
   // Wave 2 — soundboard and instance-level random tables.
@@ -681,6 +700,12 @@ model Message {
   /// Phase 3.1: true when the message is itself the root of a Thread
   /// branch. Set by the threads route after creating the Thread row.
   isThreadRoot       Boolean     @default(false)
+  /// Parity gap #2 — rich embeds (MessageEmbed[]) and interactive components
+  /// (ActionRow[]). Render-only jsonb blobs that ride along with the message
+  /// (same precedent as CardDeck.cardsJson / Whiteboard.strokesJson); validated
+  /// by zod on write + read. Default empty.
+  embedsJson         Json        @default("[]")
+  componentsJson     Json        @default("[]")
   createdAt          DateTime    @default(now())
 
   channel       Channel?          @relation(fields: [channelId], references: [id], onDelete: Cascade)
@@ -715,6 +740,8 @@ model Message {
   signature         Bytes?       // set on inbound federated messages (Phase 3+)
   originInstanceId  String?      // FK → RemoteInstance, set on inbound only
   originInstance    RemoteInstance? @relation("MessageOrigin", fields: [originInstanceId], references: [id], onDelete: SetNull)
+  // Parity gap #2 — interaction (button/select press) provenance + rate-limit.
+  interactions      MessageInteraction[]
 
   @@index([channelId, createdAt])
   @@index([channelId, id])
@@ -725,6 +752,26 @@ model Message {
   @@index([originInstanceId])
   @@unique([channelId, nonce])
   @@unique([dmChannelId, nonce])
+}
+
+/// Parity gap #2 — a single button/select press on a message component.
+/// Mutable + queryable (unlike the render-only embed/component blobs): used
+/// for per-user rate limiting and press provenance.
+model MessageInteraction {
+  id          String   @id
+  messageId   String
+  userId      String
+  /// customId of the pressed button / selected component.
+  componentId String
+  /// Select-menu chosen values (empty for buttons).
+  values      Json     @default("[]")
+  createdAt   DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, createdAt])
+  @@index([userId, createdAt])
 }
 
 enum AttachmentKind {
@@ -1534,6 +1581,30 @@ model DmChannelMember {
 }
 
 // ============================================================================
+// MEMBER BLOCKS  (Discord parity gap #1)
+// ============================================================================
+
+/// One-directional, private block: `blockerId` has blocked `blockedId`.
+/// Effects (enforced server-side): new DMs between the pair are refused in
+/// either direction, and mentions authored by the blocked member never notify
+/// the blocker (no UserMention row is written). Message/reaction hiding in
+/// shared rooms is a client-side concern driven by `GET /users/me/blocks` —
+/// channel fan-out stays symmetric so the blocked member is unaware.
+/// Never broadcast to the blocked member; BLOCK_ADD/BLOCK_REMOVE are emitted
+/// only to the blocker's own sockets.
+model UserBlock {
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker User @relation("BlocksIssued", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+}
+
+// ============================================================================
 // NOTIFICATION PREFERENCES  (Phase 6)
 // ============================================================================
 
@@ -2096,6 +2167,18 @@ enum WarningTier {
   ban
 }
 
+/// Parity gap #4 — posting gate for new members, evaluated on message create.
+///   none           — no gate
+///   email_verified — User.emailVerifiedAt must be set
+///   account_age    — User.createdAt older than verificationMinAccountAgeHours
+///   must_pass_gate — ServerMember.gatePassedAt must be set (reuses join gate)
+enum VerificationLevel {
+  none
+  email_verified
+  account_age
+  must_pass_gate
+}
+
 enum StagePosition {
   audience
   speaker
@@ -2250,6 +2333,10 @@ model AutomodRule {
   position  Int           @default(0)
   /// Optional reason posted to the audit log when triggered.
   reason    String?
+  /// Parity gap #4 — when this rule was seeded from a built-in preset, the
+  /// preset id (e.g. 'invite-link-spam'). Null = hand-authored. Lets a preset
+  /// be enabled idempotently and removed as a unit.
+  presetId  String?
   createdBy String
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
@@ -2257,6 +2344,28 @@ model AutomodRule {
   server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
 
   @@index([serverId, position])
+  @@index([serverId, presetId])
+}
+
+// ---------- Parity gap #4 — Raid / join protection --------------------------
+
+/// Join-velocity guard. A worker job (`raid-watch`) counts recent joins per
+/// server; a spike flips `lockdownActive`, which the invite-join path enforces
+/// per `lockdownAction`. Deterministic, operator-configured. 1:1 with Server.
+model RaidProtectionConfig {
+  serverId       String   @id
+  enabled        Boolean  @default(false)
+  /// Sliding window (seconds) over which joins are counted.
+  joinWindowSec  Int      @default(60)
+  /// Joins within the window that trip a lockdown.
+  joinThreshold  Int      @default(10)
+  /// 'require_approval' | 'pause_invites' | 'quarantine'
+  lockdownAction String   @default("require_approval")
+  lockdownActive Boolean  @default(false)
+  lockdownEndsAt DateTime?
+  updatedAt      DateTime @updatedAt
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
 }
 
 // ---------- W3 #16 — Warnings / strike escalation ---------------------------
@@ -2305,6 +2414,64 @@ model JoinGateAnswer {
 
   @@id([serverId, userId])
   @@index([serverId, reviewedAt])
+}
+
+// ---------- Parity gap #3 — Onboarding / welcome screen ---------------------
+
+/// Self-serve welcome + opt-in roles for a tavern. 1:1 with Server, keyed by
+/// serverId like JoinGate / SafetyPolicy. Complements JoinGate (the mod-
+/// reviewed screening queue): both share ServerMember.gatePassedAt as the
+/// single "cleared to post" flag, and JoinGate.rulesMd is the rules source.
+model ServerOnboarding {
+  serverId        String  @id
+  enabled         Boolean @default(false)
+  /// Shown on the welcome screen above the recommended rooms.
+  welcomeText     String  @default("")
+  /// Ordered Channel ids surfaced as "recommended rooms" with a one-line
+  /// blurb each: [{ channelId, description }]. JSON so reordering / blurbs
+  /// don't need a migration (same call as JoinGate.questionsJson). Dangling
+  /// ids are tolerated and dropped on read.
+  recommendedRoomsJson Json @default("[]")
+  /// When true, members must accept the rules (JoinGate.rulesMd) before they
+  /// can post — gates on ServerMember.gatePassedAt, reusing the existing flag.
+  requireRules    Boolean @default(false)
+  updatedAt       DateTime @updatedAt
+
+  server  Server             @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  prompts OnboardingPrompt[]
+}
+
+/// One self-select question on the onboarding role-picker (e.g. "What do you
+/// play?"). Options grant opt-in roles and/or reveal opt-in rooms.
+model OnboardingPrompt {
+  id          String  @id
+  serverId    String
+  title       String
+  /// false = single-select, true = multi-select.
+  multiSelect Boolean @default(true)
+  position    Int     @default(0)
+  createdAt   DateTime @default(now())
+
+  onboarding ServerOnboarding         @relation(fields: [serverId], references: [serverId], onDelete: Cascade)
+  options    OnboardingPromptOption[]
+
+  @@index([serverId, position])
+}
+
+model OnboardingPromptOption {
+  id         String @id
+  promptId   String
+  label      String
+  /// Role granted when the member picks this option (Role.id). Optional — an
+  /// option may only reveal rooms.
+  roleId     String?
+  /// Channel ids revealed/joined by picking this option.
+  channelIdsJson Json @default("[]")
+  position   Int    @default(0)
+
+  prompt OnboardingPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+
+  @@index([promptId, position])
 }
 
 // ---------- W3 #19 — Server templates ---------------------------------------

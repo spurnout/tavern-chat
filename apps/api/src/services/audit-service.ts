@@ -102,6 +102,16 @@ function formatAction(action: string): string {
       return 'updated a room';
     case 'automod.hit':
       return 'auto-moderation triggered';
+    case 'automod.preset_enabled':
+      return 'enabled an auto-mod preset';
+    case 'automod.preset_disabled':
+      return 'disabled an auto-mod preset';
+    case 'raid.lockdown_started':
+      return 'raid lockdown engaged';
+    case 'raid.lockdown_lifted':
+      return 'raid lockdown lifted';
+    case 'server.verification_changed':
+      return 'changed the verification level';
     default:
       return `did **${action}**`;
   }

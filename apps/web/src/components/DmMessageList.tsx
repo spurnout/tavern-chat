@@ -8,6 +8,8 @@ import { toast } from '../lib/toast.js';
 import { AttachmentView } from './AttachmentView.js';
 import { MemberProfileTrigger } from './MemberProfileTrigger.js';
 import { ReactionBar } from './ReactionBar.js';
+import { MessageEmbeds } from './MessageEmbeds.js';
+import { MessageComponents } from './MessageComponents.js';
 import { DiceRollMessage } from './MessageList.js';
 
 interface Props {
@@ -131,6 +133,12 @@ export function DmMessageList({ dmChannelId }: Props): JSX.Element {
                   <div className="whitespace-pre-wrap break-words text-sm text-fg">
                     {message.content}
                   </div>
+                  {message.embeds && message.embeds.length > 0 ? (
+                    <MessageEmbeds embeds={message.embeds} />
+                  ) : null}
+                  {message.components && message.components.length > 0 ? (
+                    <MessageComponents messageId={message.id} rows={message.components} />
+                  ) : null}
                   {message.attachmentIds.length > 0 ? (
                     <div className="mt-1 space-y-1">
                       {message.attachmentIds.map((aid) => (

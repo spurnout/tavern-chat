@@ -7,6 +7,7 @@ import { AccountTokensSection } from '../components/AccountTokensSection.js';
 import { AccountAppearanceSection } from '../components/AccountAppearanceSection.js';
 import { AccountPushSection } from '../components/AccountPushSection.js';
 import { AccountFederationPrivacySection } from '../components/AccountFederationPrivacySection.js';
+import { AccountBlockedSection } from '../components/AccountBlockedSection.js';
 
 /**
  * Account-level settings. Server / tavern-scoped settings live elsewhere.
@@ -26,6 +27,7 @@ export function AccountSettingsPage(): JSX.Element {
       <div className="mx-auto w-full max-w-2xl space-y-8 px-6 py-6">
         <AccountAppearanceSection />
         <AccountFederationPrivacySection />
+        <AccountBlockedSection />
         <AccountSecuritySection />
         <AccountPasskeysSection />
         <AccountPushSection />

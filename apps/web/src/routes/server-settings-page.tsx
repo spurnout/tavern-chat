@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams } from '@tanstack/react-router';
-import { Ban, Bell, Bot, DoorOpen, Globe, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
+import { Ban, Bell, Bot, DoorOpen, Globe, HeartHandshake, Settings, ShieldCheck, Smile, Tag, Users } from 'lucide-react';
 import { PerTavernNotificationSettings } from '../components/PerTavernNotificationSettings.js';
 import { ServerIntegrationsPanel } from '../components/ServerIntegrationsPanel.js';
 import { ServerInvitesPanel } from '../components/ServerInvitesPanel.js';
@@ -10,6 +10,8 @@ import { FederationPanel } from '../components/server-settings/FederationPanel.j
 import { MembersPanel } from '../components/server-settings/MembersPanel.js';
 import { RolesPanel } from '../components/server-settings/RolesPanel.js';
 import { SafetyPolicyPanel } from '../components/server-settings/SafetyPolicyPanel.js';
+import { ModerationHardeningPanel } from '../components/server-settings/ModerationHardeningPanel.js';
+import { OnboardingPanel } from '../components/server-settings/OnboardingPanel.js';
 import { TabButton } from '../components/server-settings/TabButton.js';
 
 type Tab =
@@ -19,6 +21,7 @@ type Tab =
   | 'bans'
   | 'emoji'
   | 'policy'
+  | 'onboarding'
   | 'notifications'
   | 'integrations'
   | 'federation';
@@ -30,6 +33,7 @@ const ALL_TABS: Tab[] = [
   'bans',
   'emoji',
   'policy',
+  'onboarding',
   'notifications',
   'integrations',
   'federation',
@@ -75,6 +79,9 @@ export function ServerSettingsPage(): JSX.Element {
           <TabButton active={tab === 'policy'} onClick={() => setTab('policy')}>
             <ShieldCheck size={12} /> Safety policy
           </TabButton>
+          <TabButton active={tab === 'onboarding'} onClick={() => setTab('onboarding')}>
+            <HeartHandshake size={12} /> Onboarding
+          </TabButton>
           <TabButton active={tab === 'notifications'} onClick={() => setTab('notifications')}>
             <Bell size={12} /> Notifications
           </TabButton>
@@ -92,7 +99,13 @@ export function ServerSettingsPage(): JSX.Element {
         {tab === 'invites' ? <ServerInvitesPanel serverId={serverId} /> : null}
         {tab === 'bans' ? <BansPanel serverId={serverId} autoOpenBan={initial.autoBan} /> : null}
         {tab === 'emoji' ? <EmojiPanel serverId={serverId} /> : null}
-        {tab === 'policy' ? <SafetyPolicyPanel serverId={serverId} /> : null}
+        {tab === 'policy' ? (
+          <div className="space-y-6">
+            <SafetyPolicyPanel serverId={serverId} />
+            <ModerationHardeningPanel serverId={serverId} />
+          </div>
+        ) : null}
+        {tab === 'onboarding' ? <OnboardingPanel serverId={serverId} /> : null}
         {tab === 'notifications' ? <PerTavernNotificationSettings serverId={serverId} /> : null}
         {tab === 'integrations' ? <ServerIntegrationsPanel serverId={serverId} /> : null}
         {tab === 'federation' ? <FederationPanel serverId={serverId} /> : null}

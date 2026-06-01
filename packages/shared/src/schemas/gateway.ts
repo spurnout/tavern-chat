@@ -208,6 +208,33 @@ export const GatewayDispatchEvent = {
   WHITEBOARD_STROKE: 'WHITEBOARD_STROKE',
   /** Wave 3 #34 — the whiteboard was cleared. */
   WHITEBOARD_CLEAR: 'WHITEBOARD_CLEAR',
+
+  /**
+   * Parity gap #1 — member blocks. Both events are user-targeted (delivered
+   * ONLY to the blocker) so the blocked member never learns they were
+   * blocked. They keep the blocker's other tabs in sync after a block /
+   * unblock; the payload is the BlockedUser DTO (BLOCK_ADD) or `{ userId }`
+   * (BLOCK_REMOVE).
+   */
+  BLOCK_ADD: 'BLOCK_ADD',
+  BLOCK_REMOVE: 'BLOCK_REMOVE',
+
+  /**
+   * Parity gap #4 — raid protection lockdown state change. Server-scoped (like
+   * SERVER_UPDATE). Payload `{ serverId, active, action, endsAt }`. Lets admin
+   * surfaces show a live lockdown banner and the join UI reflect paused
+   * invites without a refetch.
+   */
+  SERVER_LOCKDOWN: 'SERVER_LOCKDOWN',
+
+  /**
+   * Parity gap #2 — ephemeral acknowledgement of a component interaction
+   * (button / select press). User-targeted (like MENTION_CREATE) so only the
+   * presser sees it. Payload `{ messageId, customId, kind, content? }`. When a
+   * handler mutates the message (e.g. disables a button) that rides the normal
+   * MESSAGE_UPDATE instead.
+   */
+  INTERACTION_RESPONSE: 'INTERACTION_RESPONSE',
 } as const;
 
 export const attachmentReadyPayloadSchema = z.object({

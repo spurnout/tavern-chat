@@ -24,6 +24,7 @@ import {
   serializeDmChannelRow,
   usersShareServer,
 } from '../services/dm-service.js';
+import { blockExistsEitherDirection } from '../services/block-service.js';
 import { fanOutDmCreate, fanOutDmMessageCreate } from '../services/federation-outbox.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import type { QueueClient } from '../services/queues.js';
@@ -138,6 +139,17 @@ export async function registerDmRoutes(
           'You can only DM members of a tavern you share',
         );
       }
+      // Block gate: refuse if either party has blocked the other. Checking
+      // both directions keeps the block effective whether the blocker or the
+      // blocked initiates. The message is deliberately generic so it doesn't
+      // reveal that the other member blocked the caller.
+      const { aBlocksB, bBlocksA } = await blockExistsEitherDirection(
+        ctx.userId,
+        body.userId,
+      );
+      if (aBlocksB || bBlocksA) {
+        throw TavernError.forbidden('You cannot message this member');
+      }
       const id = await findOrCreateDirectDm(ctx.userId, body.userId, {
         selfHost: deps?.selfHost ?? null,
       });
@@ -245,13 +257,21 @@ export async function registerDmRoutes(
     handler: async (req, reply) => {
       const ctx = await app.requireUser(req, reply);
       const body = createGroupDmRequestSchema.parse(req.body);
-      // Each invitee must share at least one tavern with the creator.
+      // Each invitee must share at least one tavern with the creator, and
+      // must not be in a block relationship with them in either direction.
       for (const otherId of body.userIds) {
         const shared = await usersShareServer(ctx.userId, otherId);
         if (!shared) {
           throw TavernError.forbidden(
             `You can only add members of a tavern you share`,
           );
+        }
+        const { aBlocksB, bBlocksA } = await blockExistsEitherDirection(
+          ctx.userId,
+          otherId,
+        );
+        if (aBlocksB || bBlocksA) {
+          throw TavernError.forbidden('You cannot add this member');
         }
       }
       const id = await createGroupDm(ctx.userId, body.userIds, body.name ?? null);

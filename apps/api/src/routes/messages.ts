@@ -44,6 +44,7 @@ import {
 import type { QueueClient } from '../services/queues.js';
 import { resolveDmFanOutTarget } from '../services/federation-dm.js';
 import { enqueueLinkPreviews } from '../services/link-preview-service.js';
+import { assertCanPostUnderVerification } from '../services/verification-service.js';
 import { evaluateAutomod } from '../services/automod-service.js';
 
 /**
@@ -176,10 +177,14 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
     }
 
     // Wave 2 #6 — server-member timeout gate.
+    // Parity gap #3 — onboarding rules gate: a member who hasn't passed the
+    // gate can't post when the tavern requires rules acceptance. Pulled in the
+    // same member round-trip. Admins/mods bypass (consistent with the other
+    // posting gates below).
     if (result.serverId) {
       const member = await prisma.serverMember.findUnique({
         where: { serverId_userId: { serverId: result.serverId, userId: ctx.userId } },
-        select: { timeoutUntil: true },
+        select: { timeoutUntil: true, gatePassedAt: true },
       });
       if (member?.timeoutUntil && member.timeoutUntil > new Date()) {
         throw new TavernError(
@@ -187,6 +192,23 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           'You are timed out in this tavern',
           403,
         );
+      }
+      if (member && member.gatePassedAt === null && !isAdminOrModForChannel) {
+        const onboarding = await prisma.serverOnboarding.findUnique({
+          where: { serverId: result.serverId },
+          select: { enabled: true, requireRules: true },
+        });
+        if (onboarding?.enabled && onboarding.requireRules) {
+          throw new TavernError(
+            'GATE_PENDING',
+            'Accept the tavern rules before posting',
+            403,
+          );
+        }
+      }
+      // Parity gap #4 — verification tier gate. Admins/mods bypass.
+      if (!isAdminOrModForChannel) {
+        await assertCanPostUnderVerification(result.serverId, ctx.userId);
       }
     }
 
@@ -420,6 +442,19 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
       }
     }
 
+    // Parity gap #2 — author-supplied embeds require EMBED_LINKS (same shape
+    // as the ATTACH_FILES gate above). Interactive components are never
+    // accepted from end users — only webhooks / slash emit them — so the
+    // request schema doesn't carry a `components` field.
+    if (body.embeds?.length) {
+      if (
+        (result.perms & Permission.EMBED_LINKS) !== Permission.EMBED_LINKS &&
+        (result.perms & Permission.ADMINISTRATOR) !== Permission.ADMINISTRATOR
+      ) {
+        throw TavernError.forbidden('You cannot post embeds in this channel');
+      }
+    }
+
     const messageId = ulid();
     const cleanContent = sanitizeContent(body.content);
     // Captured outside the transaction so the post-commit fanout can emit
@@ -441,6 +476,7 @@ export async function registerMessageRoutes(app: FastifyInstance, deps?: Message
           forwardedFromMessageId: body.forwardedFromMessageId ?? null,
           forwardedFromChannelId,
           nonce: body.nonce ?? null,
+          ...(body.embeds?.length ? { embedsJson: body.embeds as object } : {}),
         },
       });
       if (body.attachmentIds?.length) {

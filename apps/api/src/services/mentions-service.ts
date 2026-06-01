@@ -109,6 +109,21 @@ export async function resolveMentionRecipients({
     }
   }
 
+  // Block filter: drop any recipient who has blocked the author, so a blocked
+  // member's mentions never notify. We remove the recipient entirely — no
+  // UserMention row, no MENTION_CREATE, no mentionCount bump. Checked here
+  // (once, batched) rather than at write time so every downstream effect is
+  // suppressed uniformly. The block is directional: only `blockerId = recipient,
+  // blockedId = author` rows matter.
+  const candidateIds = Array.from(byUserId.keys());
+  if (candidateIds.length > 0) {
+    const blocks = await tx.userBlock.findMany({
+      where: { blockedId: authorId, blockerId: { in: candidateIds } },
+      select: { blockerId: true },
+    });
+    for (const b of blocks) byUserId.delete(b.blockerId);
+  }
+
   return Array.from(byUserId.entries()).map(([userId, kind]) => ({ userId, kind }));
 }
 

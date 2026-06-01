@@ -12,6 +12,7 @@ import {
 import { useAuth } from './auth.js';
 import { useRealtime } from './store.js';
 import { useInbox, type InboxItem } from './inbox-store.js';
+import { useBlocks } from './blocks-store.js';
 import { GatewayClient } from './gateway-client.js';
 import { resolveTerminal } from './attachment-ready.js';
 import { maybePlayMessageSound } from './message-sound.js';
@@ -74,6 +75,9 @@ export function startRealtime(): GatewayClient {
   // Hydrate the unread state / mention count so the bell can render the badge
   // before the user opens it.
   void useInbox.getState().hydrateReadStates();
+  // Hydrate the blocked-members set so message/reaction collapse applies on
+  // first render rather than waiting for a user action.
+  void useBlocks.getState().hydrate();
   return client;
 }
 
@@ -128,6 +132,11 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
           // ?? null becomes a no-op.
           originInstanceId: s.originInstanceId ?? null,
           originInstanceHost: s.originInstanceHost ?? null,
+          // Parity gap #3/#4 — READY is a partial Server; the full /servers
+          // fetch on mount carries the real systemChannelId + verification.
+          systemChannelId: null,
+          verificationLevel: 'none',
+          verificationMinAccountAgeHours: 0,
           createdAt: new Date().toISOString(),
         });
       }
@@ -323,6 +332,23 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
     }
     case 'MENTION_CREATE': {
       useInbox.getState().onMentionCreate(data as InboxItem);
+      return;
+    }
+    case 'BLOCK_ADD': {
+      // User-targeted: only the blocker receives this. Keeps other tabs in
+      // sync after a block.
+      useBlocks.getState().onBlockAdd(data as import('@tavern/shared').BlockedUser);
+      return;
+    }
+    case 'BLOCK_REMOVE': {
+      const d = data as { userId: string };
+      useBlocks.getState().onBlockRemove(d.userId);
+      return;
+    }
+    case 'SERVER_LOCKDOWN': {
+      void import('./lockdown-store.js').then((m) =>
+        m.useLockdown.getState().apply(data as import('@tavern/shared').ServerLockdownPayload),
+      );
       return;
     }
     case 'LINK_PREVIEW_READY': {

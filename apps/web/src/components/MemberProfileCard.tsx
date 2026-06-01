@@ -4,6 +4,8 @@ import * as Popover from '@radix-ui/react-popover';
 import type { Member, Role, UserProfile } from '@tavern/shared';
 import type { Presence } from '@tavern/shared';
 import { useRealtime, type LoadedProfile } from '../lib/store.js';
+import { useBlocks, useIsBlocked } from '../lib/blocks-store.js';
+import { toast } from '../lib/toast.js';
 import { cn } from '../lib/cn.js';
 import { PresenceDot } from './PresenceDot.js';
 
@@ -160,6 +162,25 @@ export function MemberProfileCard({
       setEditingNick(false);
     } finally {
       setNickSaving(false);
+    }
+  };
+
+  const isBlocked = useIsBlocked(userId);
+  const [blockBusy, setBlockBusy] = useState(false);
+  const handleToggleBlock = async (): Promise<void> => {
+    setBlockBusy(true);
+    try {
+      if (isBlocked) {
+        await useBlocks.getState().unblock(userId);
+        toast.success(`Unblocked ${displayName}`);
+      } else {
+        await useBlocks.getState().block(userId);
+        toast.success(`Blocked ${displayName}`);
+      }
+    } catch {
+      toast.error('Couldn’t update block. Try again.');
+    } finally {
+      setBlockBusy(false);
     }
   };
 
@@ -436,6 +457,16 @@ export function MemberProfileCard({
               onClick={onKick}
             >
               Kick from tavern…
+            </button>
+          ) : null}
+          {!isSelf ? (
+            <button
+              type="button"
+              className={cn('btn-ghost text-sm', !isBlocked && 'text-danger')}
+              onClick={() => void handleToggleBlock()}
+              disabled={blockBusy}
+            >
+              {isBlocked ? 'Unblock member' : 'Block member'}
             </button>
           ) : null}
           <button

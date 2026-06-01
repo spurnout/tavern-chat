@@ -45,6 +45,7 @@ import { registerPinRoutes } from './routes/pins.js';
 import { registerSavedMessageRoutes } from './routes/saved.js';
 import { registerThreadRoutes } from './routes/threads.js';
 import { registerPollRoutes } from './routes/polls.js';
+import { registerInteractionRoutes } from './routes/interactions.js';
 import { registerScheduledRoutes } from './routes/scheduled.js';
 import { registerEncounterRoutes } from './routes/encounters.js';
 import { registerLinkPreviewRoutes } from './routes/link-previews.js';
@@ -77,8 +78,10 @@ import { OidcService } from './services/oidc-service.js';
 import { registerWhiteboardRoutes } from './routes/whiteboard.js';
 import { registerEncounterTemplateRoutes } from './routes/encounter-templates.js';
 import { registerAutomodRoutes } from './routes/automod.js';
+import { registerRaidProtectionRoutes } from './routes/raid-protection.js';
 import { registerWarningRoutes } from './routes/warnings.js';
 import { registerJoinGateRoutes } from './routes/join-gates.js';
+import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerServerTemplateRoutes } from './routes/server-templates.js';
 import { registerServerBackupRoutes } from './routes/server-backup.js';
 import { registerPushRoutes } from './routes/push.js';
@@ -99,6 +102,7 @@ import { registerPresenceRoutes } from './routes/presence.js';
 import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerDmRoutes } from './routes/dms.js';
 import { registerUserRoutes } from './routes/users.js';
+import { registerBlockRoutes } from './routes/blocks.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
@@ -562,6 +566,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerSavedMessageRoutes(app);
     await registerThreadRoutes(app);
     await registerPollRoutes(app);
+    await registerInteractionRoutes(app);
     await registerScheduledRoutes(app);
     await registerEncounterRoutes(app);
     await registerLinkPreviewRoutes(app);
@@ -603,8 +608,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     await registerWhiteboardRoutes(app);
     await registerEncounterTemplateRoutes(app);
     await registerAutomodRoutes(app);
+    await registerRaidProtectionRoutes(app);
     await registerWarningRoutes(app);
     await registerJoinGateRoutes(app);
+    await registerOnboardingRoutes(app);
     await registerServerTemplateRoutes(app);
     await registerServerBackupRoutes(app, { storage });
     await registerPushRoutes(app);
@@ -634,6 +641,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       federationDmsEnabledOnInstance: opts.config.FEDERATION_DMS_ENABLED,
     });
     await registerUserRoutes(app);
+    await registerBlockRoutes(app);
     registerGateway(app, jwt);
 
     if (opts.config.NODE_ENV !== 'test' && opts.config.REDIS_URL) {

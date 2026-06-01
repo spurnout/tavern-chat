@@ -34,6 +34,7 @@ import { InboxPanel } from '../components/InboxPanel.js';
 import { SavedPanel } from '../components/SavedPanel.js';
 import { ImageLightbox } from '../components/ImageLightbox.js';
 import { CommandPalette } from '../components/CommandPalette.js';
+import { WelcomeScreen } from '../components/onboarding/WelcomeScreen.js';
 import { onUi } from '../lib/ui-events.js';
 
 // Stable empty-array fallback; never mutated. Module-level so the same
@@ -176,6 +177,10 @@ export function AppShell(): JSX.Element {
 
   return (
     <div className="relative flex h-full bg-canvas text-fg">
+      {/* Parity gap #3 — first-run welcome screen for the active tavern. Keyed
+          by serverId so it re-evaluates on tavern switch; self-hides when
+          onboarding is disabled or already completed. */}
+      {params.serverId ? <WelcomeScreen key={params.serverId} serverId={params.serverId} /> : null}
       {/* Skip link — first tab stop on the page, jumps over the rails to the
           message column for keyboard users. */}
       <a

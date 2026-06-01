@@ -1,9 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '@tavern/db';
 import { z } from 'zod';
-import { idSchema, Permission, TavernError, ulid } from '@tavern/shared';
+import {
+  AUTOMOD_PRESETS,
+  findAutomodPreset,
+  idSchema,
+  Permission,
+  TavernError,
+  ulid,
+} from '@tavern/shared';
 import { ok } from '../lib/responses.js';
 import { requireServerPermission } from '../services/permissions-service.js';
+import { writeAuditEntry } from '../services/audit-service.js';
 
 const createRuleSchema = z.object({
   name: z.string().min(1).max(120),
@@ -87,5 +95,105 @@ export async function registerAutomodRoutes(app: FastifyInstance): Promise<void>
     await requireServerPermission(rule.serverId, ctx.userId, Permission.MANAGE_SERVER_SAFETY_POLICY);
     await prisma.automodRule.delete({ where: { id } });
     reply.send(ok({ id }));
+  });
+
+  // ---- Presets (parity gap #4) ------------------------------------------
+
+  // List available presets (metadata only — raw patterns aren't surfaced so
+  // the slur seed list isn't echoed back to clients).
+  app.get('/api/servers/:id/automod/presets', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id: serverId } = z.object({ id: idSchema }).parse(req.params);
+    await requireServerPermission(serverId, ctx.userId, Permission.MANAGE_SERVER_SAFETY_POLICY);
+    const enabled = await prisma.automodRule.findMany({
+      where: { serverId, presetId: { not: null } },
+      select: { presetId: true },
+      distinct: ['presetId'],
+    });
+    const enabledIds = new Set(enabled.map((r) => r.presetId));
+    reply.send(
+      ok(
+        AUTOMOD_PRESETS.map((p) => ({
+          id: p.id,
+          label: p.label,
+          description: p.description,
+          ruleCount: p.rules.length,
+          enabled: enabledIds.has(p.id),
+        })),
+      ),
+    );
+  });
+
+  // Enable a preset: seed its rules (tagged with presetId). Idempotent — if the
+  // preset is already enabled, this is a no-op.
+  app.post('/api/servers/:id/automod/presets/:presetId', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id: serverId, presetId } = z
+      .object({ id: idSchema, presetId: z.string().min(1).max(60) })
+      .parse(req.params);
+    await requireServerPermission(serverId, ctx.userId, Permission.MANAGE_SERVER_SAFETY_POLICY);
+
+    const preset = findAutomodPreset(presetId);
+    if (!preset) throw TavernError.notFound('Preset not found');
+
+    const already = await prisma.automodRule.count({ where: { serverId, presetId } });
+    if (already > 0) {
+      reply.send(ok({ presetId, created: 0 }));
+      return;
+    }
+
+    const maxPos = await prisma.automodRule.aggregate({
+      where: { serverId },
+      _max: { position: true },
+    });
+    let pos = (maxPos._max.position ?? -1) + 1;
+    await prisma.$transaction(
+      preset.rules.map((rule) =>
+        prisma.automodRule.create({
+          data: {
+            id: ulid(),
+            serverId,
+            name: rule.name,
+            kind: rule.kind,
+            pattern: rule.pattern,
+            action: rule.action,
+            enabled: true,
+            reason: `Preset: ${preset.label}`,
+            presetId,
+            createdBy: ctx.userId,
+            position: pos++,
+          },
+        }),
+      ),
+    );
+
+    await writeAuditEntry({
+      serverId,
+      actorId: ctx.userId,
+      action: 'automod.preset_enabled',
+      targetType: 'automod_preset',
+      targetId: presetId,
+      metadata: { label: preset.label, rules: preset.rules.length },
+    });
+
+    reply.status(201).send(ok({ presetId, created: preset.rules.length }));
+  });
+
+  // Disable a preset: remove its seeded rows as a unit.
+  app.delete('/api/servers/:id/automod/presets/:presetId', async (req, reply) => {
+    const ctx = await app.requireUser(req, reply);
+    const { id: serverId, presetId } = z
+      .object({ id: idSchema, presetId: z.string().min(1).max(60) })
+      .parse(req.params);
+    await requireServerPermission(serverId, ctx.userId, Permission.MANAGE_SERVER_SAFETY_POLICY);
+    const result = await prisma.automodRule.deleteMany({ where: { serverId, presetId } });
+    await writeAuditEntry({
+      serverId,
+      actorId: ctx.userId,
+      action: 'automod.preset_disabled',
+      targetType: 'automod_preset',
+      targetId: presetId,
+    });
+    reply.send(ok({ presetId, removed: result.count }));
   });
 }

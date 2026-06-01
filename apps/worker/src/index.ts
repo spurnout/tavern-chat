@@ -13,6 +13,7 @@ import {
   type StorageBackend,
 } from '@tavern/media';
 import { prisma, refreshServerIconsForAttachment } from '@tavern/db';
+import { ulid } from '@tavern/shared';
 import { loadWorkerConfig, type WorkerConfig } from './config.js';
 import { startFederationOutboxWorker } from './federation-outbox-worker.js';
 
@@ -22,7 +23,11 @@ type MaintenanceJob =
   | { kind: 'audit-retention'; retentionDays: number }
   | { kind: 'nonce-cleanup'; retentionHours: number }
   | { kind: 'expired-custom-status' }
-  | { kind: 'federation-envelope-retention'; retentionDays: number };
+  | { kind: 'federation-envelope-retention'; retentionDays: number }
+  | { kind: 'raid-watch' };
+
+/** Lockdown duration once a join spike trips raid protection. */
+const RAID_LOCKDOWN_MS = 15 * 60 * 1000;
 
 async function main(): Promise<void> {
   const cfg = loadWorkerConfig();
@@ -191,6 +196,87 @@ async function main(): Promise<void> {
       // log rows. Chunked deletes keep each transaction short.
       const count = await pruneInBatches('federationEnvelopeLog', { receivedAt: { lt: cutoff } });
       log.info({ count, cutoffDate: cutoff }, 'federation-envelope-retention: pruned rows');
+    } else if (job.data.kind === 'raid-watch') {
+      // Parity gap #4 — join-velocity guard. Measured here (durable, replica-
+      // safe) rather than in an in-process counter. For each server with raid
+      // protection enabled: trip a lockdown when joins in the window exceed
+      // the threshold; auto-lift when the lockdown window elapses.
+      const now = new Date();
+      const configs = await prisma.raidProtectionConfig.findMany({
+        where: { enabled: true },
+      });
+      for (const cfgRow of configs) {
+        const publishLockdown = (active: boolean, endsAt: Date | null): void => {
+          void gatewayPublisher
+            .publish(
+              GATEWAY_CHANNEL,
+              JSON.stringify({
+                type: 'SERVER_LOCKDOWN',
+                serverId: cfgRow.serverId,
+                data: {
+                  serverId: cfgRow.serverId,
+                  active,
+                  action: cfgRow.lockdownAction,
+                  endsAt: endsAt ? endsAt.toISOString() : null,
+                },
+              }),
+            )
+            .catch((err: unknown) => {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                'gateway publish failed (raid-watch)',
+              );
+            });
+        };
+
+        // Auto-lift expired lockdowns.
+        if (cfgRow.lockdownActive) {
+          if (cfgRow.lockdownEndsAt && cfgRow.lockdownEndsAt <= now) {
+            await prisma.raidProtectionConfig.update({
+              where: { serverId: cfgRow.serverId },
+              data: { lockdownActive: false, lockdownEndsAt: null },
+            });
+            await prisma.auditLogEntry.create({
+              data: {
+                id: ulid(),
+                serverId: cfgRow.serverId,
+                action: 'raid.lockdown_lifted',
+                targetType: 'server',
+                targetId: cfgRow.serverId,
+              },
+            });
+            publishLockdown(false, null);
+          }
+          continue; // already locked down; don't re-trip.
+        }
+
+        const windowStart = new Date(now.getTime() - cfgRow.joinWindowSec * 1000);
+        const recentJoins = await prisma.serverMember.count({
+          where: { serverId: cfgRow.serverId, joinedAt: { gte: windowStart } },
+        });
+        if (recentJoins >= cfgRow.joinThreshold) {
+          const endsAt = new Date(now.getTime() + RAID_LOCKDOWN_MS);
+          await prisma.raidProtectionConfig.update({
+            where: { serverId: cfgRow.serverId },
+            data: { lockdownActive: true, lockdownEndsAt: endsAt },
+          });
+          await prisma.auditLogEntry.create({
+            data: {
+              id: ulid(),
+              serverId: cfgRow.serverId,
+              action: 'raid.lockdown_started',
+              targetType: 'server',
+              targetId: cfgRow.serverId,
+              metadata: { recentJoins, threshold: cfgRow.joinThreshold },
+            },
+          });
+          publishLockdown(true, endsAt);
+          log.warn(
+            { serverId: cfgRow.serverId, recentJoins, threshold: cfgRow.joinThreshold },
+            'raid lockdown engaged',
+          );
+        }
+      }
     }
   };
 
@@ -270,6 +356,20 @@ async function main(): Promise<void> {
       attempts: 3,
       backoff: { type: 'exponential', delay: 30_000 },
       jobId: 'expired-custom-status',
+    },
+  );
+  // Parity gap #4 — raid watch every minute. Cheap (one count per enabled
+  // server) and idempotent; the lockdown state lives on RaidProtectionConfig.
+  await maintenanceQueue.add(
+    'raid-watch',
+    { kind: 'raid-watch' },
+    {
+      repeat: { pattern: '* * * * *' },
+      removeOnComplete: true,
+      removeOnFail: { count: 10 },
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 10_000 },
+      jobId: 'raid-watch',
     },
   );
   // FO-1: prune FederationEnvelopeLog rows older than 30 days daily at 03:30

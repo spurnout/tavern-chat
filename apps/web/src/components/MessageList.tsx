@@ -15,10 +15,13 @@ import type { DiceTermResult, Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { useInbox } from '../lib/inbox-store.js';
+import { useIsBlocked } from '../lib/blocks-store.js';
 import { useAuth } from '../lib/auth.js';
 import { ThreadPanel } from './ThreadPanel.js';
 import { PollMessage } from './PollMessage.js';
 import { MessageContent } from './MessageContent.js';
+import { MessageEmbeds } from './MessageEmbeds.js';
+import { MessageComponents } from './MessageComponents.js';
 import { ReplyContext } from './ReplyContext.js';
 import { LinkPreviewCard } from './LinkPreviewCard.js';
 import { ForwardMessageModal } from './ForwardMessageModal.js';
@@ -262,6 +265,13 @@ function MessageRow({
   onForward,
   onShowHistory,
 }: RowProps): JSX.Element {
+  // Block collapse: a blocked author's messages are hidden behind a reveal.
+  // The server still delivers them (fan-out stays symmetric so the blocked
+  // member is unaware) — this is purely the blocker's client choosing not to
+  // show them. `mine` messages are never blocked (you can't block yourself).
+  const blocked = useIsBlocked(message.authorId);
+  const [revealed, setRevealed] = useState(false);
+
   if (message.deletedAt) {
     return (
       <div className="rounded px-3 py-2 text-sm italic text-fg-muted">message deleted</div>
@@ -273,6 +283,20 @@ function MessageRow({
   if (message.type === 'system') {
     return (
       <div className="px-3 py-1 text-sm italic text-fg-muted">{message.content}</div>
+    );
+  }
+  if (blocked && !revealed) {
+    return (
+      <div className="flex items-center gap-2 rounded px-3 py-1.5 text-sm italic text-fg-muted">
+        <span>Blocked message</span>
+        <button
+          type="button"
+          className="not-italic text-ember hover:underline"
+          onClick={() => setRevealed(true)}
+        >
+          Reveal
+        </button>
+      </div>
     );
   }
   return (
@@ -335,6 +359,12 @@ function MessageRow({
         ) : null}
         {message.pollId ? <PollMessage pollId={message.pollId} /> : null}
         {!message.pollId && message.content ? <MessageContent content={message.content} /> : null}
+        {message.embeds && message.embeds.length > 0 ? (
+          <MessageEmbeds embeds={message.embeds} />
+        ) : null}
+        {message.components && message.components.length > 0 ? (
+          <MessageComponents messageId={message.id} rows={message.components} />
+        ) : null}
         {message.content && /\bhttps?:\/\//.test(message.content) ? (
           <LinkPreviewCard messageId={message.id} />
         ) : null}

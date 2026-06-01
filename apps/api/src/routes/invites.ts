@@ -18,6 +18,7 @@ import { gatewayBroker } from '../services/gateway-broker.js';
 import { fanOutMemberAdd } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
 import { isBanned } from '../services/ban-service.js';
+import { postSystemMessage } from '../services/system-message-service.js';
 
 // Federation Phase 4 — remote-user identity is `localpart@host`. The regex is
 // intentionally duplicated from packages/shared/src/federation/{messages,
@@ -315,6 +316,27 @@ export async function registerInviteRoutes(
     if (await isBanned(invite.serverId, ctx.userId)) {
       throw new TavernError('MEMBER_BANNED', 'You are banned from this server', 403);
     }
+    // Parity gap #4 — raid lockdown enforcement. When a lockdown is active,
+    // `pause_invites` rejects the join outright; `require_approval` and
+    // `quarantine` let the member in but stamp a timeout so they can't post
+    // until the lockdown lifts or a mod clears them (reuses the timeout gate).
+    let joinTimeoutUntil: Date | null = null;
+    {
+      const raid = await prisma.raidProtectionConfig.findUnique({
+        where: { serverId: invite.serverId },
+        select: { lockdownActive: true, lockdownAction: true, lockdownEndsAt: true },
+      });
+      if (raid?.lockdownActive) {
+        if (raid.lockdownAction === 'pause_invites') {
+          throw new TavernError(
+            'INVALID_INVITE',
+            'This tavern is locked down — joins are paused',
+            403,
+          );
+        }
+        joinTimeoutUntil = raid.lockdownEndsAt ?? new Date(Date.now() + 60 * 60 * 1000);
+      }
+    }
     {
       // RACE: atomic check-and-increment for maxUses. The plain check above
       // is a UX-friendly fast-fail; under N concurrent redeems on
@@ -345,7 +367,11 @@ export async function registerInviteRoutes(
           throw new TavernError('INVALID_INVITE', 'Invite has been fully used', 400);
         }
         return tx.serverMember.create({
-          data: { serverId: invite.serverId!, userId: ctx.userId },
+          data: {
+            serverId: invite.serverId!,
+            userId: ctx.userId,
+            ...(joinTimeoutUntil ? { timeoutUntil: joinTimeoutUntil } : {}),
+          },
         });
       });
       gatewayBroker.publish({
@@ -353,6 +379,29 @@ export async function registerInviteRoutes(
         serverId: invite.serverId,
         data: { serverId: invite.serverId, userId: ctx.userId },
       });
+
+      // Parity gap #3 — system join message. Best-effort: a system-room outage
+      // (or no configured room) must never break the join, so this is wrapped
+      // and detached. Fires after the member row + MEMBER_ADD are committed.
+      {
+        const serverRow = await prisma.server.findUnique({
+          where: { id: invite.serverId },
+          select: { systemChannelId: true },
+        });
+        if (serverRow?.systemChannelId) {
+          const joiner = await prisma.user.findUnique({
+            where: { id: ctx.userId },
+            select: { displayName: true },
+          });
+          if (joiner) {
+            void postSystemMessage(
+              invite.serverId,
+              serverRow.systemChannelId,
+              `**${joiner.displayName}** joined the tavern`,
+            ).catch(() => undefined);
+          }
+        }
+      }
 
       // P4-10 — fan out `member.add` to peers with members in this server.
       // Gated on:
