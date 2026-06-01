@@ -5,6 +5,7 @@ import { AccountDataSection } from '../components/AccountDataSection.js';
 import { AccountCalendarSection } from '../components/AccountCalendarSection.js';
 import { AccountTokensSection } from '../components/AccountTokensSection.js';
 import { AccountAppearanceSection } from '../components/AccountAppearanceSection.js';
+import { AccountAudioVideoSection } from '../components/AccountAudioVideoSection.js';
 import { AccountPushSection } from '../components/AccountPushSection.js';
 import { AccountFederationPrivacySection } from '../components/AccountFederationPrivacySection.js';
 import { AccountBlockedSection } from '../components/AccountBlockedSection.js';
@@ -26,6 +27,7 @@ export function AccountSettingsPage(): JSX.Element {
       </header>
       <div className="mx-auto w-full max-w-2xl space-y-8 px-6 py-6">
         <AccountAppearanceSection />
+        <AccountAudioVideoSection />
         <AccountFederationPrivacySection />
         <AccountBlockedSection />
         <AccountSecuritySection />

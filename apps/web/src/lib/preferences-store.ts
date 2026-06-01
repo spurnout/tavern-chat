@@ -27,6 +27,18 @@ interface PreferencesState {
   voiceNoiseSuppression: boolean;
   voiceEchoCancellation: boolean;
   voiceAutoGain: boolean;
+  /**
+   * Selected media devices for voice/video. The literal string `'default'`
+   * means "let the browser/OS pick" — we never pass a deviceId constraint in
+   * that case, so the system default (and its live changes) win. Otherwise
+   * these hold a `MediaDeviceInfo.deviceId` from `enumerateDevices()` and are
+   * forwarded into the LiveKit Room capture defaults / output sink on join,
+   * and live-switched while connected. Output (speaker) selection relies on
+   * HTMLMediaElement.setSinkId, which Chromium supports but Firefox does not.
+   */
+  audioInputDeviceId: string;
+  audioOutputDeviceId: string;
+  videoInputDeviceId: string;
   setTheme: (theme: ThemeName) => void;
   setFont: (font: FontName) => void;
   setSize: (size: FontSize) => void;
@@ -34,6 +46,9 @@ interface PreferencesState {
   setVoiceNoiseSuppression: (on: boolean) => void;
   setVoiceEchoCancellation: (on: boolean) => void;
   setVoiceAutoGain: (on: boolean) => void;
+  setAudioInputDeviceId: (id: string) => void;
+  setAudioOutputDeviceId: (id: string) => void;
+  setVideoInputDeviceId: (id: string) => void;
 }
 
 export const usePreferences = create<PreferencesState>()(
@@ -46,6 +61,9 @@ export const usePreferences = create<PreferencesState>()(
       voiceNoiseSuppression: true,
       voiceEchoCancellation: true,
       voiceAutoGain: true,
+      audioInputDeviceId: 'default',
+      audioOutputDeviceId: 'default',
+      videoInputDeviceId: 'default',
       setTheme: (theme) => set({ theme }),
       setFont: (font) => set({ font }),
       setSize: (size) => set({ size }),
@@ -53,6 +71,9 @@ export const usePreferences = create<PreferencesState>()(
       setVoiceNoiseSuppression: (voiceNoiseSuppression) => set({ voiceNoiseSuppression }),
       setVoiceEchoCancellation: (voiceEchoCancellation) => set({ voiceEchoCancellation }),
       setVoiceAutoGain: (voiceAutoGain) => set({ voiceAutoGain }),
+      setAudioInputDeviceId: (audioInputDeviceId) => set({ audioInputDeviceId }),
+      setAudioOutputDeviceId: (audioOutputDeviceId) => set({ audioOutputDeviceId }),
+      setVideoInputDeviceId: (videoInputDeviceId) => set({ videoInputDeviceId }),
     }),
     { name: 'tavern.preferences' },
   ),

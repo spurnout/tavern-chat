@@ -62,51 +62,6 @@ export function AccountAppearanceSection(): JSX.Element {
           Reduce motion (disable transition animations)
         </label>
       </div>
-      <VoiceAudioPreferences />
     </section>
-  );
-}
-
-function VoiceAudioPreferences(): JSX.Element {
-  const noise = usePreferences((s) => s.voiceNoiseSuppression);
-  const echo = usePreferences((s) => s.voiceEchoCancellation);
-  const gain = usePreferences((s) => s.voiceAutoGain);
-  const setNoise = usePreferences((s) => s.setVoiceNoiseSuppression);
-  const setEcho = usePreferences((s) => s.setVoiceEchoCancellation);
-  const setGain = usePreferences((s) => s.setVoiceAutoGain);
-  return (
-    <div className="mt-4 border-t border-subtle pt-3">
-      <h3 className="text-xs uppercase tracking-wider text-fg-muted">Voice audio</h3>
-      <p className="mt-1 text-xs text-fg-muted">
-        Browser-level filters applied to your mic. Defaults match what Meet, Teams, and Discord do.
-        Changes take effect the next time you join a voice room.
-      </p>
-      <div className="mt-2 grid gap-2 text-sm md:grid-cols-3">
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={noise}
-            onChange={(e) => setNoise(e.target.checked)}
-          />
-          Noise suppression
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={echo}
-            onChange={(e) => setEcho(e.target.checked)}
-          />
-          Echo cancellation
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={gain}
-            onChange={(e) => setGain(e.target.checked)}
-          />
-          Auto gain
-        </label>
-      </div>
-    </div>
   );
 }

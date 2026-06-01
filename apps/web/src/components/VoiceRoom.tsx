@@ -33,6 +33,7 @@ import { RecordingConsentDialog } from './RecordingConsentDialog.js';
 import { useCaptions, type CaptionLine } from '../lib/captions-store.js';
 import { PresenterLayout } from './voice/PresenterLayout.js';
 import { VoiceControlBar } from './voice/VoiceControlBar.js';
+import { VoiceAudioRenderer } from './voice/VoiceAudioRenderer.js';
 import { VoiceParticipantGrid, type ParticipantRowData } from './voice/VoiceParticipantGrid.js';
 
 // Stable module-scoped fallback for the "no captions for this channel
@@ -305,6 +306,13 @@ export function VoiceRoom({
         // mic stream LiveKit publishes is already cleaned up. Defaults are
         // all-on, matching Discord / Teams / Meet behaviour.
         const prefs = usePreferences.getState();
+        // A `'default'` deviceId means "no constraint" — let the OS pick and
+        // track its live changes. Only pin a deviceId when the user explicitly
+        // chose one in Audio & video settings.
+        const micDevice =
+          prefs.audioInputDeviceId !== 'default' ? prefs.audioInputDeviceId : undefined;
+        const camDevice =
+          prefs.videoInputDeviceId !== 'default' ? prefs.videoInputDeviceId : undefined;
         const r = new Room({
           adaptiveStream: true,
           dynacast: true,
@@ -312,7 +320,9 @@ export function VoiceRoom({
             noiseSuppression: prefs.voiceNoiseSuppression,
             echoCancellation: prefs.voiceEchoCancellation,
             autoGainControl: prefs.voiceAutoGain,
+            ...(micDevice ? { deviceId: micDevice } : {}),
           },
+          videoCaptureDefaults: camDevice ? { deviceId: camDevice } : {},
         });
 
         const syncParticipants = (rm: Room): void => {
@@ -391,6 +401,14 @@ export function VoiceRoom({
         });
 
         await r.connect(joinRes.liveKitUrl, joinRes.token);
+        // Route playback to the chosen speaker. setSinkId (used under the hood)
+        // is unsupported on Firefox — swallow the rejection rather than failing
+        // the whole join over an output-device preference.
+        if (prefs.audioOutputDeviceId !== 'default') {
+          await r
+            .switchActiveDevice('audiooutput', prefs.audioOutputDeviceId)
+            .catch(() => undefined);
+        }
         if (joinRes.allowedFeatures.canPublishAudio) {
           await r.localParticipant.setMicrophoneEnabled(true);
         }
@@ -495,6 +513,35 @@ export function VoiceRoom({
     // changes "meaningfully" for this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, me?.id, channelId]);
+
+  // Live-apply device changes made in Audio & video settings while connected,
+  // so the user doesn't have to leave and rejoin to switch mic/speaker/camera.
+  // `'default'` clears any pin back to the OS default device. join() already
+  // applied whatever was selected at connect time, so the first pass per room
+  // only records the baseline — we switch on subsequent changes only, to avoid
+  // a pointless mic/camera republish on every join.
+  const micDeviceId = usePreferences((s) => s.audioInputDeviceId);
+  const speakerDeviceId = usePreferences((s) => s.audioOutputDeviceId);
+  const cameraDeviceId = usePreferences((s) => s.videoInputDeviceId);
+  const lastDevicesRef = useRef<{ mic: string; speaker: string; cam: string } | null>(null);
+  useEffect(() => {
+    if (!room) {
+      lastDevicesRef.current = null;
+      return;
+    }
+    const last = lastDevicesRef.current;
+    lastDevicesRef.current = { mic: micDeviceId, speaker: speakerDeviceId, cam: cameraDeviceId };
+    if (last === null) return; // baseline; join() already applied these
+    if (micDeviceId !== last.mic) {
+      void room.switchActiveDevice('audioinput', micDeviceId).catch(() => undefined);
+    }
+    if (speakerDeviceId !== last.speaker) {
+      void room.switchActiveDevice('audiooutput', speakerDeviceId).catch(() => undefined);
+    }
+    if (cameraDeviceId !== last.cam) {
+      void room.switchActiveDevice('videoinput', cameraDeviceId).catch(() => undefined);
+    }
+  }, [room, micDeviceId, speakerDeviceId, cameraDeviceId]);
 
   async function toggleMic(): Promise<void> {
     if (!room) return;
@@ -721,6 +768,7 @@ export function VoiceRoom({
     return (
       <div className="flex items-center justify-between gap-3 border-t border-subtle bg-sunken px-4 py-2">
         <RecordingConsentDialog channelId={channelId} meId={me?.id ?? null} />
+        {room && <VoiceAudioRenderer room={room} />}
         <button
           type="button"
           onClick={onExpand}
@@ -741,6 +789,7 @@ export function VoiceRoom({
   return (
     <div className="flex h-full flex-col">
       <RecordingConsentDialog channelId={channelId} meId={me?.id ?? null} />
+      {room && <VoiceAudioRenderer room={room} />}
       <header className="flex items-center justify-between border-b border-subtle px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">
           <Volume2 size={16} className="text-fg-muted shrink-0" />
