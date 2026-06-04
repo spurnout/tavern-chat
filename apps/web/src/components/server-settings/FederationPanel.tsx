@@ -83,7 +83,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
         body: { federationEnabled: next },
       });
       setServer(updated);
-      toast.success(next ? 'Federation turned on for this den.' : 'Federation turned off for this den.');
+      toast.success(next ? 'Federation turned on for this tavern.' : 'Federation turned off for this tavern.');
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not update federation.');
     } finally {
@@ -105,7 +105,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
       toast.success(`Left ${server.name}.`);
       await navigate({ to: '/app' });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not leave this den.');
+      toast.error(err instanceof ApiError ? err.message : 'Could not leave this tavern.');
     } finally {
       setLeaving(false);
     }
@@ -128,7 +128,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
     return (
       <div className="space-y-6">
         <section className="space-y-2">
-          <h2 className="font-serif text-lg font-medium">This is a federated den</h2>
+          <h2 className="font-serif text-lg font-medium">This is a federated tavern</h2>
           <p className="text-sm text-fg-muted">
             Hosted by {host}. You can leave at any time — your local messages here will stop
             syncing back.
@@ -141,7 +141,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
             disabled={leaving}
             onClick={() => void handleLeaveMirror()}
           >
-            {leaving ? 'Leaving…' : 'Leave this den'}
+            {leaving ? 'Leaving…' : 'Leave this tavern'}
           </button>
         </section>
       </div>
@@ -153,7 +153,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
       <section className="space-y-2">
         <h2 className="font-serif text-lg font-medium">Federation</h2>
         <p className="text-sm text-fg-muted">
-          You don&apos;t have permission to change federation settings for this den.
+          You don&apos;t have permission to change federation settings for this tavern.
         </p>
       </section>
     );
@@ -165,7 +165,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
         <h2 className="font-serif text-lg font-medium">Federation</h2>
         <p className="text-sm text-fg-muted">
           Federation lets members from peered instances pull up a chair in your rooms. The toggle
-          here is the den-wide switch; each room can still opt out (or force in) via its own
+          here is the tavern-wide switch; each room can still opt out (or force in) via its own
           override.
         </p>
       </section>
@@ -174,9 +174,9 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
         <section className="space-y-3 rounded border border-subtle bg-surface p-4">
           <label className="flex cursor-pointer items-start justify-between gap-4">
             <span>
-              <span className="block font-serif font-medium">Federate this den</span>
+              <span className="block font-serif font-medium">Federate this tavern</span>
               <span className="mt-1 block text-sm text-fg-muted">
-                When on, rooms in this den can exchange messages with members from peered
+                When on, rooms in this tavern can exchange messages with members from peered
                 instances. Per-room overrides are set inside each room.
               </span>
             </span>
@@ -195,7 +195,7 @@ export function FederationPanel({ serverId }: { serverId: string }): JSX.Element
             This instance is not federation-enabled. Ask the operator to set{' '}
             <code className="rounded bg-canvas px-1 py-0.5 text-xs">FEDERATION_ENABLED=true</code>{' '}
             in the <code className="rounded bg-canvas px-1 py-0.5 text-xs">.env</code> before you
-            can turn on federation for this den.
+            can turn on federation for this tavern.
           </p>
         </section>
       )}

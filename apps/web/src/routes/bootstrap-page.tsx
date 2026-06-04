@@ -123,7 +123,7 @@ export function BootstrapPage(): JSX.Element {
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 inline-block text-fg-muted">Den name</span>
+            <span className="mb-1 inline-block text-fg-muted">Tavern name</span>
             <input
               className="input"
               required
@@ -131,7 +131,7 @@ export function BootstrapPage(): JSX.Element {
               {...bind('serverName')}
             />
             <span className="mt-1 inline-block text-xs text-fg-muted">
-              We'll set up your den with a default room and a Voice Hall.
+              We'll set up your tavern with a default room and a Voice Hall.
             </span>
           </label>
 

@@ -29,7 +29,7 @@ export function ReactionBar({ message }: { message: Message }): JSX.Element {
           key={r.emoji}
           type="button"
           onClick={() => void toggle(r.emoji, r.me)}
-          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+          className={`touch-target inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
             r.me
               ? 'border-ember bg-tint-ember text-mead'
               : 'border-subtle hover:bg-raised'
@@ -44,7 +44,7 @@ export function ReactionBar({ message }: { message: Message }): JSX.Element {
           type="button"
           aria-label="Add reaction"
           onClick={() => setPicking((p) => !p)}
-          className="rounded p-1 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-raised"
+          className="touch-target-sq grid place-items-center rounded p-1 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100 hover:bg-raised"
         >
           <Smile size={14} />
         </button>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useRealtime } from '../lib/store.js';
 import { useAuth } from '../lib/auth.js';
+import { typingLabel } from '../lib/typing-label.js';
 
 const TYPING_TTL_MS = 6_000;
 const EMPTY_TYPING: Record<string, number> = {};
@@ -22,18 +23,12 @@ export function TypingIndicator({ channelId }: { channelId: string }): JSX.Eleme
     return () => clearInterval(id);
   }, [channelId, expire]);
 
-  const others = Object.entries(typing)
-    .filter(([uid, ts]) => uid !== meId && Date.now() - ts < TYPING_TTL_MS)
-    .map(([uid]) => uid);
+  const others = Object.entries(typing).filter(
+    ([uid, ts]) => uid !== meId && Date.now() - ts < TYPING_TTL_MS,
+  );
 
-  if (others.length === 0) return null;
-
-  const label =
-    others.length === 1
-      ? `${others[0]!.slice(0, 8)} is typing…`
-      : others.length === 2
-        ? `${others[0]!.slice(0, 8)} and ${others[1]!.slice(0, 8)} are typing…`
-        : `${others.length} people are typing…`;
+  const label = typingLabel(others.length);
+  if (label === null) return null;
 
   return (
     <div

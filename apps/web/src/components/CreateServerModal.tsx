@@ -32,7 +32,7 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
       setDescription('');
       await navigate({ to: '/app/servers/$serverId', params: { serverId: server.id } });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create den');
+      setError(err instanceof ApiError ? err.message : 'Could not create tavern');
     } finally {
       setBusy(false);
     }
@@ -44,8 +44,8 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Create a new den"
-      description="Dens are private spaces with their own rooms, roles, and members."
+      title="Create a new tavern"
+      description="Taverns are private spaces with their own rooms, roles, and members."
       footer={
         <>
           <button className="btn-ghost" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -56,7 +56,7 @@ export function CreateServerModal({ open, onOpenChange }: Props): JSX.Element {
             onClick={() => void submit()}
             disabled={busy || !valid}
           >
-            {busy ? 'Creating…' : 'Create den'}
+            {busy ? 'Creating…' : 'Create tavern'}
           </button>
         </>
       }

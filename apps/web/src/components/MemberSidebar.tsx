@@ -79,7 +79,7 @@ export function MemberSidebar({ serverId }: { serverId: string }): JSX.Element {
               <button
                 type="button"
                 aria-label={`View profile of ${name}`}
-                className="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-raised focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
+                className="touch-target group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-raised focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
               >
                 <div className="relative shrink-0">
                   <div className="grid h-7 w-7 place-items-center rounded-full bg-raised font-serif text-xs font-semibold">

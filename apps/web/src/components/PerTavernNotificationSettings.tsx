@@ -39,7 +39,7 @@ export function PerTavernNotificationSettings({ serverId }: Props): JSX.Element 
       <div className="space-y-2 rounded-md border border-subtle bg-surface p-4">
         <ToggleRow
           label="Mute this tavern entirely"
-          description="No chimes from this den at all — neither messages nor mentions."
+          description="No chimes from this tavern at all — neither messages nor mentions."
           checked={current.muteAll}
           onChange={(v) => void updatePerTavern(serverId, { muteAll: v })}
         />

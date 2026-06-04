@@ -37,7 +37,7 @@
 :root {
   color-scheme: dark;
 
-  /* Surface ramp — six steps, each ~4% lighter than the last */
+  /* Surface ramp — six steps, ~0.025–0.04 oklch-L apart (perceptually even) */
   --bg-canvas:    oklch(0.165 0.010 60);  /* #15110d */
   --bg-sunken:    oklch(0.190 0.012 60);  /* #1b1610 */
   --bg-surface:   oklch(0.220 0.013 60);  /* #221b14 */
@@ -72,6 +72,7 @@
   --tint-moss:     color-mix(in oklch, var(--moss)     14%, transparent);
   --tint-rust:     color-mix(in oklch, var(--rust)     14%, transparent);
   --tint-lavender: color-mix(in oklch, var(--lavender) 14%, transparent);
+  --tint-dusk:     color-mix(in oklch, var(--dusk)     14%, transparent);
 
   /* Foreground tint — for neutral row hovers that should not adopt an accent */
   --tint-fg-04:    color-mix(in oklch, var(--fg-default) 4%, transparent);
@@ -137,6 +138,20 @@
     transition-property: all;
     transition-duration: var(--t-base);
     transition-timing-function: var(--ease-decel);
+  }
+
+  /* Touch-target floor. The dense desktop rows (channel/member/reaction) sit
+     well below the 44px WCAG 2.5.5 / platform minimum. On touch-first
+     viewports (≤ tablet) we grow the *hit area* to 44px without disturbing
+     the desktop rhythm — padding/min-size only, never row height at desktop. */
+  @media (max-width: 1023px) {
+    .touch-target {
+      min-height: 44px;
+    }
+    .touch-target-sq {
+      min-height: 44px;
+      min-width: 44px;
+    }
   }
 }
 

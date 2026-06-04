@@ -62,6 +62,7 @@ export default {
         'tint-moss':     'var(--tint-moss)',
         'tint-rust':     'var(--tint-rust)',
         'tint-lavender': 'var(--tint-lavender)',
+        'tint-dusk':     'var(--tint-dusk)',
         'tint-fg-04':    'var(--tint-fg-04)',
         'tint-danger':   'var(--tint-danger)',
       },

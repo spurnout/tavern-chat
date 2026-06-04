@@ -17,17 +17,17 @@ interface Props {
 /**
  * Federation Phase 4 / P4-16 — preview modal shown when the user follows a
  * federated invite link. Fetches the preview via our API passthrough,
- * displays the den name + host + inviter + room count, and accepts the
+ * displays the tavern name + host + inviter + room count, and accepts the
  * invite on confirmation.
  *
- * Voice: "den" (not "server"), "room" (not "channel"), sentence case
- * everywhere. The primary action mirrors the local create-den CTA — "pull
- * up a chair" — to keep the federation flow feeling like a continuation of
- * the same world rather than something foreign.
+ * Voice: "tavern" (not "server"/"den"), "room" (not "channel"), sentence
+ * case everywhere. The primary action mirrors the local create-tavern CTA —
+ * "pull up a chair" — to keep the federation flow feeling like a continuation
+ * of the same world rather than something foreign.
  *
  * Close behaviour: clicking outside / pressing Escape / hitting Cancel all
  * dismiss the modal. The accept action navigates to the resulting mirror
- * den on success and then closes — the navigation is intentionally inside
+ * tavern on success and then closes — the navigation is intentionally inside
  * the success branch so the modal stays visible if the request errors,
  * letting the user see the error message and retry.
  */
@@ -104,7 +104,7 @@ export function FederatedInvitePreviewModal({
         toast.success(`Pulled up a chair in ${preview.name}.`);
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not join this den.');
+      setError(err instanceof ApiError ? err.message : 'Could not join this tavern.');
     } finally {
       inFlightRef.current = false;
       setAccepting(false);

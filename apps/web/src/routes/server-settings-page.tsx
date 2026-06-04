@@ -53,13 +53,13 @@ export function ServerSettingsPage(): JSX.Element {
   const initial = readInitialSettingsState();
   const [tab, setTab] = useState<Tab>(initial.tab);
 
-  if (!serverId) return <div className="p-12">Pick a den.</div>;
+  if (!serverId) return <div className="p-12">Pick a tavern.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
       <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
         <Settings size={16} className="text-fg-muted" />
-        <span className="font-serif font-medium">Den settings</span>
+        <span className="font-serif font-medium">Tavern settings</span>
         <div className="ml-auto flex gap-1 text-xs">
           <TabButton active={tab === 'roles'} onClick={() => setTab('roles')}>
             <Tag size={12} /> Roles

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import * as Dialog from '@radix-ui/react-dialog';
 import type { ReportCategory, ReportTargetType } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
+import { Modal } from './Modal.js';
 
 interface Props {
   targetType: ReportTargetType;
@@ -55,68 +55,63 @@ export function ReportDialog(props: Props): JSX.Element {
   }
 
   return (
-    <Dialog.Root open onOpenChange={(o) => !o && props.onClose()}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(95vw,440px)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-subtle bg-surface p-6 shadow-xl">
-          <Dialog.Title className="font-serif text-lg font-medium">Report content</Dialog.Title>
-          <Dialog.Description className="mt-1 text-sm text-fg-muted">
-            Reports go to your den moderators. Pick the most specific category that applies.
-          </Dialog.Description>
-
-          {submitted ? (
-            <p className="mt-6 text-sm text-mead">Thanks — your report was filed.</p>
-          ) : (
-            <>
-              <label className="mt-4 block text-sm">
-                <span className="mb-1 inline-block text-fg-muted">Category</span>
-                <select
-                  className="input"
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value as ReportCategory)}
-                  disabled={busy}
-                >
-                  {CATEGORIES.map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="mt-3 block text-sm">
-                <span className="mb-1 inline-block text-fg-muted">Notes (optional)</span>
-                <textarea
-                  className="input min-h-[6rem]"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  disabled={busy}
-                  maxLength={2000}
-                  placeholder="Anything else moderators should know?"
-                />
-              </label>
-              {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
-              <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={props.onClose}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => void submit()}
-                  disabled={busy}
-                >
-                  {busy ? 'Submitting…' : 'Submit report'}
-                </button>
-              </div>
-            </>
-          )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Modal
+      open
+      onOpenChange={(o) => !o && props.onClose()}
+      title="Report content"
+      description="Reports go to your tavern's moderators. Pick the most specific category that applies."
+      widthClass="w-[min(95vw,440px)]"
+      footer={
+        submitted ? undefined : (
+          <>
+            <button type="button" className="btn-ghost" onClick={props.onClose} disabled={busy}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => void submit()}
+              disabled={busy}
+            >
+              {busy ? 'Submitting…' : 'Submit report'}
+            </button>
+          </>
+        )
+      }
+    >
+      {submitted ? (
+        <p className="text-sm text-mead">Thanks — your report was filed.</p>
+      ) : (
+        <>
+          <label className="block text-sm">
+            <span className="mb-1 inline-block text-fg-muted">Category</span>
+            <select
+              className="input"
+              value={category}
+              onChange={(e) => setCategory(e.target.value as ReportCategory)}
+              disabled={busy}
+            >
+              {CATEGORIES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="mt-3 block text-sm">
+            <span className="mb-1 inline-block text-fg-muted">Notes (optional)</span>
+            <textarea
+              className="input min-h-[6rem]"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={busy}
+              maxLength={2000}
+              placeholder="Anything else moderators should know?"
+            />
+          </label>
+          {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
+        </>
+      )}
+    </Modal>
   );
 }

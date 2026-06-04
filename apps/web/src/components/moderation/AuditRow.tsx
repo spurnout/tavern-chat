@@ -23,7 +23,6 @@ const ACCENT_CLASS: Record<AuditAccent, string> = {
   good: 'bg-tint-moss text-moss',
   warn: 'bg-tint-mead text-mead',
   danger: 'bg-tint-rust text-rust',
-  mead: 'bg-tint-mead text-mead',
   lavender: 'bg-tint-lavender text-lavender',
   dusk: 'bg-tint-dusk text-dusk',
 };

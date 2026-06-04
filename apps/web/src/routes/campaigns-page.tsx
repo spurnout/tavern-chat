@@ -44,7 +44,7 @@ export function CampaignsPage(): JSX.Element {
 
   const active = campaigns.find((c) => c.id === activeId) ?? null;
 
-  if (!serverId) return <div className="p-12">Pick a den.</div>;
+  if (!serverId) return <div className="p-12">Pick a tavern.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">

@@ -332,10 +332,10 @@ function ServerRail({
       })}
       <div className="my-1 h-px w-8 bg-raised" />
       <button
-        aria-label="Add den"
+        aria-label="Add a tavern"
         onClick={onCreateServer}
         className="grid h-12 w-12 place-items-center rounded-2xl border border-dashed border-subtle text-fg-muted hover:bg-raised hover:rounded-xl"
-        title="Create a new den"
+        title="Create a new tavern"
       >
         <Plus size={18} />
       </button>
@@ -378,7 +378,7 @@ function ChannelSidebar({
             {server?.originInstanceId && server.originInstanceHost ? (
               <span
                 className="shrink-0 rounded bg-tint-ember px-1.5 py-0.5 text-[10px] text-fg-muted"
-                title={`Federated den hosted on ${server.originInstanceHost}`}
+                title={`Federated tavern hosted on ${server.originInstanceHost}`}
               >
                 {`\u{1F310} ${server.originInstanceHost}`}
               </span>
@@ -402,7 +402,7 @@ function ChannelSidebar({
       </div>
       <nav className="flex-1 space-y-1 overflow-y-auto p-2 text-sm">
         {activeServerId ? (
-          <SidebarSection title="Den">
+          <SidebarSection title="Tavern">
             <Link
               to="/app/servers/$serverId/campaigns"
               params={{ serverId: activeServerId }}
@@ -563,7 +563,7 @@ function SidebarChannelLink({
   active: boolean;
 }): JSX.Element {
   const className = cn(
-    'flex items-center gap-2 rounded px-2 py-1.5 text-fg',
+    'touch-target flex items-center gap-2 rounded px-2 py-1.5 text-fg',
     active ? 'bg-raised' : 'hover:bg-raised',
   );
   const isVoice = channel.type === 'voice';

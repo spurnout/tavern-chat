@@ -1,3 +1,4 @@
+import { EmptyState } from '../components/EmptyState.js';
 import { TavernLogo } from '../components/TavernLogo.js';
 
 /**
@@ -8,15 +9,10 @@ import { TavernLogo } from '../components/TavernLogo.js';
  */
 export function AppHomePage(): JSX.Element {
   return (
-    <div className="grid h-full place-items-center p-12 text-center">
-      <div className="max-w-md space-y-4">
-        <TavernLogo className="justify-center" />
-        <h1 className="font-serif text-2xl font-medium">Pull up a chair.</h1>
-        <p className="text-sm text-fg-muted">
-          Pick a tavern from the left to step inside, or create a new one to gather
-          your group. Voice rooms, campaigns, and dice rolls are all waiting.
-        </p>
-      </div>
-    </div>
+    <EmptyState
+      icon={<TavernLogo className="justify-center" />}
+      title="Pull up a chair."
+      description="Pick a tavern from the left to step inside, or create a new one to gather your group. Voice rooms, campaigns, and dice rolls are all waiting."
+    />
   );
 }

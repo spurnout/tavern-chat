@@ -124,12 +124,12 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
                 disabled={!canManage}
                 className="input mt-1 w-full"
               >
-                <option value="inherit">Inherit from den</option>
+                <option value="inherit">Inherit from tavern</option>
                 <option value="force_on">Always on (override)</option>
                 <option value="force_off">Always off (override)</option>
               </select>
               <span className="mt-1 block text-xs text-fg-muted">
-                Inherit picks up the den’s federation setting. Force-on/off overrides it for this room only.
+                Inherit picks up the tavern’s federation setting. Force-on/off overrides it for this room only.
               </span>
             </label>
             {canManage ? (

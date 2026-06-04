@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from '@tanstack/react-router';
-import { Search } from 'lucide-react';
+import { Search, SearchX } from 'lucide-react';
 import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
+import { EmptyState } from '../components/EmptyState.js';
 
 export function SearchPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
@@ -49,7 +50,14 @@ export function SearchPage(): JSX.Element {
     };
   }, [q, serverId]);
 
-  if (!serverId) return <div className="p-12">Pick a den.</div>;
+  if (!serverId) {
+    return (
+      <EmptyState
+        title="Pick a tavern."
+        description="Choose a tavern from the left to search its rooms."
+      />
+    );
+  }
 
   function channelName(id: string): string {
     return channels.find((c) => c.id === id)?.name ?? id.slice(0, 8);
@@ -67,12 +75,16 @@ export function SearchPage(): JSX.Element {
           className="input"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search messages in this den (min 2 chars)…"
+          placeholder="Search messages in this tavern (min 2 chars)…"
         />
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         {busy ? <p className="text-sm text-fg-muted">Searching…</p> : null}
         {!busy && q.trim().length >= 2 && results.length === 0 ? (
-          <p className="text-sm text-fg-muted">No matches.</p>
+          <EmptyState
+            icon={<SearchX size={28} strokeWidth={1.5} />}
+            title="No matches."
+            description="Nothing here by that name. Try a shorter or different phrase."
+          />
         ) : null}
         <ul className="space-y-2">
           {results.map((m) => {

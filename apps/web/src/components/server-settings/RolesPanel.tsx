@@ -19,7 +19,7 @@ const ROLE_FLAGS: Array<{ flag: bigint; label: string }> = [
   { flag: Permission.SEND_VOICE_MESSAGES, label: 'Send voice messages' },
   { flag: Permission.MANAGE_CHANNELS, label: 'Manage rooms' },
   { flag: Permission.MANAGE_ROLES, label: 'Manage roles' },
-  { flag: Permission.MANAGE_SERVER, label: 'Manage den' },
+  { flag: Permission.MANAGE_SERVER, label: 'Manage tavern' },
   { flag: Permission.CREATE_INVITES, label: 'Create invites' },
   { flag: Permission.MANAGE_EMOJIS, label: 'Manage emojis' },
   { flag: Permission.KICK_MEMBERS, label: 'Kick members' },

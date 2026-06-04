@@ -45,7 +45,7 @@ export function GamesPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId, filterPlayers, filterTime]);
 
-  if (!serverId) return <div className="p-12">Pick a den.</div>;
+  if (!serverId) return <div className="p-12">Pick a tavern.</div>;
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">

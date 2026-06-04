@@ -103,14 +103,14 @@ function InlineSegment({ segment }: { segment: Segment }): JSX.Element {
           href={segment.href}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-mead underline decoration-dotted hover:decoration-solid"
+          className="text-dusk underline decoration-dotted hover:decoration-solid"
         >
           {segment.label}
         </a>
       );
     case 'mention':
       return (
-        <span className="rounded bg-tint-ember px-1 font-medium text-mead">{segment.raw}</span>
+        <span className="rounded bg-tint-ember px-1 font-medium text-ember">{segment.raw}</span>
       );
     case 'channel-mention':
       return <ChannelMentionPill name={segment.name} raw={segment.raw} />;
@@ -130,7 +130,7 @@ function InlineSegment({ segment }: { segment: Segment }): JSX.Element {
       return (
         <a
           href={`#note-${slugifyWikiTarget(segment.target)}`}
-          className="rounded bg-tint-fg-04 px-1 font-medium text-mead underline decoration-dotted hover:bg-raised"
+          className="rounded bg-tint-fg-04 px-1 font-medium text-dusk underline decoration-dotted hover:bg-raised"
           title={`Jump to "${segment.target}"`}
           onClick={(e) => {
             const slug = slugifyWikiTarget(segment.target);
@@ -203,7 +203,7 @@ function QualifiedMentionPill({
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="rounded bg-tint-ember px-1 font-medium text-mead hover:bg-tint-good"
+          className="rounded bg-tint-ember px-1 font-medium text-ember hover:bg-tint-good"
         >
           @{localpart}
           <span className="ml-1 text-xs opacity-60">@{host}</span>

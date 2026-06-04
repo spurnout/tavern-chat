@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bell, CheckCheck, X } from 'lucide-react';
 import { useNavigate } from '@tanstack/react-router';
+import { EmptyState } from './EmptyState.js';
 import { useInbox } from '../lib/inbox-store.js';
 import { useRealtime } from '../lib/store.js';
 import { messagePreview } from '../lib/message-preview.js';
@@ -114,9 +115,11 @@ export function InboxPanel(): JSX.Element {
             {loading ? (
               <p className="px-3 py-4 text-sm text-fg-muted">Loading…</p>
             ) : items.length === 0 ? (
-              <p className="px-3 py-4 text-sm text-fg-muted">
-                No mentions yet. When someone calls your name, it’ll show up here.
-              </p>
+              <EmptyState
+                icon={<Bell size={28} strokeWidth={1.5} />}
+                title="All quiet for now."
+                description="When someone calls your name, it’ll show up here."
+              />
             ) : (
               <ul>
                 {items.map((m) => (

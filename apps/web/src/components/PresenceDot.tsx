@@ -1,11 +1,13 @@
 import type { Presence } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
 
+// Semantic tokens, not raw Tailwind palette — see the design-system colour
+// grammar: online=moss, idle=mead, do-not-disturb=rust, offline=fg-faint.
 const COLORS: Record<Presence, string> = {
-  active: 'bg-emerald-500',
-  idle: 'bg-amber-500',
-  dnd: 'bg-rose-500',
-  offline: 'bg-slate-500',
+  active: 'bg-moss',
+  idle: 'bg-mead',
+  dnd: 'bg-rust',
+  offline: 'bg-fg-faint',
 };
 
 const LABELS: Record<Presence, string> = {

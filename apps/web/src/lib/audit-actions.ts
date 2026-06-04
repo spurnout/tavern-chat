@@ -1,6 +1,6 @@
 import type { AuditLogAction } from '@tavern/shared';
 
-export type AuditAccent = 'fg' | 'good' | 'warn' | 'danger' | 'mead' | 'lavender' | 'dusk';
+export type AuditAccent = 'fg' | 'good' | 'warn' | 'danger' | 'lavender' | 'dusk';
 export type AuditCategory =
   | 'moderation'
   | 'roles'
@@ -51,7 +51,7 @@ const TABLE: Record<AuditLogAction, AuditActionMeta> = {
   },
   'role.deleted': { accent: 'danger', category: 'roles', template: '{actor} removed a role.' },
   'role.assigned': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'roles',
     template: '{actor} assigned a role to {target}.',
   },
@@ -142,13 +142,13 @@ const TABLE: Record<AuditLogAction, AuditActionMeta> = {
     template: '{actor} resolved a report.',
   },
   'safety_policy.updated': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'server',
     template: '{actor} updated the safety policy.',
     hasDiff: true,
   },
   'instance_safety_policy.updated': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'server',
     template: '{actor} updated the instance safety policy.',
     hasDiff: true,
@@ -170,23 +170,23 @@ const TABLE: Record<AuditLogAction, AuditActionMeta> = {
     template: '{actor} archived a campaign.',
   },
   'session.created': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'campaigns',
     template: '{actor} scheduled a session.',
   },
   'session.updated': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'campaigns',
     template: '{actor} updated a session.',
     hasDiff: true,
   },
   'game_night.created': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'campaigns',
     template: '{actor} scheduled a game night.',
   },
   'game_night.updated': {
-    accent: 'mead',
+    accent: 'dusk',
     category: 'campaigns',
     template: '{actor} updated a game night.',
     hasDiff: true,

@@ -252,7 +252,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <p class="sub">Two layers: a six-step surface ramp (warm-dark backgrounds) and six accents. Foreground tones, borders, and tints all derive from those. Never use raw hex in components — always reach for a semantic token.</p>
 
   <h3>Surface ramp <span class="id">--bg-*</span></h3>
-  <p class="muted">Stack surfaces from canvas (lowest, page background) to overlay (highest, modal chrome). Each step is ~4% lighter. Use to express depth without shadows.</p>
+  <p class="muted">Stack surfaces from canvas (lowest, page background) to overlay (highest, modal chrome). Each step is ~0.025–0.04 lighter in oklch L — perceptually even, not a flat 4% of anything. Use to express depth without shadows.</p>
   <div class="ramp">
     <div style="background:var(--bg-canvas)"><b>canvas</b><span>#15110d</span></div>
     <div style="background:var(--bg-sunken)"><b>sunken</b><span>#1b1610</span></div>
@@ -278,8 +278,8 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
     <thead><tr><th>Token</th><th>Hex</th><th>Use</th></tr></thead>
     <tbody>
       <tr><td class="tok"><span class="swatch" style="background:#f1e6cf"></span>fg-default</td><td class="val">#f1e6cf</td><td class="desc">Body text, headings, primary actions. Cream, not white.</td></tr>
-      <tr><td class="tok"><span class="swatch" style="background:#b8a988"></span>fg-muted</td><td class="val">#b8a988</td><td class="desc">Secondary text, helper copy, default icon colour.</td></tr>
-      <tr><td class="tok"><span class="swatch" style="background:#7a6b53"></span>fg-faint</td><td class="val">#7a6b53</td><td class="desc">Mono labels, timestamps, kickers, divider text.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#b8a988"></span>fg-muted</td><td class="val">#b8a988</td><td class="desc">Secondary text, helper copy, default icon colour, message timestamps.</td></tr>
+      <tr><td class="tok"><span class="swatch" style="background:#7a6b53"></span>fg-faint</td><td class="val">#7a6b53</td><td class="desc">Kickers, divider text, decorative mono micro-labels. (Timestamps use fg-muted — see Accessibility.)</td></tr>
       <tr><td class="tok"><span class="swatch" style="background:#1a130c"></span>fg-on-accent</td><td class="val">#1a130c</td><td class="desc">Text/icons on ember or mead accent fills.</td></tr>
     </tbody>
   </table>
@@ -402,7 +402,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
 <!-- 04 LAYOUT -->
 <section id="layout">
   <div class="sec-head"><div class="num">04</div><h2>Layout &amp; spacing</h2></div>
-  <p class="sub">A 4-pt base scale, with the message rhythm tuned to 5px between same-author messages and 12px between author blocks. Three breakpoints. Two density modes (default + compact).</p>
+  <p class="sub">A 4-pt base scale, with the message rhythm tuned to 5px between same-author messages and 12px between author blocks. Three breakpoints. Two density modes are <em>planned</em> (default + compact) — only default is wired today; the preferences store carries theme/font/size but no density field yet.</p>
 
   <h3>Spacing scale</h3>
   <table class="tbl">
@@ -606,7 +606,31 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
       <tr><td class="tok">fg-on-accent</td><td class="val">mead fill</td><td class="val">~7.5</td><td class="desc">AAA.</td></tr>
     </tbody>
   </table>
-  <div class="callout"><div class="ico">!</div><div class="body"><b>Hard rules.</b> <code>fg-faint</code> is for kickers, timestamps, and decorative icons only — never for paragraphs, never for interactive labels. Use it only on <code>bg-canvas</code>, <code>bg-sunken</code>, or <code>bg-surface</code>, and only at sizes ≥16px regular / ≥14px bold. Use <code>fg-muted</code> the moment a string is part of a sentence.</div></div>
+
+  <h3>Accents <em>as text</em> <span class="id">measured · WCAG 2.1</span></h3>
+  <p class="muted">Accents are also used as coloured text — hyperlinks (dusk), @mentions (ember), <code>#room</code> references and counts (mead). Those pairings are measured here so the colour grammar stays AA-safe. Ratios from the canonical oklch anchors.</p>
+  <table class="tbl">
+    <thead><tr><th>Accent text</th><th>On surface</th><th>Ratio</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td class="tok">ember</td><td class="val">bg-canvas</td><td class="val">8.1</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">ember</td><td class="val">bg-surface</td><td class="val">7.2</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">mead</td><td class="val">bg-canvas</td><td class="val">11.0</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">mead</td><td class="val">bg-surface</td><td class="val">9.9</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">lavender</td><td class="val">bg-canvas</td><td class="val">8.2</td><td class="desc">AAA.</td></tr>
+      <tr><td class="tok">moss</td><td class="val">bg-canvas</td><td class="val">6.4</td><td class="desc">AA — body OK; AAA at large.</td></tr>
+      <tr><td class="tok">moss</td><td class="val">bg-surface</td><td class="val">5.8</td><td class="desc">AA — body OK.</td></tr>
+      <tr><td class="tok">dusk</td><td class="val">bg-canvas</td><td class="val">5.3</td><td class="desc">AA — body OK. Link colour.</td></tr>
+      <tr><td class="tok">dusk</td><td class="val">bg-surface</td><td class="val">4.8</td><td class="desc">AA — body OK; nearing the floor.</td></tr>
+      <tr><td class="tok">rust</td><td class="val">bg-canvas</td><td class="val">4.6</td><td class="desc">AA body (just). Prefer rust for fills/borders, not body text.</td></tr>
+      <tr><td class="tok">rust</td><td class="val">bg-surface</td><td class="val">4.1</td><td class="desc">AA <b>large only</b>. <span class="tag-pill rust">not body text</span></td></tr>
+      <tr><td class="tok">ember</td><td class="val">tint-ember (mention chip)</td><td class="val">4.0</td><td class="desc">AA large only — acceptable: chips are bold/emphasized and carry the <code>@</code> glyph as redundant signal.</td></tr>
+      <tr><td class="tok">mead</td><td class="val">tint-ember (reaction count)</td><td class="val">5.5</td><td class="desc">AA — body OK.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><div class="ico">!</div><div class="body"><b>Hard rules.</b> The ≥16px-regular / ≥14px-bold floor applies to <em>body / sentence</em> text. <code>fg-faint</code> is permitted for <b>redundant mono micro-labels</b> — kickers, divider text, and timestamps — at their native 10–11px, because they are non-essential and never the only source of the information. It is never for paragraphs or interactive labels. Use it only on <code>bg-canvas</code>, <code>bg-sunken</code>, or <code>bg-surface</code>. Use <code>fg-muted</code> the moment a string is part of a sentence — including message timestamps, which the app renders in <code>fg-muted</code>.</div></div>
+
+  <h3>Touch targets</h3>
+  <p class="muted">Interactive rows are dense on desktop, but the <em>tap target</em> must meet the WCAG 2.5.5 / platform floor on touch viewports. At <code>≤ 1024px</code> the <code>.touch-target</code> / <code>.touch-target-sq</code> utilities grow the hit area of channel rows, member rows, and reaction pills/buttons to <b>≥ 44×44px</b> via min-size — desktop row height is unchanged.</p>
 
   <h3>Focus management</h3>
   <ul>
@@ -622,7 +646,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
     <thead><tr><th>Surface</th><th>Key</th><th>Action</th></tr></thead>
     <tbody>
       <tr><td class="tok">global</td><td class="val">Cmd/Ctrl + K</td><td class="desc">Open search.</td></tr>
-      <tr><td class="tok">global</td><td class="val">Cmd/Ctrl + 1..9</td><td class="desc">Jump to nth den in the rail.</td></tr>
+      <tr><td class="tok">global</td><td class="val">Cmd/Ctrl + 1..9</td><td class="desc">Jump to nth tavern in the rail.</td></tr>
       <tr><td class="tok">global</td><td class="val">Esc</td><td class="desc">Close topmost overlay.</td></tr>
       <tr><td class="tok">MessageComposer</td><td class="val">Enter</td><td class="desc">Send.</td></tr>
       <tr><td class="tok">MessageComposer</td><td class="val">Shift + Enter</td><td class="desc">Newline.</td></tr>
@@ -962,7 +986,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
     <h4>Lifecycle</h4>
     <p class="muted">Each typing event has a 6-second TTL. The component ticks every second to expire stale entries. The current user's own typing event is never shown back to them.</p>
 
-    <div class="callout note"><div class="ico">i</div><div class="body"><b>Display-name lookup is pending.</b> Today the indicator slices the user ID to its first 8 chars. When the member-hovercard data flow lands, swap to the canonical display name from the realtime member map.</div></div>
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Name-free until display names arrive.</b> The indicator only has user IDs in scope, so it stays name-free — "Someone is typing…" / "Two people are typing…" / "{n} people are typing…" (label logic in <code>lib/typing-label.ts</code>). Never slice a raw ID into the copy. Swap to canonical display names once the member-hovercard data flow lands.</div></div>
   </div>
 </section>
 
@@ -987,7 +1011,8 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <span class="n">children</span>: <span class="t">ReactNode</span>;
 };</code></pre>
 
-    <h4>Exported atoms</h4>
+    <h4>Form atoms <span class="id">planned — not yet exported</span></h4>
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Spec ahead of code.</b> These atoms are <em>not</em> exported today, and <code>Modal</code>'s real props are <code>open · onOpenChange · title · description · footer · widthClass</code> (no <code>kicker</code>/<code>size</code> yet). Until the atoms land, compose forms with the global CSS classes: <code>.input</code> for inputs/textareas and <code>.btn-primary</code> / <code>.btn-ghost</code> / <code>.btn-danger</code> for actions. Error text is a <code>&lt;p class="text-sm text-danger"&gt;</code>.</div></div>
     <table class="tbl">
       <thead><tr><th>Atom</th><th>What</th></tr></thead>
       <tbody>
@@ -1080,7 +1105,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
       </tbody>
     </table>
 
-    <div class="callout note"><div class="ico">i</div><div class="body"><b>Open inconsistency:</b> ReportDialog is built directly on Radix Dialog, not the shared <code>Modal</code> shell. The chrome differs subtly (no kicker, different header rule). Worth migrating to <code>Modal</code> the next time it's touched, so the form-atom set and footer rhythm stay consistent across modal surfaces.</div></div>
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Now on the shared shell.</b> ReportDialog renders through the shared <code>Modal</code> (overlay, centered card, close button, footer rhythm) — the form is its <code>children</code> and Cancel / Submit are the <code>footer</code>. Keep it that way; don't reintroduce a bespoke Radix Dialog here.</div></div>
   </div>
 </section>
 
@@ -1092,6 +1117,8 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
       <span class="path">components/NotificationInbox.tsx</span>
     </div>
     <p class="role">Drop-anywhere bell button with unread badge, plus the panel it opens. Lives in the channel-sidebar identity footer by default.</p>
+
+    <div class="callout note"><div class="ico">i</div><div class="body"><b>Spec ahead of code.</b> The shipped component is <code>InboxPanel.tsx</code> — a bell with an unread-mention count that opens a single, unfiltered list of recent @mentions (empty state via the shared <code>EmptyState</code>). The multi-tab inbox described below (All · Mentions · Replies · DMs · …) is the <em>aspirational</em> target, not yet built. Treat the tab list as a roadmap, not a contract.</div></div>
 
     <h4>Bell anatomy</h4>
     <ul>

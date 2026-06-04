@@ -150,7 +150,7 @@ export function InvitePage(): JSX.Element {
       {error ? (
         <p className="text-danger">{error}</p>
       ) : joining || authStatus === 'idle' || authStatus === 'loading' ? (
-        'Joining the den…'
+        'Joining the tavern…'
       ) : null}
     </div>
   );

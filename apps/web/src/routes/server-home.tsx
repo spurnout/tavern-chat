@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useRealtime } from '../lib/store.js';
+import { EmptyState } from '../components/EmptyState.js';
 import { TavernLogo } from '../components/TavernLogo.js';
 
 const EMPTY_CHANNELS: never[] = [];
@@ -30,16 +31,14 @@ export function ServerHomePage(): JSX.Element {
   }, [channels, serverId, navigate]);
 
   return (
-    <div className="grid h-full place-items-center p-12 text-center">
-      <div className="max-w-md space-y-4">
-        <TavernLogo className="justify-center" />
-        <h1 className="font-serif text-2xl font-medium">Welcome.</h1>
-        <p className="text-sm text-fg-muted">
-          {channels.length === 0
-            ? 'No rooms yet — ask the den owner to create some.'
-            : 'Pick a room from the sidebar.'}
-        </p>
-      </div>
-    </div>
+    <EmptyState
+      icon={<TavernLogo className="justify-center" />}
+      title="Welcome."
+      description={
+        channels.length === 0
+          ? 'No rooms yet — ask the tavern owner to create some.'
+          : 'Pick a room from the sidebar.'
+      }
+    />
   );
 }

@@ -74,7 +74,7 @@ export function CreateCampaignModal({
       open={open}
       onOpenChange={onOpenChange}
       title="Create campaign"
-      description="You'll be the GM. Players take part by being members of this den."
+      description="You'll be the GM. Players take part by being members of this tavern."
       footer={
         <>
           <button className="btn-ghost" onClick={() => onOpenChange(false)} disabled={busy}>
