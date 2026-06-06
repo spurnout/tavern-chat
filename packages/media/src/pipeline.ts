@@ -107,10 +107,34 @@ const MIME_MAGIC: Record<string, MagicSignature[][]> = {
   // WEBP = RIFF...WEBP. Both checks required (see comment above).
   'image/webp': [[{ sig: [0x52, 0x49, 0x46, 0x46] }, { sig: [0x57, 0x45, 0x42, 0x50], offset: 8 }]],
   'image/gif': [[{ sig: [0x47, 0x49, 0x46, 0x38] }]],
+  // AVIF is ISOBMFF: an 'ftyp' box at offset 4 with a major brand of
+  // 'avif' (still image) or 'avis' (image sequence) at offset 8.
+  'image/avif': [
+    [{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }, { sig: [0x61, 0x76, 0x69, 0x66], offset: 8 }],
+    [{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }, { sig: [0x61, 0x76, 0x69, 0x73], offset: 8 }],
+  ],
+  // MP4 / QuickTime / MP4-audio are all ISOBMFF — 'ftyp' box at offset 4.
+  // We keep the loose container check (no brand assertion) and lean on the
+  // declared kind + ClamAV downstream, matching the original video/mp4 entry.
   'video/mp4': [[{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }]],
+  'video/quicktime': [[{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }]],
+  'audio/mp4': [[{ sig: [0x66, 0x74, 0x79, 0x70], offset: 4 }]],
+  // Matroska / WebM container (EBML header). audio/webm is the browser
+  // MediaRecorder default for voice messages, so this one is load-bearing.
   'video/webm': [[{ sig: [0x1a, 0x45, 0xdf, 0xa3] }]],
+  'audio/webm': [[{ sig: [0x1a, 0x45, 0xdf, 0xa3] }]],
   'audio/mpeg': [[{ sig: [0x49, 0x44, 0x33] }]],
   'audio/ogg': [[{ sig: [0x4f, 0x67, 0x67, 0x53] }]],
+  // Raw AAC (ADTS): 12-bit sync word 0xFFF + the common MPEG-4 profile
+  // bytes 0xF1 (no CRC) / 0xF9 (CRC). Containerised AAC uploads usually
+  // arrive as audio/mp4 (handled above).
+  'audio/aac': [[{ sig: [0xff, 0xf1] }], [{ sig: [0xff, 0xf9] }]],
+  // RIFF....WAVE — same RIFF wrapper as WEBP, so the 'WAVE' tag at offset 8
+  // is required to disambiguate.
+  'audio/wav': [[{ sig: [0x52, 0x49, 0x46, 0x46] }, { sig: [0x57, 0x41, 0x56, 0x45], offset: 8 }]],
+  'audio/x-wav': [[{ sig: [0x52, 0x49, 0x46, 0x46] }, { sig: [0x57, 0x41, 0x56, 0x45], offset: 8 }]],
+  // 'fLaC' stream marker.
+  'audio/flac': [[{ sig: [0x66, 0x4c, 0x61, 0x43] }]],
 };
 
 function signatureMatches(buf: Buffer, sig: MagicSignature): boolean {
@@ -217,32 +241,33 @@ export async function runScanJob(input: ScanJobInput, deps: PipelineDeps): Promi
       // block below rather than crashing the worker via unhandled 'error'.
       const readable = stream as NodeJS.ReadableStream;
       readable.on('error', (err) => decoder.destroy(err));
-      readable.pipe(decoder);
 
-      // Explicitly wait for the writable side of the decoder to finish
-      // before kicking off the clones. sharp's `.metadata()` / `.toBuffer()`
-      // resolve only after the writable finishes anyway, but on a slow
-      // (network) input stream a misbehaving consumer could otherwise see
-      // a partial-image metadata read or even a torn buffer. Making the
-      // ordering explicit is cheap and removes that whole class of race.
-      await new Promise<void>((resolve, reject) => {
-        decoder.once('finish', resolve);
-        decoder.once('error', reject);
-      });
-
-      const meta = await decoder.clone().metadata();
-      width = meta.width ?? null;
-      height = meta.height ?? null;
-
-      const stripped = await decoder.clone().rotate().toBuffer();
-      await deps.storage.putObject(att.storageBucket, att.storageKey, stripped, att.mimeType);
-
-      const thumb = await decoder
+      // sharp's `.clone()` shares the PARENT instance's input stream — every
+      // clone must be created BEFORE the bytes are piped in so each one
+      // receives the streamed data as it flows through. Creating a clone
+      // AFTER the input has ended (e.g. after awaiting a 'finish' event)
+      // yields a pipeline with no data source: its `.metadata()` /
+      // `.toBuffer()` never resolve and the scan job hangs in `processing`
+      // forever. So: set up all three derived pipelines first, then pipe.
+      const metaPromise = decoder.clone().metadata();
+      const strippedPromise = decoder.clone().rotate().toBuffer();
+      const thumbPromise = decoder
         .clone()
         .rotate()
         .resize({ width: 320, withoutEnlargement: true })
         .webp({ quality: 80 })
         .toBuffer();
+
+      readable.pipe(decoder);
+
+      const meta = await metaPromise;
+      width = meta.width ?? null;
+      height = meta.height ?? null;
+
+      const stripped = await strippedPromise;
+      await deps.storage.putObject(att.storageBucket, att.storageKey, stripped, att.mimeType);
+
+      const thumb = await thumbPromise;
       thumbnailKey = `${att.storageKey}.thumb.webp`;
       await deps.storage.putObject(att.storageBucket, thumbnailKey, thumb, 'image/webp');
     }
