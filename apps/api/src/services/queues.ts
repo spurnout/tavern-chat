@@ -231,7 +231,10 @@ class RedisQueueClient implements QueueClient {
       'scan',
       { attachmentId },
       {
-        jobId: `scan:${attachmentId}`,
+        // BullMQ rejects custom job IDs containing ':' (it reserves the
+        // colon as its internal Redis key delimiter). attachmentId is a ULID
+        // (Crockford base32 — no '-'), so '-' is a collision-free separator.
+        jobId: `scan-${attachmentId}`,
         attempts: 3,
         backoff: { type: 'exponential', delay: 2_000 },
         // Keep a small ring of completed/failed jobs for observability,
@@ -249,7 +252,11 @@ class RedisQueueClient implements QueueClient {
     // message → one event per peer). Reaction/update events carry their own
     // nonces because the same message produces many events over time.
     const nonce = job.nonce ?? job.messageId;
-    const jobId = `fedoutbox:${job.peerInstanceId}:${job.eventType}:${nonce}`;
+    // '-' (not ':') as the separator — BullMQ rejects custom job IDs
+    // containing a colon. peerInstanceId/nonce are ULIDs and eventType is
+    // dotted (e.g. "message.create"), none of which contain '-', so the
+    // composite key stays unambiguous for idempotent dedupe.
+    const jobId = `fedoutbox-${job.peerInstanceId}-${job.eventType}-${nonce}`;
     try {
       await this.outboxQueue.add('dispatch', job, {
         jobId,
