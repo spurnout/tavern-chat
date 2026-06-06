@@ -163,18 +163,24 @@ if (!NODE_ID) {
 }
 console.info(`garage-bootstrap: node id ${NODE_ID}`);
 
-// 2. Layout. On a first run both commands succeed. On a re-run they
-//   fail (layout already at version >= 1) — that's expected, but we log
-//   the failure when the layout already exists so a real misconfiguration
-//   doesn't look identical to "already bootstrapped".
-const layoutAssign = garage(['layout', 'assign', '-z', 'dc1', '-c', '1G', NODE_ID], {
-  allowFail: true,
-});
-const layoutApply = garage(['layout', 'apply', '--version', '1'], { allowFail: true });
-if (!layoutAssign.ok || !layoutApply.ok) {
+// 2. Layout. Assign this node a role, then apply whichever version Garage
+//   actually staged — `layout show` prints the exact `apply --version N`.
+//   Hard-coding `--version 1` silently failed whenever a re-run or a prior
+//   partial apply bumped the pending version past 1, leaving the layout
+//   unapplied and buckets later failing with "Layout not ready". On a settled
+//   cluster `layout show` stages nothing and we skip the apply.
+garage(['layout', 'assign', '-z', 'dc1', '-c', '1G', NODE_ID], { allowFail: true });
+const layoutShow = garage(['layout', 'show'], { allowFail: true }).output;
+const stagedVersion = layoutShow.match(/apply --version (\d+)/)?.[1];
+if (stagedVersion) {
+  const layoutApply = garage(['layout', 'apply', '--version', stagedVersion], { allowFail: true });
   console.info(
-    'garage-bootstrap: layout assign/apply did not run (already bootstrapped, or version > 1). Continuing.',
+    layoutApply.ok
+      ? `garage-bootstrap: applied layout version ${stagedVersion}`
+      : 'garage-bootstrap: layout apply did not run (already bootstrapped, or version raced). Continuing.',
   );
+} else {
+  console.info('garage-bootstrap: layout already applied (nothing staged). Continuing.');
 }
 
 const env = loadEnv();
