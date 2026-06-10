@@ -44,8 +44,8 @@ export function ChannelPage(): JSX.Element {
   if (!channelId) return <div className="grid h-full place-items-center">Pick a room.</div>;
 
   return (
-    <div className="flex h-full min-w-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
           <Hash size={16} className="text-fg-muted" />
           <span className="font-serif font-medium">{channel?.name ?? '…'}</span>

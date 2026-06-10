@@ -179,7 +179,7 @@ export function AppShell(): JSX.Element {
   );
 
   return (
-    <div className="relative flex h-full bg-canvas text-fg">
+    <div className="relative flex h-full overflow-hidden bg-canvas text-fg">
       {/* Parity gap #3 — first-run welcome screen for the active tavern. Keyed
           by serverId so it re-evaluates on tavern switch; self-hides when
           onboarding is disabled or already completed. */}
@@ -238,10 +238,14 @@ export function AppShell(): JSX.Element {
 
       <main id="main-content" tabIndex={-1} className="flex min-w-0 flex-1 flex-col focus:outline-none">
         {/* Route content. Hidden (but still mounted, so VoicePage's effect
-            keeps firing) when the voice room is expanded over this column. */}
+            keeps firing) when the voice room is expanded over this column.
+            min-h-0 is load-bearing: without it the flex default min-height:auto
+            lets tall message lists inflate this wrapper past the viewport, and
+            the document scrolls the sidebars away instead of the list
+            scrolling internally. */}
         <div
           className={cn(
-            'flex min-w-0 flex-1 flex-col',
+            'flex min-h-0 min-w-0 flex-1 flex-col',
             currentVoice && isOnVoiceRoute ? 'hidden' : 'flex',
           )}
         >
@@ -252,7 +256,7 @@ export function AppShell(): JSX.Element {
             but never unmounts <VoiceRoom>, so the LiveKit Room and the
             user's camera/mic state survive across channel changes. */}
         {currentVoice ? (
-          <div className={isOnVoiceRoute ? 'flex min-w-0 flex-1 flex-col' : 'shrink-0'}>
+          <div className={isOnVoiceRoute ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'shrink-0'}>
             <Suspense
               fallback={
                 <div className="border-t border-subtle bg-sunken px-4 py-3 text-sm text-fg-muted">
