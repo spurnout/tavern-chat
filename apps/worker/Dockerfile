@@ -23,6 +23,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/media/package.json packages/media/package.json
+COPY packages/federation/package.json packages/federation/package.json
 COPY e2e/package.json e2e/package.json
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
