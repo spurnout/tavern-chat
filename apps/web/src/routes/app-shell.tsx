@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, Outlet, useNavigate, useParams, useRouterState } from '@tanstack/react-router';
+import { Link, Outlet, useNavigate, useParams, useRouter, useRouterState } from '@tanstack/react-router';
 import {
   Dice5,
   Hash,
@@ -49,6 +49,7 @@ export function AppShell(): JSX.Element {
   const me = useAuth((s) => s.me);
   const logout = useAuth((s) => s.logout);
   const navigate = useNavigate();
+  const router = useRouter();
 
   // Selector returns the dict directly; the Object.values derivation runs
   // AFTER subscription so React's useSyncExternalStore compares the same
@@ -115,11 +116,11 @@ export function AppShell(): JSX.Element {
     });
   }, [params.serverId]);
 
-  // FE-03: ref-guarded one-shot auto-navigate. The original effect had a
-  // blank deps array and captured the mount-time value of params.serverId; if
-  // a later navigation happened before /servers resolved, we'd land on a
-  // stale tavern. Using a ref means we only auto-redirect once per mount,
-  // and only if the user hasn't already navigated themselves.
+  // FE-03: ref-guarded one-shot auto-navigate. Only the bare /app route
+  // redirects to the first tavern — shell routes like /app/dms, /app/account,
+  // and /app/admin/federation must survive a hard reload. Reading the live
+  // pathname off the router (rather than mount-time params or pathname) also
+  // means a user who navigates away before /servers resolves stays put.
   const autoNavigatedRef = useRef(false);
   useEffect(() => {
     startRealtime();
@@ -131,7 +132,8 @@ export function AppShell(): JSX.Element {
     api<Server[]>('/servers')
       .then((list) => {
         for (const s of list) upsertServer(s);
-        if (!autoNavigatedRef.current && !params.serverId && list[0]) {
+        const currentPath = router.state.location.pathname;
+        if (!autoNavigatedRef.current && (currentPath === '/app' || currentPath === '/app/') && list[0]) {
           autoNavigatedRef.current = true;
           void navigate({
             to: '/app/servers/$serverId',
