@@ -16,6 +16,7 @@ import { serializeAttachment, type AttachmentRow } from '../lib/serializers.js';
 import { requireChannelPermission } from '../services/permissions-service.js';
 import { requireDmChannelMembership } from '../services/dm-service.js';
 import { UploadValidator } from '../services/upload-validator.js';
+import type { UploadGovernor } from '../services/upload-governor.js';
 import type { QueueClient } from '../services/queues.js';
 import type { Config } from '../config.js';
 
@@ -23,10 +24,11 @@ interface Deps {
   config: Config;
   storage: StorageBackend;
   queues: QueueClient;
+  uploadGovernor: UploadGovernor;
 }
 
 export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Promise<void> {
-  const { config: cfg, storage, queues } = deps;
+  const { config: cfg, storage, queues, uploadGovernor } = deps;
   const validator = new UploadValidator(cfg);
 
   storage.ensureBuckets().catch((err) => {
@@ -59,6 +61,7 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
       sizeBytes: body.sizeBytes,
     });
 
+    const voiceActive = await uploadGovernor.shouldThrottleUpload();
     const id = ulid();
     const key = `${ctx.userId}/${id}/${sanitizeFilename(body.filename)}`;
     const bucket = storage.bucketFor(false);
@@ -79,21 +82,37 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
       },
     });
 
-    const presigned = await storage
-      .presignPut(bucket, key, body.mimeType, body.sizeBytes)
-      .catch((err) => {
-        app.log.error({ err }, 'presign failed');
-        throw new TavernError(ErrorCodes.INTERNAL_ERROR, 'Could not create upload URL', 500);
-      });
+    const upload = voiceActive
+      ? uploadGovernor.createGovernedTicket({
+          bucket,
+          key,
+          mimeType: body.mimeType,
+          sizeBytes: body.sizeBytes,
+        })
+      : {
+          ...(await storage
+            .presignPut(bucket, key, body.mimeType, body.sizeBytes)
+            .catch((err) => {
+              app.log.error({ err }, 'presign failed');
+              throw new TavernError(ErrorCodes.INTERNAL_ERROR, 'Could not create upload URL', 500);
+            })),
+          strategy: 'direct' as const,
+          voiceActive: false,
+        };
 
     reply.status(201).send(
       ok({
         attachment: serializeAttachment(attachment as unknown as AttachmentRow, storage),
         upload: {
           method: 'PUT' as const,
-          url: presigned.url,
-          headers: presigned.headers,
-          expiresAt: presigned.expiresAt.toISOString(),
+          url: upload.url,
+          headers: upload.headers,
+          expiresAt: upload.expiresAt.toISOString(),
+          strategy: upload.strategy,
+          voiceActive: upload.voiceActive,
+          ...(upload.strategy === 'tavern_throttled'
+            ? { maxBytesPerSecond: upload.maxBytesPerSecond }
+            : {}),
         },
       }),
     );
@@ -154,6 +173,13 @@ export async function registerUploadRoutes(app: FastifyInstance, deps: Deps): Pr
     if (att.uploaderId !== ctx.userId) throw TavernError.forbidden();
     if (att.kind !== 'voice_message') {
       throw new TavernError(ErrorCodes.VALIDATION_ERROR, 'Not a voice message', 400);
+    }
+    if (att.status !== 'uploaded' && att.status !== 'processing' && att.status !== 'ready') {
+      throw new TavernError(
+        ErrorCodes.VALIDATION_ERROR,
+        'Cannot set waveform before the voice message is uploaded',
+        400,
+      );
     }
 
     const updated = await prisma.attachment.update({

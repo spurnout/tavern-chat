@@ -13,7 +13,7 @@ import {
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { toast } from '../lib/toast.js';
-import { uploadFile } from '../lib/uploads.js';
+import { uploadFile, type UploadProgress, type UploadStrategyInfo } from '../lib/uploads.js';
 import { SlashAutocomplete } from './SlashAutocomplete.js';
 import { MentionAutocomplete } from './MentionAutocomplete.js';
 import { EmojiPicker } from './EmojiPicker.js';
@@ -29,6 +29,14 @@ interface PendingAttachment {
   previewUrl?: string;
 }
 
+interface UploadStatus {
+  filename: string;
+  loaded: number;
+  total: number;
+  voiceActive: boolean;
+  maxBytesPerSecond?: number;
+}
+
 export function MessageComposer({ channelId }: Props): JSX.Element {
   const setComposerDraft = useRealtime((s) => s.setComposerDraft);
   const clearPendingMention = useRealtime((s) => s.clearPendingMention);
@@ -41,6 +49,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus | null>(null);
   const [recording, setRecording] = useState<MediaRecorder | null>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pollModal, setPollModal] = useState<{ question?: string; options?: string[] } | null>(null);
@@ -256,7 +265,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         continue;
       }
       try {
-        const att = await uploadFile({ file, channelId });
+        const att = await uploadWithComposerStatus(file);
         const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined;
         setPending((p) => [...p, { attachment: att, previewUrl }]);
       } catch (err) {
@@ -285,6 +294,37 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
     setPending((p) => p.filter((x) => x.attachment.id !== id));
   }
 
+  async function uploadWithComposerStatus(
+    file: File,
+    kind?: Attachment['kind'],
+  ): Promise<Attachment> {
+    if (mountedRef.current) {
+      setUploadStatus({ filename: file.name, loaded: 0, total: file.size, voiceActive: false });
+    }
+    const onProgress = (progress: UploadProgress) => {
+      if (!mountedRef.current) return;
+      setUploadStatus((current) =>
+        current?.filename === file.name ? { ...current, ...progress } : current,
+      );
+    };
+    const onStrategy = (strategy: UploadStrategyInfo) => {
+      if (!mountedRef.current) return;
+      setUploadStatus((current) => ({
+        filename: file.name,
+        loaded: current?.filename === file.name ? current.loaded : 0,
+        total: file.size,
+        voiceActive: strategy.strategy === 'tavern_throttled' || strategy.voiceActive === true,
+        maxBytesPerSecond: strategy.maxBytesPerSecond,
+      }));
+    };
+
+    try {
+      return await uploadFile({ file, channelId, ...(kind ? { kind } : {}) }, onProgress, onStrategy);
+    } finally {
+      if (mountedRef.current) setUploadStatus(null);
+    }
+  }
+
   async function startRecording(): Promise<void> {
     if (recording) return;
     let stream: MediaStream | null = null;
@@ -305,7 +345,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         const blob = new Blob(recordingChunks.current, { type: 'audio/webm' });
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
         try {
-          const att = await uploadFile({ file, channelId, kind: 'voice_message' });
+          const att = await uploadWithComposerStatus(file, 'voice_message');
           await api(`/channels/${channelId}/messages`, {
             method: 'POST',
             body: {
@@ -408,6 +448,30 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
               </button>
             </div>
           ))}
+        </div>
+      ) : null}
+      {uploadStatus ? (
+        <div
+          className="mb-2 rounded border border-subtle bg-canvas px-3 py-2 text-xs text-fg-muted"
+          aria-live="polite"
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium text-fg">
+              Uploading {uploadStatus.filename}
+              {uploadStatus.total > 0
+                ? ` ${Math.min(100, Math.round((uploadStatus.loaded / uploadStatus.total) * 100))}%`
+                : ''}
+            </span>
+            {uploadStatus.voiceActive ? (
+              <span className="text-ember">
+                Voice room active: uploads are slowed to protect call quality
+                {uploadStatus.maxBytesPerSecond
+                  ? ` (${formatBytesPerSecond(uploadStatus.maxBytesPerSecond)})`
+                  : ''}
+                .
+              </span>
+            ) : null}
+          </div>
         </div>
       ) : null}
       <div className="flex items-end gap-2">
@@ -521,4 +585,9 @@ function cryptoRandomNonce(): string {
   const bytes = new Uint8Array(8);
   if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function formatBytesPerSecond(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB/s`;
+  return `${Math.round(bytes / 1024)} KiB/s`;
 }

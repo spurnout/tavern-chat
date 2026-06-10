@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Outlet, useNavigate, useParams, useRouterState } from '@tanstack/react-router';
 import {
   Dice5,
@@ -29,7 +29,6 @@ import { CreateServerModal } from '../components/CreateServerModal.js';
 import { CreateChannelModal } from '../components/CreateChannelModal.js';
 import { NotificationSettingsModal } from '../components/NotificationSettingsModal.js';
 import { UserStatusPopover } from '../components/UserStatusPopover.js';
-import { VoiceRoom } from '../components/VoiceRoom.js';
 import { InboxPanel } from '../components/InboxPanel.js';
 import { SavedPanel } from '../components/SavedPanel.js';
 import { ImageLightbox } from '../components/ImageLightbox.js';
@@ -41,6 +40,10 @@ import { onUi } from '../lib/ui-events.js';
 // reference survives every render and React.memo'd consumers see prop
 // equality. Cast away ReadonlyArray so consumers still get Channel[].
 const EMPTY_CHANNELS = [] as Channel[];
+
+const VoiceRoom = lazy(() =>
+  import('../components/VoiceRoom.js').then((module) => ({ default: module.VoiceRoom })),
+);
 
 export function AppShell(): JSX.Element {
   const me = useAuth((s) => s.me);
@@ -250,15 +253,23 @@ export function AppShell(): JSX.Element {
             user's camera/mic state survive across channel changes. */}
         {currentVoice ? (
           <div className={isOnVoiceRoute ? 'flex min-w-0 flex-1 flex-col' : 'shrink-0'}>
-            <VoiceRoom
-              key={currentVoice.channelId}
-              channelId={currentVoice.channelId}
-              channelName={currentVoice.channelName}
-              serverId={currentVoice.serverId}
-              minimized={!isOnVoiceRoute}
-              onLeave={handleVoiceLeave}
-              onExpand={handleVoiceExpand}
-            />
+            <Suspense
+              fallback={
+                <div className="border-t border-subtle bg-sunken px-4 py-3 text-sm text-fg-muted">
+                  Opening voice room...
+                </div>
+              }
+            >
+              <VoiceRoom
+                key={currentVoice.channelId}
+                channelId={currentVoice.channelId}
+                channelName={currentVoice.channelName}
+                serverId={currentVoice.serverId}
+                minimized={!isOnVoiceRoute}
+                onLeave={handleVoiceLeave}
+                onExpand={handleVoiceExpand}
+              />
+            </Suspense>
           </div>
         ) : null}
       </main>

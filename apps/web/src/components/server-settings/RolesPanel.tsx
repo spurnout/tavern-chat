@@ -7,6 +7,7 @@ import {
   serializePermissions,
 } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
+import { ConfirmDialog } from '../ConfirmDialog.js';
 
 const ROLE_FLAGS: Array<{ flag: bigint; label: string }> = [
   { flag: Permission.VIEW_CHANNEL, label: 'View rooms' },
@@ -105,6 +106,7 @@ export function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [newName, setNewName] = useState('');
   const [editing, setEditing] = useState<Role | null>(null);
+  const [roleToDelete, setRoleToDelete] = useState<Role | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -155,7 +157,6 @@ export function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
   }
 
   async function deleteRole(role: Role): Promise<void> {
-    if (!confirm(`Delete role "${role.name}"?`)) return;
     setBusy(true);
     try {
       await api(`/roles/${role.id}`, { method: 'DELETE' });
@@ -164,6 +165,7 @@ export function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
       setError(err instanceof ApiError ? err.message : 'Could not delete');
     } finally {
       setBusy(false);
+      setRoleToDelete(null);
     }
   }
 
@@ -213,7 +215,7 @@ export function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
               {!r.isEveryone ? (
                 <button
                   className="btn-ghost text-xs text-danger"
-                  onClick={() => void deleteRole(r)}
+                  onClick={() => setRoleToDelete(r)}
                   disabled={busy}
                 >
                   Delete
@@ -226,6 +228,16 @@ export function RolesPanel({ serverId }: { serverId: string }): JSX.Element {
           </li>
         ))}
       </ul>
+      {roleToDelete ? (
+        <ConfirmDialog
+          title="Delete role?"
+          description={`Delete "${roleToDelete.name}"? Members with this role will lose its permissions.`}
+          confirmLabel="Delete role"
+          destructive
+          onConfirm={() => void deleteRole(roleToDelete)}
+          onCancel={() => setRoleToDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }

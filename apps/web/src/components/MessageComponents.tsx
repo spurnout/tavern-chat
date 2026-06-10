@@ -7,8 +7,8 @@ import { cn } from '../lib/cn.js';
 const BUTTON_STYLES: Record<string, string> = {
   primary: 'bg-ember text-fg-on-accent hover:bg-ember-hi',
   secondary: 'border border-subtle hover:bg-raised',
-  success: 'bg-emerald-600 text-white hover:bg-emerald-500',
-  danger: 'bg-danger text-white hover:opacity-90',
+  success: 'bg-moss text-fg-on-accent hover:opacity-90',
+  danger: 'bg-danger text-fg-on-accent hover:opacity-90',
   link: 'border border-subtle hover:bg-raised',
 };
 

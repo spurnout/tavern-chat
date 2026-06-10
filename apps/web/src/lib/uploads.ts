@@ -22,9 +22,12 @@ export interface UploadProgress {
   total: number;
 }
 
+export type UploadStrategyInfo = RequestUploadResponse['upload'];
+
 export async function uploadFile(
   args: PresignArgs,
   onProgress?: (p: UploadProgress) => void,
+  onStrategy?: (info: UploadStrategyInfo) => void,
 ): Promise<Attachment> {
   const kind = args.kind ?? inferKind(args.file.type);
 
@@ -39,6 +42,7 @@ export async function uploadFile(
       ...(args.serverId ? { serverId: args.serverId } : {}),
     },
   });
+  onStrategy?.(presigned.upload);
 
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();

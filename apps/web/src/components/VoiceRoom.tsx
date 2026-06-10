@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AudioPresets,
   Room,
   RoomEvent,
   Track,
@@ -35,6 +36,7 @@ import { PresenterLayout } from './voice/PresenterLayout.js';
 import { VoiceControlBar } from './voice/VoiceControlBar.js';
 import { VoiceAudioRenderer } from './voice/VoiceAudioRenderer.js';
 import { VoiceParticipantGrid, type ParticipantRowData } from './voice/VoiceParticipantGrid.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 // Stable module-scoped fallback for the "no captions for this channel
 // yet" path. Same trap as the four selectors fixed in commit 7a9e99e:
@@ -63,6 +65,11 @@ export interface ScreenShareOptions {
   audio: boolean;
   /** `'text'` biases the encoder toward sharp glyphs; `'motion'` is the default. */
   contentHint: 'motion' | 'text';
+}
+
+interface PendingBreakoutGroup {
+  id: string;
+  name: string;
 }
 
 // `null` = treat as a deliberate user cancellation; don't show any error UI.
@@ -155,6 +162,9 @@ export function VoiceRoom({
   const [shareDropped, setShareDropped] = useState(false);
   const [soundboardOpen, setSoundboardOpen] = useState(false);
   const [breakoutsOpen, setBreakoutsOpen] = useState(false);
+  const [pendingBreakoutGroup, setPendingBreakoutGroup] = useState<PendingBreakoutGroup | null>(
+    null,
+  );
   const [whiteboardOpen, setWhiteboardOpen] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
   // Snapshot of the parent voice room's LiveKit URL captured at /voice/join.
@@ -316,10 +326,19 @@ export function VoiceRoom({
         const r = new Room({
           adaptiveStream: true,
           dynacast: true,
+          publishDefaults: {
+            audioPreset: AudioPresets.music,
+            dtx: true,
+            red: true,
+            forceStereo: false,
+            stopMicTrackOnMute: true,
+            preConnectBuffer: false,
+          },
           audioCaptureDefaults: {
             noiseSuppression: prefs.voiceNoiseSuppression,
             echoCancellation: prefs.voiceEchoCancellation,
             autoGainControl: prefs.voiceAutoGain,
+            channelCount: { ideal: 1 },
             ...(micDevice ? { deviceId: micDevice } : {}),
           },
           videoCaptureDefaults: camDevice ? { deviceId: camDevice } : {},
@@ -459,27 +478,37 @@ export function VoiceRoom({
   // Wave 3 #29 — breakout room transitions. On BREAKOUT_OPEN, swap our
   // existing LiveKit connection to the assigned child room (if any). On
   // BREAKOUT_CLOSE, refresh the parent's token and reconnect.
+  const moveToBreakout = useCallback(
+    async (group: PendingBreakoutGroup): Promise<void> => {
+      if (!room) {
+        setPendingBreakoutGroup(null);
+        return;
+      }
+      try {
+        const joinRes = await api<{
+          token: string;
+          liveKitUrl: string;
+          roomName: string;
+          expiresAt: string;
+        }>(`/breakouts/${group.id}/join`, { method: 'POST' });
+        await room.disconnect();
+        await room.connect(joinRes.liveKitUrl, joinRes.token);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Could not move to breakout');
+      } finally {
+        setPendingBreakoutGroup(null);
+      }
+    },
+    [room],
+  );
+
   useEffect(() => {
     if (!room || !me) return;
     const offOpen = onBreakoutOpen((p) => {
       if (p.parentChannelId !== channelId) return;
       const myGroup = p.groups.find((g) => g.members.includes(me.id));
       if (!myGroup) return;
-      if (!window.confirm(`You've been moved to ${myGroup.name}. Join now?`)) return;
-      void (async () => {
-        try {
-          const joinRes = await api<{
-            token: string;
-            liveKitUrl: string;
-            roomName: string;
-            expiresAt: string;
-          }>(`/breakouts/${myGroup.id}/join`, { method: 'POST' });
-          await room.disconnect();
-          await room.connect(joinRes.liveKitUrl, joinRes.token);
-        } catch (err) {
-          toast.error(err instanceof Error ? err.message : 'Could not switch to breakout');
-        }
-      })();
+      setPendingBreakoutGroup({ id: myGroup.id, name: myGroup.name });
     });
     const offClose = onBreakoutClose((p) => {
       if (p.parentChannelId !== channelId) return;
@@ -760,35 +789,49 @@ export function VoiceRoom({
     />
   );
 
+  const breakoutMoveDialog = pendingBreakoutGroup ? (
+    <ConfirmDialog
+      title="Move to breakout room?"
+      description={`${pendingBreakoutGroup.name} is ready. Move there now?`}
+      confirmLabel="Move now"
+      onConfirm={() => void moveToBreakout(pendingBreakoutGroup)}
+      onCancel={() => setPendingBreakoutGroup(null)}
+    />
+  ) : null;
+
   // Minimized: collapse to a single-row bar. The LiveKit Room object lives in
   // component state, so flipping between minimized and expanded keeps the
   // session alive — the user can navigate to a text channel while still in
   // the call, and the camera/mic state is untouched.
   if (minimized) {
     return (
-      <div className="flex items-center justify-between gap-3 border-t border-subtle bg-sunken px-4 py-2">
-        <RecordingConsentDialog channelId={channelId} meId={me?.id ?? null} />
-        {room && <VoiceAudioRenderer room={room} />}
-        <button
-          type="button"
-          onClick={onExpand}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-raised px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ember"
-          title="Open voice room"
-        >
-          <Volume2 size={16} className="shrink-0 text-fg-muted" />
-          <div className="min-w-0">
-            <div className="truncate font-serif text-sm font-medium">{channelName}</div>
-            <div className="truncate text-xs text-fg-muted">{statusLine}</div>
-          </div>
-        </button>
-        <div className="flex shrink-0 items-center gap-2">{controlBar}</div>
-      </div>
+      <>
+        <div className="flex items-center justify-between gap-3 border-t border-subtle bg-sunken px-4 py-2">
+          <RecordingConsentDialog channelId={channelId} meId={me?.id ?? null} />
+          {room && <VoiceAudioRenderer room={room} />}
+          <button
+            type="button"
+            onClick={onExpand}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded text-left hover:bg-raised px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ember"
+            title="Open voice room"
+          >
+            <Volume2 size={16} className="shrink-0 text-fg-muted" />
+            <div className="min-w-0">
+              <div className="truncate font-serif text-sm font-medium">{channelName}</div>
+              <div className="truncate text-xs text-fg-muted">{statusLine}</div>
+            </div>
+          </button>
+          <div className="flex shrink-0 items-center gap-2">{controlBar}</div>
+        </div>
+        {breakoutMoveDialog}
+      </>
     );
   }
 
   return (
     <div className="flex h-full flex-col">
       <RecordingConsentDialog channelId={channelId} meId={me?.id ?? null} />
+      {breakoutMoveDialog}
       {room && <VoiceAudioRenderer room={room} />}
       <header className="flex items-center justify-between border-b border-subtle px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">

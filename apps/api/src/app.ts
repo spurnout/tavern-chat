@@ -29,6 +29,7 @@ import { registerOverwriteRoutes } from './routes/overwrites.js';
 import { registerInviteRoutes } from './routes/invites.js';
 import { registerBanRoutes } from './routes/bans.js';
 import { registerUploadRoutes } from './routes/uploads.js';
+import { registerGovernedUploadRoutes } from './routes/governed-uploads.js';
 import { registerLocalFileRoutes } from './routes/local-files.js';
 import { registerAttachmentRoutes } from './routes/attachments.js';
 import { registerReactionRoutes } from './routes/reactions.js';
@@ -103,6 +104,7 @@ import { registerNotificationRoutes } from './routes/notifications.js';
 import { registerDmRoutes } from './routes/dms.js';
 import { registerUserRoutes } from './routes/users.js';
 import { registerBlockRoutes } from './routes/blocks.js';
+import { UploadGovernor } from './services/upload-governor.js';
 import { registerGateway } from './gateway/index.js';
 import { initRedisBroker, setBrokerLogger } from './services/gateway-broker.js';
 import { ok } from './lib/responses.js';
@@ -342,6 +344,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
 
   if (!opts.authOnly) {
     const storage = createStorage(opts.config);
+    const uploadGovernor = new UploadGovernor(opts.config);
     const scanner = opts.config.CLAMAV_HOST
       ? new ClamAVScanner({
           host: opts.config.CLAMAV_HOST,
@@ -541,12 +544,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
       selfHost,
       federationEnabledOnInstance: opts.config.FEDERATION_ENABLED,
     });
+    await registerGovernedUploadRoutes(app, {
+      storage,
+      uploadGovernor,
+      uploadMaxBytes: opts.config.UPLOAD_MAX_BYTES,
+    });
     await registerLocalFileRoutes(app, {
       storage,
       uploadMaxBytes: opts.config.UPLOAD_MAX_BYTES,
+      uploadGovernor,
     });
     await registerAttachmentRoutes(app, storage);
-    await registerUploadRoutes(app, { config: opts.config, storage, queues });
+    await registerUploadRoutes(app, { config: opts.config, storage, queues, uploadGovernor });
     await registerReactionRoutes(app, {
       queues,
       selfHost,
@@ -661,6 +670,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<FastifyInstance> 
     // Bookkeeping: shut the queue down on close so dev restarts are clean.
     app.addHook('onClose', async () => {
       await queues.close().catch(() => undefined);
+      storage.close();
+      uploadGovernor.close();
     });
 
     app.log.info(`tavern config:\n${describeConfig(opts.config)}`);

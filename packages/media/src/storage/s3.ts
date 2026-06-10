@@ -1,4 +1,5 @@
 import { Client as S3Client, type ClientOptions } from 'minio';
+import type { Readable } from 'node:stream';
 import { StorageBackend, type ObjectStat, type StorageMode, type UploadTicket } from './types.js';
 
 export interface S3StorageConfig {
@@ -129,6 +130,18 @@ export class S3StorageBackend extends StorageBackend {
     contentType: string,
   ): Promise<void> {
     await this.client.putObject(bucket, key, body, body.length, {
+      'content-type': contentType,
+    });
+  }
+
+  async putObjectStream(
+    bucket: string,
+    key: string,
+    body: Readable,
+    contentType: string,
+    sizeBytes: number,
+  ): Promise<void> {
+    await this.client.putObject(bucket, key, body, sizeBytes, {
       'content-type': contentType,
     });
   }

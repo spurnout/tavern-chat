@@ -172,10 +172,18 @@ async function buildTestApp() {
 type OkBody<T> = { ok: true; data: T };
 type RequestUploadData = {
   attachment: { id: string; status: string; kind: string };
-  upload: { method: 'PUT'; url: string; headers: Record<string, string> };
+  upload: {
+    method: 'PUT';
+    url: string;
+    headers: Record<string, string>;
+    strategy?: 'direct' | 'tavern_throttled';
+    voiceActive?: boolean;
+    maxBytesPerSecond?: number;
+  };
 };
 
 async function cleanup(): Promise<void> {
+  await prisma.voiceState.deleteMany({});
   await prisma.attachment.deleteMany({});
   await prisma.message.deleteMany({});
   await prisma.apiToken.deleteMany({});
@@ -186,6 +194,36 @@ async function cleanup(): Promise<void> {
   await prisma.role.deleteMany({});
   await prisma.server.deleteMany({});
   await prisma.user.deleteMany({});
+}
+
+async function addVoiceChannel(serverId: string): Promise<string> {
+  const channelId = ulid();
+  await prisma.channel.create({ data: { id: channelId, serverId, type: 'voice', name: 'table' } });
+  return channelId;
+}
+
+async function joinVoiceState(serverId: string, userId: string, channelId: string): Promise<void> {
+  await prisma.voiceState.upsert({
+    where: { serverId_userId: { serverId, userId } },
+    create: {
+      serverId,
+      userId,
+      channelId,
+      joinedAt: new Date(),
+      selfMute: false,
+      selfDeaf: false,
+      cameraOn: false,
+      screenSharing: false,
+    },
+    update: {
+      channelId,
+      joinedAt: new Date(),
+      selfMute: false,
+      selfDeaf: false,
+      cameraOn: false,
+      screenSharing: false,
+    },
+  });
 }
 
 // ============================================================================
@@ -222,6 +260,8 @@ describe.skipIf(!dockerOk)('uploads: POST /api/uploads (request presign)', () =>
       const body = res.json() as OkBody<RequestUploadData>;
       expect(body.data.attachment.status).toBe('pending');
       expect(body.data.upload.method).toBe('PUT');
+      expect(body.data.upload.strategy).toBe('direct');
+      expect(body.data.upload.voiceActive).toBe(false);
       expect(body.data.upload.url).toContain('/api/_local-uploads/');
 
       // Pending Attachment row persisted with the declared metadata.
@@ -234,6 +274,125 @@ describe.skipIf(!dockerOk)('uploads: POST /api/uploads (request presign)', () =>
       expect(Number(row?.sizeBytes)).toBe(2048);
       // url is null for a non-ready attachment.
       expect(body.data.attachment.kind).toBe('image');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps normal upload strategy when only one member is in voice', async () => {
+    const userId = await makeUser('alice');
+    const { serverId, channelId } = await makeServerWithChannel(userId);
+    const voiceChannelId = await addVoiceChannel(serverId);
+    await joinVoiceState(serverId, userId, voiceChannelId);
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(userId);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/uploads',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          kind: 'image',
+          filename: 'photo.png',
+          mimeType: 'image/png',
+          sizeBytes: 16,
+          serverId,
+          channelId,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as OkBody<RequestUploadData>;
+      expect(body.data.upload.strategy).toBe('direct');
+      expect(body.data.upload.voiceActive).toBe(false);
+      expect(body.data.upload.url).toContain('/api/_local-uploads/');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns a governed throttled upload and accepts bytes when 2 members are in voice', async () => {
+    const ownerId = await makeUser('owner');
+    const memberId = await makeUser('member');
+    const { serverId, channelId, everyoneId } = await makeServerWithChannel(ownerId);
+    await addMember(serverId, memberId, everyoneId);
+    const voiceChannelId = await addVoiceChannel(serverId);
+    await joinVoiceState(serverId, ownerId, voiceChannelId);
+    await joinVoiceState(serverId, memberId, voiceChannelId);
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(ownerId);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/uploads',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          kind: 'image',
+          filename: 'photo.png',
+          mimeType: 'image/png',
+          sizeBytes: 16,
+          serverId,
+          channelId,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as OkBody<RequestUploadData>;
+      expect(body.data.upload.strategy).toBe('tavern_throttled');
+      expect(body.data.upload.voiceActive).toBe(true);
+      expect(body.data.upload.maxBytesPerSecond).toBe(256 * 1024);
+      expect(body.data.upload.url).toContain('/api/_governed-uploads/');
+
+      const putUrl = new URL(body.data.upload.url);
+      const put = await app.inject({
+        method: 'PUT',
+        url: putUrl.pathname,
+        headers: body.data.upload.headers,
+        payload: Buffer.alloc(16, 1),
+      });
+      expect(put.statusCode).toBe(204);
+
+      const complete = await app.inject({
+        method: 'POST',
+        url: `/api/uploads/${body.data.attachment.id}/complete`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {},
+      });
+      expect(complete.statusCode).toBe(200);
+      const completed = complete.json() as OkBody<{ status: string }>;
+      expect(completed.data.status).toBe('uploaded');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('governs voice-message uploads during active voice rooms', async () => {
+    const ownerId = await makeUser('owner');
+    const memberId = await makeUser('member');
+    const { serverId, channelId, everyoneId } = await makeServerWithChannel(ownerId);
+    await addMember(serverId, memberId, everyoneId);
+    const voiceChannelId = await addVoiceChannel(serverId);
+    await joinVoiceState(serverId, ownerId, voiceChannelId);
+    await joinVoiceState(serverId, memberId, voiceChannelId);
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(ownerId);
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/uploads',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          kind: 'voice_message',
+          filename: 'note.ogg',
+          mimeType: 'audio/ogg',
+          sizeBytes: 16,
+          serverId,
+          channelId,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json() as OkBody<RequestUploadData>;
+      expect(body.data.upload.strategy).toBe('tavern_throttled');
+      expect(body.data.upload.voiceActive).toBe(true);
+      expect(body.data.upload.url).toContain('/api/_governed-uploads/');
     } finally {
       await app.close();
     }
@@ -700,6 +859,26 @@ describe.skipIf(!dockerOk)('uploads: POST /api/attachments/:id/waveform', () => 
         payload: { peaks: [1, 2, 3, 4, 5, 6, 7, 8] },
       });
       expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('400s when the voice message has not reached an uploaded state', async () => {
+    const userId = await makeUser('alice');
+    const attId = await makeAttachment(userId, { status: 'pending' });
+    const app = await buildTestApp();
+    try {
+      const token = await mintToken(userId);
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/attachments/${attId}/waveform`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { peaks: [1, 2, 3, 4, 5, 6, 7, 8] },
+      });
+      expect(res.statusCode).toBe(400);
+      const json = res.json() as { error?: { code?: string } };
+      expect(json.error?.code).toBe('VALIDATION_ERROR');
     } finally {
       await app.close();
     }

@@ -5,6 +5,7 @@ import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useCanIn } from '../lib/store.js';
 import { onWhiteboardClear, onWhiteboardStroke } from '../lib/voice-events.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 type Tool = 'pen' | 'eraser';
 
@@ -54,6 +55,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
   const [tool, setTool] = useState<Tool>('pen');
   const [color, setColor] = useState<string>(DEFAULT_COLOR);
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const canClear = useCanIn(serverId, Permission.MANAGE_MESSAGES);
 
   function drawStroke(ctx: CanvasRenderingContext2D, s: Stroke): void {
@@ -172,13 +174,14 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
   }
 
   async function clearAll(): Promise<void> {
-    if (!window.confirm('Clear the whiteboard for everyone?')) return;
     try {
       await api(`/channels/${channelId}/whiteboard`, { method: 'DELETE' });
       strokesRef.current = [];
       redraw();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not clear');
+    } finally {
+      setClearDialogOpen(false);
     }
   }
 
@@ -244,7 +247,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
           <button
             type="button"
             className="btn-ghost ml-auto"
-            onClick={() => void clearAll()}
+            onClick={() => setClearDialogOpen(true)}
             title="Clear whiteboard"
           >
             <Trash2 size={14} />
@@ -269,6 +272,16 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
         onPointerUp={() => void pointerUp()}
         onPointerLeave={() => void pointerUp()}
       />
+      {clearDialogOpen ? (
+        <ConfirmDialog
+          title="Clear whiteboard?"
+          description="This clears the whiteboard for everyone in the room."
+          confirmLabel="Clear whiteboard"
+          destructive
+          onConfirm={() => void clearAll()}
+          onCancel={() => setClearDialogOpen(false)}
+        />
+      ) : null}
     </section>
   );
 }

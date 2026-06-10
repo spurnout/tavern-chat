@@ -85,7 +85,7 @@ export function InboxPanel(): JSX.Element {
       {open ? (
         <div
           ref={popoverRef}
-          className="absolute bottom-full right-0 z-40 mb-2 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
+          className="absolute bottom-full left-0 z-40 mb-2 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
           role="dialog"
           aria-label="Activity inbox"
         >

@@ -16,7 +16,7 @@ interface CapturedClient {
 const captured: CapturedClient[] = [];
 
 vi.mock('minio', () => ({
-  Client: vi.fn().mockImplementation((opts: { endPoint: string; port: number; useSSL: boolean }) => {
+  Client: vi.fn(function mockClient(opts: { endPoint: string; port: number; useSSL: boolean }) {
     const client: CapturedClient = {
       endPoint: opts.endPoint,
       port: opts.port,

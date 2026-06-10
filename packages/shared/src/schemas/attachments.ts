@@ -59,6 +59,9 @@ export const requestUploadResponseSchema = z.object({
     url: z.string().url(),
     headers: z.record(z.string()),
     expiresAt: z.string().datetime(),
+    strategy: z.enum(['direct', 'tavern_throttled']).optional(),
+    voiceActive: z.boolean().optional(),
+    maxBytesPerSecond: z.number().int().positive().optional(),
   }),
 });
 

@@ -15,16 +15,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Tavern golden path', () => {
   test('login, send message, roll dice', async ({ page }) => {
-    await page.goto('/');
-    await expect(page).toHaveURL(/\/login$/);
-
-    await page.getByLabel('Username or email').fill('admin');
-    await page.getByLabel('Password').fill('change-me-in-dev');
-    await page.getByRole('button', { name: /sign in/i }).click();
-
-    // Land in the app — the seeded server has a #lobby channel.
-    await expect(page).toHaveURL(/\/app/);
-    await page.getByRole('link', { name: /lobby/i }).click();
+    await signIn(page);
 
     // Send a message.
     const composer = page.getByPlaceholder(/^Message/);
@@ -39,4 +30,83 @@ test.describe('Tavern golden path', () => {
     await composer.press('Enter');
     await expect(page.getByText(/1d20/).first()).toBeVisible();
   });
+
+  test('uploads a text attachment from the composer', async ({ page }) => {
+    await signIn(page);
+
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'e2e-note.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('hello from playwright'),
+    });
+
+    await expect(page.getByText('e2e-note.txt')).toBeVisible();
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('e2e-note.txt')).toBeVisible();
+  });
+
+  test('records and uploads a voice message with browser recording APIs stubbed', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+          getUserMedia: async () => new MediaStream(),
+        },
+      });
+
+      class FakeMediaRecorder {
+        ondataavailable: ((event: BlobEvent) => void) | null = null;
+        onstop: (() => void) | null = null;
+        state: RecordingState = 'inactive';
+
+        constructor(_stream: MediaStream, _options?: MediaRecorderOptions) {}
+
+        start(): void {
+          this.state = 'recording';
+          queueMicrotask(() => {
+            this.ondataavailable?.({
+              data: new Blob(['voice'], { type: 'audio/webm' }),
+            } as BlobEvent);
+          });
+        }
+
+        stop(): void {
+          this.state = 'inactive';
+          this.onstop?.();
+        }
+      }
+
+      Object.defineProperty(window, 'MediaRecorder', {
+        configurable: true,
+        value: FakeMediaRecorder,
+      });
+    });
+
+    await signIn(page);
+    await page.getByTitle('Record voice message').click();
+    await expect(page.getByText(/Recording/i)).toBeVisible();
+    await page.getByTitle('Stop recording').click();
+    await expect(page.locator('audio').last()).toBeVisible();
+  });
+
+  test('renders the seeded voice room route', async ({ page }) => {
+    await signIn(page);
+    await page.getByRole('link', { name: /Voice Hall/i }).click();
+    await expect(page).toHaveURL(/\/voice\//);
+    await expect(page.getByText('Voice Hall').first()).toBeVisible();
+  });
 });
+
+async function signIn(page: import('@playwright/test').Page): Promise<void> {
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/login$/);
+
+  await page.getByLabel('Username or email').fill('admin');
+  await page.getByLabel('Password').fill('change-me-in-dev');
+  await page.getByRole('button', { name: /sign in/i }).click();
+
+  await expect(page).toHaveURL(/\/app/);
+  await page.getByRole('link', { name: /lobby/i }).click();
+}

@@ -252,6 +252,22 @@ describe('requestUploadResponseSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts voice-aware throttled upload metadata', () => {
+    const result = requestUploadResponseSchema.safeParse({
+      attachment,
+      upload: {
+        method: 'PUT',
+        url: 'https://tavern.example.com/api/_governed-uploads/token',
+        headers: { 'content-type': 'application/pdf' },
+        expiresAt: NOW,
+        strategy: 'tavern_throttled',
+        voiceActive: true,
+        maxBytesPerSecond: 262144,
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects a method other than PUT', () => {
     const result = requestUploadResponseSchema.safeParse({
       attachment,

@@ -159,7 +159,11 @@ should treat `null` as "you're already on this instance, go home."
 ## Uploads & attachments
 
 Tavern uses presigned PUTs against either S3 (Garage) or a token-validated
-local-storage route, depending on `STORAGE_BACKEND`.
+local-storage route, depending on `STORAGE_BACKEND`. When any voice room has
+2+ active participants, `POST /uploads` returns `strategy:
+"tavern_throttled"` and a Tavern-controlled upload URL instead of a direct S3
+presign, so the API can serialize and byte-throttle attachment uploads before
+they compete with voice traffic.
 
 ### Upload pipeline (`apps/api/src/routes/uploads.ts`)
 
@@ -170,6 +174,11 @@ local-storage route, depending on `STORAGE_BACKEND`.
 | POST   | `/attachments/:id/waveform` | uploader only; voice-message kind only |
 | GET    | `/attachments/:id` | viewer of the channel; quarantined/blocked attachments return 404 to non-owners (UPL-001) |
 
+Upload responses include `upload.strategy` (`direct` or
+`tavern_throttled`), `upload.voiceActive`, and, for throttled uploads,
+`upload.maxBytesPerSecond`. Defaults are `VOICE_ACTIVE_UPLOAD_THROTTLE_*`
+env vars: one active upload, 256 KiB/s sustained, 512 KiB burst.
+
 `POST /uploads` validates the declared extension against a blocklist
 (`BLOCKED_EXTENSIONS`, `BLOCKED_ARCHIVE_EXTENSIONS`), rejects SVG outright,
 and runs a per-kind MIME and size check (UPL-003 MIME-vs-extension
@@ -178,6 +187,13 @@ hardening (NFC normalize, strip null bytes, strip Windows-reserved names,
 strip leading/trailing dots).
 
 ### Object proxy routes
+
+Voice-aware throttled uploads (`apps/api/src/routes/governed-uploads.ts`,
+storage-backend independent):
+
+| Method | Path |
+|--------|------|
+| PUT    | `/_governed-uploads/:token` |
 
 `STORAGE_BACKEND=s3` (`apps/api/src/routes/attachments.ts`):
 
@@ -196,7 +212,9 @@ path so the on-disk layout doesn't leak (STO-004).
 | PUT    | `/_local-uploads/:token` (consumes a presign) |
 | GET    | `/_local-files/:bucket/:key` |
 
-Same quarantine-bucket guard (STO-001).
+Same quarantine-bucket guard (STO-001). `_local-uploads` also checks the
+voice-aware upload governor at PUT time, so local tickets issued before a
+voice room becomes active are throttled when they start sending bytes.
 
 ## Voice / video (`apps/api/src/routes/voice.ts`)
 

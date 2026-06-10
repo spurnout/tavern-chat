@@ -46,7 +46,7 @@ export function RevokePeerModal({ open, onOpenChange, peerHost, onConfirm }: Pro
             Cancel
           </button>
           <button
-            className="btn-primary bg-ember text-white hover:bg-ember/90"
+            className="btn-danger"
             onClick={() => void handleConfirm()}
             disabled={busy}
           >

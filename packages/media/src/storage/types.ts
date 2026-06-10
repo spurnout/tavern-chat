@@ -1,3 +1,5 @@
+import type { Readable } from 'node:stream';
+
 export interface UploadTicket {
   /** URL the client PUTs the file to. */
   url: string;
@@ -9,6 +11,19 @@ export interface UploadTicket {
 export interface ObjectStat {
   size: number;
   etag: string;
+}
+
+/**
+ * Upload failures the client caused (bad token, declared-size mismatch) and
+ * whose message is therefore safe to echo back in a 400. Anything else —
+ * filesystem or S3 errors — must stay server-side so on-disk paths and
+ * bucket layout don't leak (STO-004).
+ */
+export class UploadRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UploadRejectedError';
+  }
 }
 
 export type StorageMode = 'local' | 's3';
@@ -52,6 +67,15 @@ export abstract class StorageBackend {
     key: string,
     body: Buffer,
     contentType: string,
+  ): Promise<void>;
+
+  /** Stream an object into storage without buffering the whole upload in memory. */
+  abstract putObjectStream(
+    bucket: string,
+    key: string,
+    body: Readable,
+    contentType: string,
+    sizeBytes: number,
   ): Promise<void>;
 
   abstract statObject(bucket: string, key: string): Promise<ObjectStat>;

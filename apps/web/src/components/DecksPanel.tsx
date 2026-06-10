@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Layers, Plus, Shuffle, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 interface Card {
   id: string;
@@ -52,6 +53,7 @@ export function DecksPanel({ serverId, channelId }: Props): JSX.Element {
   const [draftCardsRaw, setDraftCardsRaw] = useState('');
   const [busy, setBusy] = useState(false);
   const [recentDraw, setRecentDraw] = useState<DrawResult | null>(null);
+  const [deckToDelete, setDeckToDelete] = useState<Deck | null>(null);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -133,12 +135,13 @@ export function DecksPanel({ serverId, channelId }: Props): JSX.Element {
   }
 
   async function remove(deck: Deck): Promise<void> {
-    if (!confirm(`Delete "${deck.name}"? This cannot be undone.`)) return;
     try {
       await api(`/decks/${deck.id}`, { method: 'DELETE' });
       setDecks((s) => s.filter((d) => d.id !== deck.id));
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not delete');
+    } finally {
+      setDeckToDelete(null);
     }
   }
 
@@ -257,7 +260,7 @@ export function DecksPanel({ serverId, channelId }: Props): JSX.Element {
                 <button
                   type="button"
                   className="btn-ghost text-fg-muted hover:text-danger"
-                  onClick={() => void remove(d)}
+                  onClick={() => setDeckToDelete(d)}
                   aria-label="Delete deck"
                   title="Delete deck"
                 >
@@ -268,6 +271,16 @@ export function DecksPanel({ serverId, channelId }: Props): JSX.Element {
           </li>
         ))}
       </ul>
+      {deckToDelete ? (
+        <ConfirmDialog
+          title="Delete deck?"
+          description={`Delete "${deckToDelete.name}"? This cannot be undone.`}
+          confirmLabel="Delete deck"
+          destructive
+          onConfirm={() => void remove(deckToDelete)}
+          onCancel={() => setDeckToDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -21,7 +21,9 @@ import { stat } from 'node:fs/promises';
 import { extname } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { LocalStorageBackend, type StorageBackend } from '@tavern/media';
+import { LocalStorageBackend, UploadRejectedError, type StorageBackend } from '@tavern/media';
+import { registerUploadContentParser } from '../lib/upload-content-parser.js';
+import type { UploadGovernor } from '../services/upload-governor.js';
 
 const MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
@@ -54,13 +56,14 @@ function isSafeKey(key: string): boolean {
 export interface LocalFileRouteDeps {
   storage: StorageBackend;
   uploadMaxBytes: number;
+  uploadGovernor?: UploadGovernor;
 }
 
 export async function registerLocalFileRoutes(
   app: FastifyInstance,
   deps: LocalFileRouteDeps,
 ): Promise<void> {
-  const { storage, uploadMaxBytes } = deps;
+  const { storage, uploadMaxBytes, uploadGovernor } = deps;
   if (!(storage instanceof LocalStorageBackend)) return;
   const local = storage;
 
@@ -68,21 +71,44 @@ export async function registerLocalFileRoutes(
   // UPLOAD_MAX_BYTES (INF-017) so the local route, S3 presign, and worker
   // stat verification all agree on the same cap. nginx's client_max_body_size
   // must match in deployments that put nginx in front.
-  app.route({
-    method: 'PUT',
-    url: '/api/_local-uploads/:token',
-    bodyLimit: uploadMaxBytes,
-    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
-    handler: async (req, reply) => {
-      const { token } = z.object({ token: z.string().min(8).max(96) }).parse(req.params);
-      try {
-        await local.acceptUpload(token, req.raw);
-        reply.status(204).send();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
-        reply.status(400).send({ ok: false, error: { code: 'UPLOAD_BLOCKED', message } });
-      }
-    },
+  //
+  // Encapsulated scope: the raw-body content-type parsers must only apply to
+  // this upload route, not loosen body parsing for the rest of the API.
+  await app.register(async (scope) => {
+    registerUploadContentParser(scope);
+
+    scope.route({
+      method: 'PUT',
+      url: '/api/_local-uploads/:token',
+      bodyLimit: uploadMaxBytes,
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      handler: async (req, reply) => {
+        const { token } = z.object({ token: z.string().min(8).max(96) }).parse(req.params);
+        try {
+          if (uploadGovernor) {
+            await uploadGovernor.processUpload(req.raw, (stream) =>
+              local.acceptUpload(token, stream),
+            );
+          } else {
+            await local.acceptUpload(token, req.raw);
+          }
+          reply.status(204).send();
+        } catch (err) {
+          // Only client-caused rejections echo their message; filesystem
+          // errors stay in the log so on-disk paths don't leak (STO-004).
+          if (err instanceof UploadRejectedError) {
+            reply
+              .status(400)
+              .send({ ok: false, error: { code: 'UPLOAD_BLOCKED', message: err.message } });
+            return;
+          }
+          req.log.error({ err }, 'local upload failed');
+          reply
+            .status(500)
+            .send({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Upload failed' } });
+        }
+      },
+    });
   });
 
   // GET: serve stored objects. Read-only; no listing. Per-route rate-limit

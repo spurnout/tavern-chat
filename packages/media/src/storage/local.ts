@@ -11,9 +11,15 @@ import {
 } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { Transform } from 'node:stream';
+import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { StorageBackend, type ObjectStat, type StorageMode, type UploadTicket } from './types.js';
+import {
+  StorageBackend,
+  UploadRejectedError,
+  type ObjectStat,
+  type StorageMode,
+  type UploadTicket,
+} from './types.js';
 
 export interface LocalStorageConfig {
   /** Root directory on disk; bucket subdirectories live inside. */
@@ -102,7 +108,7 @@ export class LocalStorageBackend extends StorageBackend {
     return {
       url: `${this.apiBaseUrl}/api/_local-uploads/${token}`,
       method: 'PUT',
-      headers: { 'content-type': mimeType },
+      headers: { 'content-type': 'application/octet-stream' },
       expiresAt,
     };
   }
@@ -117,10 +123,10 @@ export class LocalStorageBackend extends StorageBackend {
     body: NodeJS.ReadableStream,
   ): Promise<{ bucket: string; key: string }> {
     const ticket = this.tickets.get(token);
-    if (!ticket) throw new Error('Unknown upload token');
+    if (!ticket) throw new UploadRejectedError('Unknown upload token');
     if (ticket.expiresAt < new Date()) {
       this.tickets.delete(token);
-      throw new Error('Upload token expired');
+      throw new UploadRejectedError('Upload token expired');
     }
     this.tickets.delete(token);
     const targetPath = this.absPath(ticket.bucket, ticket.key);
@@ -136,7 +142,7 @@ export class LocalStorageBackend extends StorageBackend {
       transform(chunk: Buffer, _enc, cb) {
         bytesWritten += chunk.length;
         if (bytesWritten > limit) {
-          cb(new Error(`Upload exceeds declared size (${limit} bytes)`));
+          cb(new UploadRejectedError(`Upload exceeds declared size (${limit} bytes)`));
           return;
         }
         cb(null, chunk);
@@ -147,7 +153,13 @@ export class LocalStorageBackend extends StorageBackend {
       // SEC: mode 0o600 — attachments are user-private. Default OS umask
       // (commonly 0644) leaves them group/world-readable on multi-user
       // hosts. Use the same mode for the streaming and the buffered path.
-      await pipeline(body, sizeGuard, createWriteStream(targetPath, { mode: 0o600 }));
+      //
+      // The source is piped in manually (not given to pipeline()) so a
+      // rejection doesn't destroy the HTTP request stream — destroying it
+      // tears down the socket before the 400 response can be written.
+      body.on('error', (err) => sizeGuard.destroy(toError(err)));
+      body.pipe(sizeGuard);
+      await pipeline(sizeGuard, createWriteStream(targetPath, { mode: 0o600 }));
     } catch (err) {
       // Pipeline failed mid-write — clean up the partial file so we don't
       // leave junk in the bucket directory.
@@ -181,6 +193,44 @@ export class LocalStorageBackend extends StorageBackend {
     // SEC: mode 0o600 — match acceptUpload above. Attachments default to
     // owner-only on disk; group/world readers don't belong here.
     writeFileSync(target, body, { mode: 0o600 });
+  }
+
+  async putObjectStream(
+    bucket: string,
+    key: string,
+    body: Readable,
+    _contentType: string,
+    sizeBytes: number,
+  ): Promise<void> {
+    const target = this.absPath(bucket, key);
+    mkdirSync(path.dirname(target), { recursive: true });
+
+    let bytesWritten = 0;
+    const sizeGuard = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        bytesWritten += chunk.length;
+        if (bytesWritten > sizeBytes) {
+          cb(new UploadRejectedError(`Upload exceeds declared size (${sizeBytes} bytes)`));
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
+
+    try {
+      // Manual pipe for the same reason as acceptUpload: pipeline() must not
+      // destroy the caller's source stream on rejection.
+      body.on('error', (err) => sizeGuard.destroy(toError(err)));
+      body.pipe(sizeGuard);
+      await pipeline(sizeGuard, createWriteStream(target, { mode: 0o600 }));
+    } catch (err) {
+      try {
+        rmSync(target, { force: true });
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
   }
 
   async statObject(bucket: string, key: string): Promise<ObjectStat> {
@@ -252,4 +302,8 @@ export class LocalStorageBackend extends StorageBackend {
       if (ticket.expiresAt < now) this.tickets.delete(token);
     }
   }
+}
+
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
 }

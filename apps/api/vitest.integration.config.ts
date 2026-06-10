@@ -15,7 +15,7 @@ export default defineConfig({
     testTimeout: 120_000,
     hookTimeout: 120_000,
     pool: 'forks',
-    poolOptions: { forks: { singleFork: true } },
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       all: true,

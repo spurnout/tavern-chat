@@ -3,11 +3,16 @@ import type { CustomEmoji } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
 import { uploadFile } from '../../lib/uploads.js';
 import { awaitTerminal } from '../../lib/attachment-ready.js';
+import { ConfirmDialog } from '../ConfirmDialog.js';
+import { Modal } from '../Modal.js';
 
 export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
   const [emojis, setEmojis] = useState<CustomEmoji[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<File | null>(null);
+  const [emojiName, setEmojiName] = useState('');
+  const [emojiToDelete, setEmojiToDelete] = useState<CustomEmoji | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -23,12 +28,23 @@ export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
 
-  async function onUpload(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+  function onUpload(e: React.ChangeEvent<HTMLInputElement>): void {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const name = prompt('Name (letters, digits, underscore):', file.name.replace(/\..*$/, ''));
-    if (!name) return;
+    setError(null);
+    setEmojiName(defaultEmojiName(file.name));
+    setPendingUpload(file);
+  }
+
+  async function createPendingEmoji(): Promise<void> {
+    const file = pendingUpload;
+    const name = emojiName.trim();
+    if (!file) return;
+    if (!/^[A-Za-z0-9_]{1,32}$/.test(name)) {
+      setError('Use 1-32 letters, digits, or underscores for the emoji name.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -49,6 +65,8 @@ export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
         method: 'POST',
         body: { name, attachmentId: att.id },
       });
+      setPendingUpload(null);
+      setEmojiName('');
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Upload failed');
@@ -57,13 +75,14 @@ export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
     }
   }
 
-  async function remove(id: string): Promise<void> {
-    if (!confirm('Delete emoji?')) return;
+  async function remove(emoji: CustomEmoji): Promise<void> {
     try {
-      await api(`/emojis/${id}`, { method: 'DELETE' });
+      await api(`/emojis/${emoji.id}`, { method: 'DELETE' });
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not delete');
+    } finally {
+      setEmojiToDelete(null);
     }
   }
 
@@ -74,7 +93,7 @@ export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
           type="file"
           accept="image/png,image/gif,image/webp,image/jpeg"
           className="hidden"
-          onChange={(e) => void onUpload(e)}
+          onChange={onUpload}
           disabled={busy}
         />
         <span className="btn-primary">{busy ? 'Uploading…' : 'Upload custom emoji'}</span>
@@ -91,13 +110,74 @@ export function EmojiPanel({ serverId }: { serverId: string }): JSX.Element {
             <div className="min-w-0 flex-1 truncate text-sm">:{e.name}:</div>
             <button
               className="text-xs text-danger hover:underline"
-              onClick={() => void remove(e.id)}
+              onClick={() => setEmojiToDelete(e)}
             >
               ×
             </button>
           </li>
         ))}
       </ul>
+      <Modal
+        open={pendingUpload !== null}
+        onOpenChange={(open) => {
+          if (open || busy) return;
+          setPendingUpload(null);
+          setEmojiName('');
+        }}
+        title="Name custom emoji"
+        description="Use letters, digits, and underscores so it is easy to type at the table."
+        footer={
+          <>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                setPendingUpload(null);
+                setEmojiName('');
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => void createPendingEmoji()}
+              disabled={busy || !emojiName.trim()}
+            >
+              {busy ? 'Uploading...' : 'Create emoji'}
+            </button>
+          </>
+        }
+      >
+        <label className="block text-sm">
+          <span className="mb-1 inline-block text-fg-muted">Emoji name</span>
+          <input
+            className="input"
+            value={emojiName}
+            onChange={(e) => setEmojiName(e.target.value)}
+            maxLength={32}
+            disabled={busy}
+            autoFocus
+          />
+        </label>
+      </Modal>
+      {emojiToDelete ? (
+        <ConfirmDialog
+          title="Delete emoji?"
+          description={`Delete :${emojiToDelete.name}: from this tavern?`}
+          confirmLabel="Delete emoji"
+          destructive
+          onConfirm={() => void remove(emojiToDelete)}
+          onCancel={() => setEmojiToDelete(null)}
+        />
+      ) : null}
     </div>
   );
+}
+
+function defaultEmojiName(filename: string): string {
+  const withoutExtension = filename.replace(/\.[^.]*$/, '');
+  const cleaned = withoutExtension.replace(/[^A-Za-z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+  return cleaned.slice(0, 32) || 'custom_emoji';
 }

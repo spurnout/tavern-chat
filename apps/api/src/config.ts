@@ -156,6 +156,26 @@ const envSchema = z.object({
    * in tandem; nginx doesn't read env vars at request time.
    */
   UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+  /**
+   * When any voice room has two or more active participants, Tavern routes
+   * attachment uploads through the API and throttles them so constrained
+   * upstream links preserve live audio quality.
+   */
+  VOICE_ACTIVE_UPLOAD_THROTTLE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  VOICE_ACTIVE_UPLOAD_THROTTLE_BYTES_PER_SECOND: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(256 * 1024),
+  VOICE_ACTIVE_UPLOAD_THROTTLE_BURST_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(512 * 1024),
+  VOICE_ACTIVE_UPLOAD_THROTTLE_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
 
   // Mail / password-reset --------------------------------------------------
   /**
@@ -379,6 +399,11 @@ export function describeConfig(cfg: Config): string {
         : `disabled (allowUnscanned=${cfg.ALLOW_UNSCANNED_UPLOADS})`
     }`,
     `  livekit:  ${cfg.LIVEKIT_URL ?? 'disabled (voice/video routes return 503)'}`,
+    `  voice upload throttle: ${
+      cfg.VOICE_ACTIVE_UPLOAD_THROTTLE_ENABLED
+        ? `${cfg.VOICE_ACTIVE_UPLOAD_THROTTLE_BYTES_PER_SECOND} B/s, burst ${cfg.VOICE_ACTIVE_UPLOAD_THROTTLE_BURST_BYTES} B, max ${cfg.VOICE_ACTIVE_UPLOAD_THROTTLE_MAX_CONCURRENT}`
+        : 'disabled'
+    }`,
     `  smtp:     ${
       cfg.SMTP_HOST
         ? `${cfg.SMTP_HOST}:${cfg.SMTP_PORT}${cfg.SMTP_SECURE ? ' (tls)' : ''}`

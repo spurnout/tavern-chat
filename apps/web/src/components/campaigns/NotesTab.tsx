@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Campaign, CampaignNote, NoteVisibility } from '@tavern/shared';
 import { api, ApiError } from '../../lib/api-client.js';
+import { ConfirmDialog } from '../ConfirmDialog.js';
 import { MessageContent, slugifyWikiTarget } from '../MessageContent.js';
 
 export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
   const [notes, setNotes] = useState<CampaignNote[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [noteToDelete, setNoteToDelete] = useState<CampaignNote | null>(null);
   const [draft, setDraft] = useState({
     title: '',
     body: '',
@@ -46,13 +48,14 @@ export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
     }
   }
 
-  async function remove(id: string): Promise<void> {
-    if (!confirm('Delete this note?')) return;
+  async function remove(note: CampaignNote): Promise<void> {
     try {
-      await api(`/notes/${id}`, { method: 'DELETE' });
+      await api(`/notes/${note.id}`, { method: 'DELETE' });
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not delete');
+    } finally {
+      setNoteToDelete(null);
     }
   }
 
@@ -105,7 +108,17 @@ export function NotesTab({ campaign }: { campaign: Campaign }): JSX.Element {
         </div>
       </div>
       {error ? <p className="text-sm text-danger">{error}</p> : null}
-      <NoteList notes={notes} onDelete={(id) => void remove(id)} />
+      <NoteList notes={notes} onDelete={setNoteToDelete} />
+      {noteToDelete ? (
+        <ConfirmDialog
+          title="Delete note?"
+          description={`Delete "${noteToDelete.title}"? This cannot be undone.`}
+          confirmLabel="Delete note"
+          destructive
+          onConfirm={() => void remove(noteToDelete)}
+          onCancel={() => setNoteToDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -120,7 +133,7 @@ function NoteList({
   onDelete,
 }: {
   notes: CampaignNote[];
-  onDelete: (id: string) => void;
+  onDelete: (note: CampaignNote) => void;
 }): JSX.Element {
   // Build a set of slugs that actually exist so we can hint at broken
   // references. Currently used only for the hover title; the visual treatment
@@ -156,7 +169,7 @@ function NoteList({
                 <button
                   type="button"
                   className="text-danger hover:underline"
-                  onClick={() => onDelete(n.id)}
+                  onClick={() => onDelete(n)}
                 >
                   delete
                 </button>
