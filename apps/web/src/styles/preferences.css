@@ -2,10 +2,10 @@
  * Wave 3 #30 / #33 — Theme + font preferences. Activated by data-attrs on
  * <html> set by preferences-store.ts.
  *
- * The base theme is the existing token palette. Dark + sepia override only
- * the surface ramp. Font choices override --font-serif/--font-sans. The
- * size attr scales the base font-size; reduce-motion zeroes the
- * --t-base / --ease-* transitions.
+ * The base theme is the existing token palette. Dark + sepia override the
+ * semantic CSS variables consumed by Tailwind token utilities. Font choices
+ * swap the body stack; size scales the base font-size; reduce-motion zeroes
+ * transition and animation timing.
  */
 
 html[data-theme='dark'] {
@@ -13,8 +13,8 @@ html[data-theme='dark'] {
   --bg-sunken: #1d1814;
   --bg-surface: #261f1a;
   --bg-raised: #2f2722;
-  --text-fg: #f1ead7;
-  --text-fg-muted: #b8ab93;
+  --fg-default: #f1ead7;
+  --fg-muted: #b8ab93;
 }
 
 html[data-theme='sepia'] {
@@ -22,8 +22,10 @@ html[data-theme='sepia'] {
   --bg-sunken: #f3e9c9;
   --bg-surface: #ede0b7;
   --bg-raised: #e3d39e;
-  --text-fg: #3b2f1e;
-  --text-fg-muted: #6b5a3c;
+  --fg-default: #3b2f1e;
+  --fg-muted: #6b5a3c;
+  --fg-faint: #8a7858;
+  --fg-on-accent: #21160b;
   --border-subtle: #c9b785;
 }
 
