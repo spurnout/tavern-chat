@@ -17,6 +17,7 @@ import { useRealtime } from '../lib/store.js';
 import { useInbox } from '../lib/inbox-store.js';
 import { useIsBlocked } from '../lib/blocks-store.js';
 import { useAuth } from '../lib/auth.js';
+import { useRememberedMessageScroll } from '../lib/message-scroll-memory.js';
 import { ThreadPanel } from './ThreadPanel.js';
 import { PollMessage } from './PollMessage.js';
 import { MessageContent } from './MessageContent.js';
@@ -38,13 +39,6 @@ interface Props {
 }
 
 const EMPTY_MESSAGES: never[] = [];
-
-/**
- * Threshold for the sticky-scroll behaviour: if the user is within this many
- * pixels of the bottom we follow new messages; further up we leave them
- * where they are. FE-07.
- */
-const STICK_THRESHOLD_PX = 120;
 
 export function MessageList({ channelId }: Props): JSX.Element {
   // Subscribe to the dict; the `?? []` fallback would otherwise return a
@@ -120,18 +114,12 @@ export function MessageList({ channelId }: Props): JSX.Element {
     estimateSize: () => 80,
     overscan: 8,
   });
-
-  // FE-07: sticky scroll-to-bottom — only follow new messages when the user
-  // is already near the bottom. Previously every incoming message yanked the
-  // viewport to the bottom even if the user was scrolled up reading history.
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom <= STICK_THRESHOLD_PX) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [sorted.length]);
+  const totalSize = virtualizer.getTotalSize();
+  useRememberedMessageScroll(parentRef, {
+    storageKey: `channel:${channelId}`,
+    itemCount: sorted.length,
+    totalSize,
+  });
 
   // Phase 1.3 — auto-ACK the channel when the user is looking at it and a
   // new message arrives. We only fire when the active channel matches and
@@ -165,7 +153,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
           No messages yet. Start the conversation.
         </div>
       ) : null}
-      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+      <div style={{ height: totalSize, position: 'relative' }}>
         {virtualizer.getVirtualItems().map((row) => {
           const message = sorted[row.index];
           if (!message) return null;

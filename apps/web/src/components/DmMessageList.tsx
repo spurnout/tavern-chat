@@ -5,6 +5,7 @@ import { api } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { useAuth } from '../lib/auth.js';
 import { toast } from '../lib/toast.js';
+import { useRememberedMessageScroll } from '../lib/message-scroll-memory.js';
 import { AttachmentView } from './AttachmentView.js';
 import { MemberProfileTrigger } from './MemberProfileTrigger.js';
 import { ReactionBar } from './ReactionBar.js';
@@ -17,7 +18,6 @@ interface Props {
 }
 
 const EMPTY_MESSAGES: never[] = [];
-const STICK_THRESHOLD_PX = 120;
 
 export function DmMessageList({ dmChannelId }: Props): JSX.Element {
   const messagesByDmChannel = useRealtime((s) => s.messagesByDmChannel);
@@ -52,15 +52,12 @@ export function DmMessageList({ dmChannelId }: Props): JSX.Element {
     estimateSize: () => 72,
     overscan: 8,
   });
-
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom <= STICK_THRESHOLD_PX) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [messages.length]);
+  const totalSize = virtualizer.getTotalSize();
+  useRememberedMessageScroll(parentRef, {
+    storageKey: `dm:${dmChannelId}`,
+    itemCount: messages.length,
+    totalSize,
+  });
 
   return (
     <div
@@ -79,7 +76,7 @@ export function DmMessageList({ dmChannelId }: Props): JSX.Element {
           No messages yet. Say hello.
         </div>
       ) : null}
-      <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+      <div style={{ height: totalSize, position: 'relative' }}>
         {virtualizer.getVirtualItems().map((row) => {
           const message = messages[row.index];
           if (!message) return null;
