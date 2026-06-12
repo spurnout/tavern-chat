@@ -7,6 +7,8 @@ import {
   User as UserIcon,
   MessageCircle,
   Menu,
+  Mic,
+  MicOff,
   Monitor,
   Network,
   Plus,
@@ -18,12 +20,12 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.js';
-import { useAnyScreenSharing, useRealtime } from '../lib/store.js';
+import { useRealtime, useVoiceStatesForChannel } from '../lib/store.js';
 import { useNotificationSettings } from '../lib/notification-settings.js';
 import { startRealtime, stopRealtime } from '../lib/realtime.js';
 import { api } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
-import type { Channel, Server } from '@tavern/shared';
+import type { Channel, Member, Presence, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
 import { CreateServerModal } from '../components/CreateServerModal.js';
 import { CreateChannelModal } from '../components/CreateChannelModal.js';
@@ -35,12 +37,13 @@ import { ImageLightbox } from '../components/ImageLightbox.js';
 import { CommandPalette } from '../components/CommandPalette.js';
 import { WelcomeScreen } from '../components/onboarding/WelcomeScreen.js';
 import { onUi } from '../lib/ui-events.js';
+import { MemberProfileTrigger } from '../components/MemberProfileTrigger.js';
+import { PresenceDot } from '../components/PresenceDot.js';
 
 // Stable empty-array fallback; never mutated. Module-level so the same
 // reference survives every render and React.memo'd consumers see prop
 // equality. Cast away ReadonlyArray so consumers still get Channel[].
 const EMPTY_CHANNELS = [] as Channel[];
-
 const VoiceRoom = lazy(() =>
   import('../components/VoiceRoom.js').then((module) => ({ default: module.VoiceRoom })),
 );
@@ -382,6 +385,36 @@ function ChannelSidebar({
   onOpenSettings,
 }: ChannelSidebarProps): JSX.Element {
   const isAdmin = me?.isInstanceAdmin === true;
+  const [members, setMembers] = useState<Member[]>([]);
+  const setPresences = useRealtime((s) => s.setPresences);
+  const membersByUserId = useMemo(() => {
+    const byUser: Record<string, Member> = {};
+    for (const member of members) byUser[member.userId] = member;
+    return byUser;
+  }, [members]);
+
+  useEffect(() => {
+    if (!activeServerId) {
+      setMembers([]);
+      return;
+    }
+    let cancelled = false;
+    api<Member[]>(`/servers/${activeServerId}/members`)
+      .then((list) => {
+        if (cancelled) return;
+        setMembers(list);
+        const entries: Record<string, Presence> = {};
+        for (const item of list) entries[item.userId] = item.user.presence;
+        setPresences(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setMembers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeServerId, setPresences]);
+
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">
       <div className="flex items-center justify-between gap-2 border-b border-subtle p-3">
@@ -497,6 +530,7 @@ function ChannelSidebar({
                 channel={c}
                 icon={<Hash size={16} />}
                 active={c.id === activeChannelId}
+                membersByUserId={membersByUserId}
               />
             ))}
         </SidebarSection>
@@ -509,6 +543,7 @@ function ChannelSidebar({
                 channel={c}
                 icon={<Volume2 size={16} />}
                 active={c.id === activeChannelId}
+                membersByUserId={membersByUserId}
               />
             ))}
         </SidebarSection>
@@ -574,33 +609,60 @@ function SidebarChannelLink({
   channel,
   icon,
   active,
+  membersByUserId,
 }: {
   channel: Channel;
   icon: React.ReactNode;
   active: boolean;
+  membersByUserId: Record<string, Member>;
 }): JSX.Element {
   const className = cn(
     'touch-target flex items-center gap-2 rounded px-2 py-1.5 text-fg',
     active ? 'bg-raised' : 'hover:bg-raised',
   );
   const isVoice = channel.type === 'voice';
-  const someoneSharing = useAnyScreenSharing(isVoice ? channel.id : null);
+  const voiceStatesByUser = useVoiceStatesForChannel(isVoice ? channel.id : null);
+  const voiceParticipants = useMemo(
+    () =>
+      Object.values(voiceStatesByUser).sort(
+        (a, b) =>
+          (a.joinedAt ?? '').localeCompare(b.joinedAt ?? '') ||
+          a.userId.localeCompare(b.userId),
+      ),
+    [voiceStatesByUser],
+  );
+  const someoneSharing = voiceParticipants.some((state) => state.screenSharing);
   if (isVoice) {
     return (
-      <Link
-        to="/app/servers/$serverId/voice/$channelId"
-        params={{ serverId: channel.serverId, channelId: channel.id }}
-        className={className}
-      >
-        <span className="text-fg-muted">{icon}</span>
-        <span className="truncate flex-1">{channel.name}</span>
-        {someoneSharing ? (
-          <>
-            <Monitor size={12} className="text-ember shrink-0" aria-hidden />
-            <span className="sr-only">(screen share active)</span>
-          </>
+      <div>
+        <Link
+          to="/app/servers/$serverId/voice/$channelId"
+          params={{ serverId: channel.serverId, channelId: channel.id }}
+          className={className}
+        >
+          <span className="text-fg-muted">{icon}</span>
+          <span className="truncate flex-1">{channel.name}</span>
+          {someoneSharing ? (
+            <>
+              <Monitor size={12} className="text-ember shrink-0" aria-hidden />
+              <span className="sr-only">(screen share active)</span>
+            </>
+          ) : null}
+        </Link>
+        {voiceParticipants.length > 0 ? (
+          <div className="ml-6 mt-0.5 space-y-0.5">
+            {voiceParticipants.map((state) => (
+              <VoiceParticipantRow
+                key={state.userId}
+                state={state}
+                serverId={channel.serverId}
+                channelName={channel.name}
+                member={membersByUserId[state.userId] ?? null}
+              />
+            ))}
+          </div>
         ) : null}
-      </Link>
+      </div>
     );
   }
   return (
@@ -613,4 +675,71 @@ function SidebarChannelLink({
       <span className="truncate">{channel.name}</span>
     </Link>
   );
+}
+
+function VoiceParticipantRow({
+  state,
+  serverId,
+  channelName,
+  member,
+}: {
+  state: NonNullable<Channel['voiceStates']>[number];
+  serverId: string;
+  channelName: string;
+  member: Member | null;
+}): JSX.Element {
+  const displayName = member?.nickname ?? member?.user.displayName ?? 'Member';
+  const presence = useRealtime(
+    (s) => s.presenceByUserId[state.userId] ?? member?.user.presence ?? 'active',
+  );
+  const muted = state.selfMute || state.selfDeaf;
+  const row = (
+    <button
+      type="button"
+      aria-label={
+        member
+          ? `View profile of ${displayName}; in ${channelName}`
+          : `${displayName} is in ${channelName}`
+      }
+      className="touch-target group flex w-full items-center gap-2 rounded px-2 py-1 text-left text-fg-muted transition-base hover:bg-raised hover:text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-ember"
+      disabled={!member}
+    >
+      <span className="relative grid h-5 w-5 shrink-0 place-items-center rounded-full bg-raised font-serif text-[10px] font-semibold text-fg">
+        {initials(displayName)}
+        <PresenceDot
+          presence={presence}
+          size={1.5}
+          className="absolute -bottom-0.5 -right-0.5"
+        />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-serif text-xs">{displayName}</span>
+      {muted ? (
+        <MicOff size={12} className="shrink-0 text-rust" aria-label="Muted" />
+      ) : (
+        <Mic size={12} className="shrink-0 text-moss" aria-label="Mic on" />
+      )}
+      {state.screenSharing ? (
+        <Monitor size={12} className="shrink-0 text-ember" aria-label="Screen share active" />
+      ) : null}
+    </button>
+  );
+
+  if (!member) return row;
+  return (
+    <MemberProfileTrigger
+      userId={state.userId}
+      serverId={serverId}
+      member={member}
+      side="right"
+      align="start"
+    >
+      {row}
+    </MemberProfileTrigger>
+  );
+}
+
+function initials(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return '??';
+  return trimmed.slice(0, 2).toUpperCase();
 }

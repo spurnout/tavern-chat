@@ -83,6 +83,9 @@ export type LoadedRoles =
 
 const PROFILE_TTL_MS = 5 * 60 * 1000;
 const ROLES_TTL_MS = 5 * 60 * 1000;
+const EMPTY_VOICE_STATES_BY_USER = Object.freeze(
+  {},
+) as Record<string, VoiceStateGatewayPayload>;
 
 interface RealtimeState {
   serversById: Record<string, Server>;
@@ -269,6 +272,39 @@ function uniqById<T extends { id: string }>(arr: T[]): T[] {
   const seen = new Map<string, T>();
   for (const item of arr) seen.set(item.id, item);
   return Array.from(seen.values());
+}
+
+function voiceStatesEqual(
+  a: VoiceStateGatewayPayload,
+  b: VoiceStateGatewayPayload,
+): boolean {
+  return (
+    a.serverId === b.serverId &&
+    a.userId === b.userId &&
+    a.channelId === b.channelId &&
+    a.selfMute === b.selfMute &&
+    a.selfDeaf === b.selfDeaf &&
+    a.cameraOn === b.cameraOn &&
+    a.screenSharing === b.screenSharing &&
+    a.joinedAt === b.joinedAt &&
+    a.stagePosition === b.stagePosition &&
+    a.handRaisedAt === b.handRaisedAt
+  );
+}
+
+function voiceStateMapsEqual(
+  a: Record<string, VoiceStateGatewayPayload> | undefined,
+  b: Record<string, VoiceStateGatewayPayload>,
+): boolean {
+  const aKeys = a ? Object.keys(a) : [];
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of bKeys) {
+    const left = a?.[key];
+    const right = b[key];
+    if (!left || !right || !voiceStatesEqual(left, right)) return false;
+  }
+  return true;
 }
 
 export const useRealtime = create<RealtimeState>((set, get) => ({
@@ -475,12 +511,30 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     }),
 
   upsertChannels: (serverId, channels) =>
-    set((s) => ({
-      channelsByServer: {
-        ...s.channelsByServer,
-        [serverId]: [...channels].sort((a, b) => a.position - b.position),
-      },
-    })),
+    set((s) => {
+      let voiceStatesByChannel = s.voiceStatesByChannel;
+      for (const channel of channels) {
+        if (channel.voiceStates === undefined) continue;
+        const nextByUser: Record<string, VoiceStateGatewayPayload> = {};
+        for (const state of channel.voiceStates) {
+          if (state.channelId === channel.id) nextByUser[state.userId] = state;
+        }
+        if (voiceStateMapsEqual(voiceStatesByChannel[channel.id], nextByUser)) {
+          continue;
+        }
+        if (voiceStatesByChannel === s.voiceStatesByChannel) {
+          voiceStatesByChannel = { ...s.voiceStatesByChannel };
+        }
+        voiceStatesByChannel[channel.id] = nextByUser;
+      }
+      return {
+        channelsByServer: {
+          ...s.channelsByServer,
+          [serverId]: [...channels].sort((a, b) => a.position - b.position),
+        },
+        voiceStatesByChannel,
+      };
+    }),
 
   upsertChannel: (channel) =>
     set((s) => {
@@ -796,6 +850,15 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       };
     }),
 }));
+
+export function useVoiceStatesForChannel(
+  channelId: string | null | undefined,
+): Record<string, VoiceStateGatewayPayload> {
+  return useRealtime((s) => {
+    if (!channelId) return EMPTY_VOICE_STATES_BY_USER;
+    return s.voiceStatesByChannel[channelId] ?? EMPTY_VOICE_STATES_BY_USER;
+  });
+}
 
 /**
  * Whether the calling user holds `flag` on `serverId`. Returns false while

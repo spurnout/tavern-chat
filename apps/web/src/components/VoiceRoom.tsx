@@ -9,21 +9,13 @@ import {
   type TrackPublication,
 } from 'livekit-client';
 import { Volume2 } from 'lucide-react';
-import { Permission, type VoiceStateGatewayPayload } from '@tavern/shared';
+import { Permission } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
 import { playSound } from '../lib/sound.js';
 import { toast } from '../lib/toast.js';
 import { useAuth } from '../lib/auth.js';
 import { usePreferences } from '../lib/preferences-store.js';
-import { useCanIn, useRealtime } from '../lib/store.js';
-
-// Stable fallback for the "no voice states for this channel yet" path.
-// Returning a fresh `{}` from the zustand selector re-fires
-// useSyncExternalStore every render — same trap as the channelsByServer fix
-// in server-home.tsx.
-const EMPTY_VOICE_STATES: Record<string, VoiceStateGatewayPayload> = Object.freeze(
-  {},
-) as Record<string, VoiceStateGatewayPayload>;
+import { useCanIn, useRealtime, useVoiceStatesForChannel } from '../lib/store.js';
 import {
   onBreakoutClose,
   onBreakoutOpen,
@@ -128,13 +120,7 @@ export function VoiceRoom({
     }
     return null;
   });
-  // Subscribe to the dict; derive via useMemo so the empty-case fallback
-  // (no voice activity for this channel yet) stays a stable reference.
-  const voiceStatesByChannel = useRealtime((s) => s.voiceStatesByChannel);
-  const voiceStatesByUser = useMemo(
-    () => voiceStatesByChannel[channelId] ?? EMPTY_VOICE_STATES,
-    [voiceStatesByChannel, channelId],
-  );
+  const voiceStatesByUser = useVoiceStatesForChannel(channelId);
   const isStage = channel?.type === 'stage';
   const myVoiceState = me ? voiceStatesByUser[me.id] : undefined;
   const myStagePosition = myVoiceState?.stagePosition ?? null;

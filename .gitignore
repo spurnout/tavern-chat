@@ -12,6 +12,7 @@ build/
 .next/
 .turbo/
 .cache/
+.expo/
 *.tsbuildinfo
 
 # Test

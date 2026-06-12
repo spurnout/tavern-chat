@@ -1320,6 +1320,74 @@ describe.skipIf(!dockerOk)('server routes (apps/api/src/routes/servers.ts)', () 
       }
     });
 
+    it('includes active voice states on visible voice rooms', async () => {
+      const ownerId = await makeUser('owner');
+      const memberId = await makeUser('member');
+      const { serverId } = await makeServer(ownerId);
+      await addMember(serverId, memberId);
+      const voiceChannelId = ulid();
+      const joinedAt = new Date('2026-06-11T12:00:00.000Z');
+      await prisma.channel.create({
+        data: {
+          id: voiceChannelId,
+          serverId,
+          type: 'voice',
+          name: 'Voice Hall',
+          position: 1,
+          videoEnabled: true,
+        },
+      });
+      await prisma.voiceState.create({
+        data: {
+          serverId,
+          userId: memberId,
+          channelId: voiceChannelId,
+          selfMute: true,
+          selfDeaf: false,
+          cameraOn: false,
+          screenSharing: true,
+          joinedAt,
+        },
+      });
+
+      const app = await buildTestApp();
+      try {
+        const token = await mintToken(ownerId);
+        const res = await app.inject({
+          method: 'GET',
+          url: `/api/servers/${serverId}/channels`,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as OkBody<
+          Array<{
+            id: string;
+            type: string;
+            voiceStates?: Array<{
+              userId: string;
+              channelId: string | null;
+              selfMute: boolean;
+              screenSharing: boolean;
+              joinedAt: string | null;
+            }>;
+          }>
+        >;
+        const voice = body.data.find((c) => c.id === voiceChannelId);
+        expect(voice?.type).toBe('voice');
+        expect(voice?.voiceStates).toEqual([
+          expect.objectContaining({
+            userId: memberId,
+            channelId: voiceChannelId,
+            selfMute: true,
+            screenSharing: true,
+            joinedAt: joinedAt.toISOString(),
+          }),
+        ]);
+      } finally {
+        await app.close();
+      }
+    });
+
     it('returns 404 for a non-member', async () => {
       const ownerId = await makeUser('owner');
       const outsiderId = await makeUser('outsider');

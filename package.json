@@ -18,6 +18,8 @@
     "dev:api": "pnpm --filter @tavern/api dev",
     "predev:web": "pnpm ensure-env",
     "dev:web": "pnpm --filter @tavern/web dev",
+    "dev:mobile": "pnpm --filter @tavern/mobile start",
+    "mobile:android": "pnpm --filter @tavern/mobile android",
     "predev:worker": "pnpm ensure-env",
     "dev:worker": "pnpm --filter @tavern/worker dev",
     "test": "pnpm -r test",

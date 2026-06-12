@@ -13,6 +13,7 @@ import { NAME_LIMITS } from '../src/constants.js';
 
 const ULID = '01HZX7Q4Y3K9V0G8WMC2P5N6BR';
 const ULID2 = '01HZX7Q4Y3K9V0G8WMC2P5N6BS';
+const ULID3 = '01HZX7Q4Y3K9V0G8WMC2P5N6BT';
 
 describe('channelTypeSchema', () => {
   it.each([
@@ -76,6 +77,29 @@ describe('channelSchema', () => {
       campaignId: ULID2,
       gameNightId: ULID2,
       topic: 'a topic',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts active voice states on room-list payloads', () => {
+    const result = channelSchema.safeParse({
+      ...baseChannel,
+      type: 'voice',
+      videoEnabled: true,
+      voiceStates: [
+        {
+          serverId: ULID,
+          userId: ULID3,
+          channelId: ULID,
+          selfMute: false,
+          selfDeaf: false,
+          cameraOn: false,
+          screenSharing: true,
+          joinedAt: '2026-06-11T12:00:00.000Z',
+          stagePosition: null,
+          handRaisedAt: null,
+        },
+      ],
     });
     expect(result.success).toBe(true);
   });

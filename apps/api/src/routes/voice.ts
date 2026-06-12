@@ -7,44 +7,13 @@ import {
   TavernError,
   voiceJoinRequestSchema,
   voiceStateUpdateRequestSchema,
-  voiceStateGatewayPayloadSchema,
-  type VoiceStateGatewayPayload,
 } from '@tavern/shared';
 import { ok } from '../lib/responses.js';
+import { serializeVoiceStateGatewayPayload as voiceStatePayload } from '../lib/serializers.js';
 import { requireChannelPermission } from '../services/permissions-service.js';
 import { signLiveKitToken } from '../services/livekit-token.js';
 import { gatewayBroker } from '../services/gateway-broker.js';
 import type { Config } from '../config.js';
-
-/**
- * Build the gateway-broker payload from a {@link import('@tavern/db').VoiceState} row.
- * The schema runs as a self-check so route bugs surface before fan-out.
- */
-function voiceStatePayload(row: {
-  serverId: string;
-  userId: string;
-  channelId: string | null;
-  selfMute: boolean;
-  selfDeaf: boolean;
-  cameraOn: boolean;
-  screenSharing: boolean;
-  joinedAt: Date | null;
-  stagePosition?: 'audience' | 'speaker' | null;
-  handRaisedAt?: Date | null;
-}): VoiceStateGatewayPayload {
-  return voiceStateGatewayPayloadSchema.parse({
-    serverId: row.serverId,
-    userId: row.userId,
-    channelId: row.channelId,
-    selfMute: row.selfMute,
-    selfDeaf: row.selfDeaf,
-    cameraOn: row.cameraOn,
-    screenSharing: row.screenSharing,
-    joinedAt: row.joinedAt?.toISOString() ?? null,
-    stagePosition: row.stagePosition ?? null,
-    handRaisedAt: row.handRaisedAt?.toISOString() ?? null,
-  });
-}
 
 export async function registerVoiceRoutes(app: FastifyInstance, cfg: Config): Promise<void> {
   app.post('/api/voice/join', {

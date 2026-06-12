@@ -21,6 +21,8 @@ import {
   type Server as ServerDto,
   type SocialLink,
   type UserProfile,
+  type VoiceStateGatewayPayload,
+  voiceStateGatewayPayloadSchema,
 } from '@tavern/shared';
 
 export function toIso(d: Date | null | undefined): string | null {
@@ -125,6 +127,40 @@ export function serializeChannel(row: ChannelRow): ChannelDto {
     federationMode: row.federationMode,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+interface VoiceStateRow {
+  serverId: string;
+  userId: string;
+  channelId: string | null;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  cameraOn: boolean;
+  screenSharing: boolean;
+  joinedAt: Date | null;
+  stagePosition?: 'audience' | 'speaker' | null;
+  handRaisedAt?: Date | null;
+}
+
+/**
+ * Build the gateway/client voice-state payload from a VoiceState row.
+ * The schema runs as a self-check so route bugs surface before fan-out.
+ */
+export function serializeVoiceStateGatewayPayload(
+  row: VoiceStateRow,
+): VoiceStateGatewayPayload {
+  return voiceStateGatewayPayloadSchema.parse({
+    serverId: row.serverId,
+    userId: row.userId,
+    channelId: row.channelId,
+    selfMute: row.selfMute,
+    selfDeaf: row.selfDeaf,
+    cameraOn: row.cameraOn,
+    screenSharing: row.screenSharing,
+    joinedAt: row.joinedAt?.toISOString() ?? null,
+    stagePosition: row.stagePosition ?? null,
+    handRaisedAt: row.handRaisedAt?.toISOString() ?? null,
+  });
 }
 
 interface RoleRow {

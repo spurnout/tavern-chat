@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { idSchema } from './ids.js';
 import { NAME_LIMITS } from '../constants.js';
+import { voiceStateGatewayPayloadSchema } from './voice.js';
 
 export const channelTypeSchema = z.enum([
   'category',
@@ -36,6 +37,11 @@ export const channelSchema = z.object({
    * forward-compat: stale server payloads or replay queues from before the
    * field was added still parse cleanly. */
   federationMode: federationModeSchema.default('inherit'),
+  /**
+   * Active voice occupants for room-list hydration. Live changes still arrive
+   * via VOICE_STATE_UPDATE; this is the initial visible snapshot.
+   */
+  voiceStates: z.array(voiceStateGatewayPayloadSchema).optional(),
   createdAt: z.string().datetime(),
 });
 

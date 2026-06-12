@@ -14,6 +14,7 @@ import { useRealtime } from './store.js';
 import { useInbox, type InboxItem } from './inbox-store.js';
 import { useBlocks } from './blocks-store.js';
 import { GatewayClient } from './gateway-client.js';
+import { api } from './api-client.js';
 import { resolveTerminal } from './attachment-ready.js';
 import { maybePlayMessageSound } from './message-sound.js';
 import { startPresenceTracking } from './presence.js';
@@ -460,9 +461,7 @@ async function playSoundboardClip(
   loop: boolean,
 ): Promise<void> {
   try {
-    const att = await (await import('./api-client.js')).api<{ url: string | null }>(
-      `/attachments/${attachmentId}`,
-    );
+    const att = await api<{ url: string | null }>(`/attachments/${attachmentId}`);
     if (!att.url) return;
     // If this clipId is already looping locally, stop the old one before
     // starting again — keeps "play" idempotent and means a re-cue doesn't

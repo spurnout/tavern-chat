@@ -19,6 +19,7 @@ import {
   serializeMember,
   serializeRole,
   serializeServer,
+  serializeVoiceStateGatewayPayload,
 } from '../lib/serializers.js';
 import {
   filterVisibleChannels,
@@ -30,6 +31,8 @@ import { gatewayBroker } from '../services/gateway-broker.js';
 import { fanOutServerUpdate } from '../services/federation-outbox.js';
 import type { QueueClient } from '../services/queues.js';
 import type { StorageBackend } from '@tavern/media';
+
+const VOICE_ROOM_TYPES = new Set(['voice', 'session', 'campaign', 'stage']);
 
 interface ServerRouteDeps {
   /**
@@ -443,6 +446,40 @@ export async function registerServerRoutes(
       orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
     });
     const visible = await filterVisibleChannels(all, ctx.userId);
-    reply.send(ok(visible.map((c) => serializeChannel(c))));
+    const visibleVoiceIds = visible
+      .filter((c) => VOICE_ROOM_TYPES.has(c.type))
+      .map((c) => c.id);
+    const voiceStates =
+      visibleVoiceIds.length === 0
+        ? []
+        : await prisma.voiceState.findMany({
+            where: {
+              channelId: { in: visibleVoiceIds },
+              joinedAt: { not: null },
+            },
+            orderBy: [{ joinedAt: 'asc' }, { userId: 'asc' }],
+          });
+    const voiceStatesByChannel = new Map<string, typeof voiceStates>();
+    for (const state of voiceStates) {
+      if (!state.channelId) continue;
+      const list = voiceStatesByChannel.get(state.channelId) ?? [];
+      list.push(state);
+      voiceStatesByChannel.set(state.channelId, list);
+    }
+
+    reply.send(
+      ok(
+        visible.map((c) => {
+          const channel = serializeChannel(c);
+          if (!VOICE_ROOM_TYPES.has(c.type)) return channel;
+          return {
+            ...channel,
+            voiceStates: (voiceStatesByChannel.get(c.id) ?? []).map(
+              serializeVoiceStateGatewayPayload,
+            ),
+          };
+        }),
+      ),
+    );
   });
 }
