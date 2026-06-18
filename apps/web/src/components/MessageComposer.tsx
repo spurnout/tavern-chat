@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from 'react';
 import { Dice5, Mic, Paperclip, Send, Smile, Square, X } from 'lucide-react';
 import {
   ALLOWED_AUDIO_MIMES,
@@ -14,6 +21,7 @@ import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile, type UploadProgress, type UploadStrategyInfo } from '../lib/uploads.js';
+import { filesFromClipboard } from '../lib/clipboard-files.js';
 import { SlashAutocomplete } from './SlashAutocomplete.js';
 import { MentionAutocomplete } from './MentionAutocomplete.js';
 import { EmojiPicker } from './EmojiPicker.js';
@@ -248,6 +256,19 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   async function onFileChange(e: ChangeEvent<HTMLInputElement>): Promise<void> {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
+    await ingestFiles(files);
+  }
+
+  // Pasting an image (screenshot, copied picture) or file drops it straight
+  // into the composer as a pending attachment, the same as the file picker.
+  function onPaste(e: ClipboardEvent<HTMLTextAreaElement>): void {
+    const files = filesFromClipboard(e.clipboardData);
+    if (files.length === 0) return; // plain-text paste — let the textarea handle it
+    e.preventDefault();
+    void ingestFiles(files);
+  }
+
+  async function ingestFiles(files: File[]): Promise<void> {
     for (const file of files) {
       // FE-24: validate size and MIME type client-side before burning an
       // upload slot. The server is still authoritative — these mirror the
@@ -549,6 +570,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           onKeyUp={(e) => setCursorOffset(e.currentTarget.selectionStart)}
           onClick={(e) => setCursorOffset(e.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice. @everyone to call the table."
           rows={1}
         />

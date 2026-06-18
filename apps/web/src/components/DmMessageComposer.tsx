@@ -1,4 +1,10 @@
-import { useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import {
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from 'react';
 import { Dice5, Paperclip, Send, X } from 'lucide-react';
 import {
   ALLOWED_AUDIO_MIMES,
@@ -11,6 +17,7 @@ import {
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
+import { filesFromClipboard } from '../lib/clipboard-files.js';
 
 interface Props {
   dmChannelId: string;
@@ -82,6 +89,19 @@ export function DmMessageComposer({ dmChannelId }: Props): JSX.Element {
   async function onFileChange(e: ChangeEvent<HTMLInputElement>): Promise<void> {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
+    await ingestFiles(files);
+  }
+
+  // Pasting an image (screenshot, copied picture) or file drops it straight
+  // into the composer as a pending attachment, the same as the file picker.
+  function onPaste(e: ClipboardEvent<HTMLTextAreaElement>): void {
+    const files = filesFromClipboard(e.clipboardData);
+    if (files.length === 0) return; // plain-text paste — let the textarea handle it
+    e.preventDefault();
+    void ingestFiles(files);
+  }
+
+  async function ingestFiles(files: File[]): Promise<void> {
     for (const file of files) {
       const sizeLimit = pickSizeLimitFor(file.type);
       if (file.size > sizeLimit) {
@@ -176,6 +196,7 @@ export function DmMessageComposer({ dmChannelId }: Props): JSX.Element {
           value={content}
           onChange={(e) => setContent(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           rows={1}
           className="min-h-[40px] max-h-40 flex-1 resize-none rounded border border-subtle bg-canvas px-3 py-2 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-ember"
           placeholder={`Message (${DICE_PREFIX}1d20 to roll)`}
