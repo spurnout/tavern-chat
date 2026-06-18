@@ -16,6 +16,7 @@ import {
   Settings,
   Shield,
   Swords,
+  Video,
   Volume2,
   X,
 } from 'lucide-react';
@@ -39,6 +40,7 @@ import { WelcomeScreen } from '../components/onboarding/WelcomeScreen.js';
 import { onUi } from '../lib/ui-events.js';
 import { MemberProfileTrigger } from '../components/MemberProfileTrigger.js';
 import { PresenceDot } from '../components/PresenceDot.js';
+import { VoiceSideChat } from '../components/VoiceSideChat.js';
 
 // Stable empty-array fallback; never mutated. Module-level so the same
 // reference survives every render and React.memo'd consumers see prop
@@ -261,24 +263,38 @@ export function AppShell(): JSX.Element {
             but never unmounts <VoiceRoom>, so the LiveKit Room and the
             user's camera/mic state survive across channel changes. */}
         {currentVoice ? (
-          <div className={isOnVoiceRoute ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'shrink-0'}>
-            <Suspense
-              fallback={
-                <div className="border-t border-subtle bg-sunken px-4 py-3 text-sm text-fg-muted">
-                  Opening voice room...
-                </div>
-              }
-            >
-              <VoiceRoom
-                key={currentVoice.channelId}
+          <div
+            className={cn(
+              isOnVoiceRoute
+                ? 'flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row'
+                : 'shrink-0',
+            )}
+          >
+            <div className={isOnVoiceRoute ? 'min-h-0 min-w-0 flex-1' : 'min-w-0'}>
+              <Suspense
+                fallback={
+                  <div className="border-t border-subtle bg-sunken px-4 py-3 text-sm text-fg-muted">
+                    Opening voice room...
+                  </div>
+                }
+              >
+                <VoiceRoom
+                  key={currentVoice.channelId}
+                  channelId={currentVoice.channelId}
+                  channelName={currentVoice.channelName}
+                  serverId={currentVoice.serverId}
+                  minimized={!isOnVoiceRoute}
+                  onLeave={handleVoiceLeave}
+                  onExpand={handleVoiceExpand}
+                />
+              </Suspense>
+            </div>
+            {isOnVoiceRoute ? (
+              <VoiceSideChat
                 channelId={currentVoice.channelId}
                 channelName={currentVoice.channelName}
-                serverId={currentVoice.serverId}
-                minimized={!isOnVoiceRoute}
-                onLeave={handleVoiceLeave}
-                onExpand={handleVoiceExpand}
               />
-            </Suspense>
+            ) : null}
           </div>
         ) : null}
       </main>
@@ -632,6 +648,7 @@ function SidebarChannelLink({
     [voiceStatesByUser],
   );
   const someoneSharing = voiceParticipants.some((state) => state.screenSharing);
+  const someoneOnVideo = voiceParticipants.some((state) => state.cameraOn);
   if (isVoice) {
     return (
       <div>
@@ -646,6 +663,12 @@ function SidebarChannelLink({
             <>
               <Monitor size={12} className="text-ember shrink-0" aria-hidden />
               <span className="sr-only">(screen share active)</span>
+            </>
+          ) : null}
+          {someoneOnVideo ? (
+            <>
+              <Video size={12} className="text-mead shrink-0" aria-hidden />
+              <span className="sr-only">(camera active)</span>
             </>
           ) : null}
         </Link>
@@ -718,6 +741,9 @@ function VoiceParticipantRow({
       ) : (
         <Mic size={12} className="shrink-0 text-moss" aria-label="Mic on" />
       )}
+      {state.cameraOn ? (
+        <Video size={12} className="shrink-0 text-mead" aria-label="Camera on" />
+      ) : null}
       {state.screenSharing ? (
         <Monitor size={12} className="shrink-0 text-ember" aria-label="Screen share active" />
       ) : null}

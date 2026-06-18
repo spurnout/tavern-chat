@@ -96,6 +96,15 @@ test.describe('Tavern golden path', () => {
     await page.getByRole('link', { name: /Voice Hall/i }).click();
     await expect(page).toHaveURL(/\/voice\//);
     await expect(page.getByText('Voice Hall').first()).toBeVisible();
+    await expect(
+      page.getByRole('complementary', { name: /Voice Hall room chat/i }),
+    ).toBeVisible();
+
+    const composer = page.getByPlaceholder(/^Message/);
+    const text = `voice side chat ${Date.now()}`;
+    await composer.fill(text);
+    await composer.press('Enter');
+    await expect(page.getByText(text)).toBeVisible();
   });
 });
 
@@ -105,7 +114,7 @@ async function signIn(page: import('@playwright/test').Page): Promise<void> {
 
   await page.getByLabel('Username or email').fill('admin');
   await page.getByLabel('Password').fill('change-me-in-dev');
-  await page.getByRole('button', { name: /sign in/i }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
   await expect(page).toHaveURL(/\/app/);
   await page.getByRole('link', { name: /lobby/i }).click();

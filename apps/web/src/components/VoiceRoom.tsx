@@ -346,8 +346,22 @@ export function VoiceRoom({
         });
         r.on(RoomEvent.TrackSubscribed, () => syncParticipants(r));
         r.on(RoomEvent.TrackUnsubscribed, () => syncParticipants(r));
-        r.on(RoomEvent.TrackMuted, () => syncParticipants(r));
-        r.on(RoomEvent.TrackUnmuted, () => syncParticipants(r));
+        r.on(RoomEvent.TrackMuted, (pub, participant) => {
+          if (!mounted) return;
+          if (participant === r.localParticipant && pub.source === Track.Source.Camera) {
+            setCameraOn(false);
+            reportVoiceState({ cameraOn: false });
+          }
+          syncParticipants(r);
+        });
+        r.on(RoomEvent.TrackUnmuted, (pub, participant) => {
+          if (!mounted) return;
+          if (participant === r.localParticipant && pub.source === Track.Source.Camera) {
+            setCameraOn(true);
+            reportVoiceState({ cameraOn: true });
+          }
+          syncParticipants(r);
+        });
         r.on(RoomEvent.ActiveSpeakersChanged, () => syncParticipants(r));
         r.on(RoomEvent.LocalTrackPublished, (pub) => {
           // `room.disconnect()` during cleanup fires these handlers after the
@@ -585,7 +599,12 @@ export function VoiceRoom({
   async function toggleCamera(): Promise<void> {
     if (!room || !allowed?.canPublishVideo) return;
     try {
-      await room.localParticipant.setCameraEnabled(!cameraOn);
+      const next = !cameraOn;
+      await room.localParticipant.setCameraEnabled(next);
+      const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      const enabled = !!pub && !pub.isMuted && !!pub.track;
+      setCameraOn(enabled);
+      reportVoiceState({ cameraOn: enabled });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't toggle the camera.");
     }

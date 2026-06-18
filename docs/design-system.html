@@ -181,6 +181,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <a href="#cmp-report">ReportDialog</a>
   <a href="#cmp-notifs">NotificationInbox</a>
   <a href="#cmp-voice">VoiceRoom</a>
+  <a href="#cmp-voiceside">VoiceSideChat</a>
   <a href="#cmp-aux">Aux components</a>
   <h5>Surfaces</h5>
   <a href="#cmp-auth">Onboarding &amp; auth</a>
@@ -727,13 +728,14 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
       <h3>AppShell</h3>
       <span class="path">routes/app-shell.tsx</span>
     </div>
-    <p class="role">The root product layout. Hosts the server rail, channel sidebar, message outlet, and member sidebar. Owns the responsive drawer mechanics for mobile and tablet.</p>
+    <p class="role">The root product layout. Hosts the server rail, channel sidebar, message outlet, persistent voice room, voice side chat, and member sidebar. Owns the responsive drawer mechanics for mobile and tablet.</p>
 
     <h4>Anatomy</h4>
     <ul>
       <li><b>Server rail</b> — 72px fixed left column. Renders <code>ServerRail</code>.</li>
       <li><b>Channel sidebar</b> — 240px column right of the rail. Renders <code>ChannelSidebar</code>.</li>
-      <li><b>Outlet</b> — flex-fills with the active route (message list, settings, etc.).</li>
+      <li><b>Outlet</b> — flex-fills with the active route (message list, settings, etc.). Hidden while the expanded voice split is active.</li>
+      <li><b>Voice split</b> — when a voice room is expanded, <code>VoiceRoom</code> stays on the left and <code>VoiceSideChat</code> renders that room's own message stack on the right; on small screens the chat sits below the call.</li>
       <li><b>Member sidebar</b> — 240px right column. Renders <code>MemberSidebar</code>. Hideable.</li>
     </ul>
 
@@ -1149,7 +1151,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
       <h3>VoiceRoom</h3>
       <span class="path">components/VoiceRoom.tsx</span>
     </div>
-    <p class="role">The voice / video room surface. Connects to LiveKit, renders a tile grid of participants, and exposes the four call controls. Used by the <a href="#voice-page">voice route</a>; never embedded inline.</p>
+    <p class="role">The voice / video room surface. Connects to LiveKit, renders a tile grid of participants, and exposes the four call controls. Used by the <a href="#voice-page">voice route</a> inside the shell-owned voice split.</p>
 
     <h4>Connection lifecycle</h4>
     <table class="tbl">
@@ -1181,6 +1183,35 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
     <div class="dd">
       <div class="do"><b>do</b><p>Treat the moss "active speaker" outline as the only legal use of moss in this surface. Mic-muted is the only legal rust use. The grammar reads at a glance.</p></div>
       <div class="dont"><b>don't</b><p>Add hover overlays on tiles that animate on every track event — the room churns these constantly.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- VOICE SIDE CHAT -->
+<section id="cmp-voiceside">
+  <div class="cmp">
+    <div class="head">
+      <h3>VoiceSideChat</h3>
+      <span class="path">components/VoiceSideChat.tsx</span>
+    </div>
+    <p class="role">The text chat paired with <a href="#cmp-voice">VoiceRoom</a> in the shell's voice split. Gives every voice room its own message stack, so the table can drop links, rolls, and notes without leaving the call.</p>
+
+    <h4>Anatomy</h4>
+    <ul>
+      <li><b>Shell</b> — an <code>aside</code> (role <code>complementary</code>) labelled "{channel} room chat" on <code>bg-canvas</code>, so assistive tech and tests can find it.</li>
+      <li><b>Header</b> — <code>MessageCircle</code> glyph, serif "Room chat" over the muted channel name, and the room's <code>PinsPopover</code> on the right. Sits on <code>bg-sunken</code> with a <code>border-subtle</code> base.</li>
+      <li><b>Body</b> — reuses <a href="#cmp-message">MessageList</a>, <a href="#cmp-typing">TypingIndicator</a>, and <a href="#cmp-composer">MessageComposer</a> bound to the voice room's own channel ID. No bespoke message chrome — it is the same stack as a text channel.</li>
+    </ul>
+
+    <h4>Layout</h4>
+    <ul>
+      <li><b>Wide (≥ xl)</b> — a 400px right column with a <code>border-l</code>, filling the call's height beside the tile grid.</li>
+      <li><b>Narrow</b> — drops below the call as a <code>42vh</code> pane (min <code>18rem</code>) with a <code>border-t</code>. The shell owns the flex direction; the chat just fills its slot.</li>
+    </ul>
+
+    <div class="dd">
+      <div class="do"><b>do</b><p>Keep this a thin composition of the existing message stack — bind MessageList / TypingIndicator / MessageComposer to the voice channel ID and let them own every message rule.</p></div>
+      <div class="dont"><b>don't</b><p>Fork a voice-only composer or message style. The side chat is a text channel that happens to live next to a call; divergence is a bug, not a feature.</p></div>
     </div>
   </div>
 </section>
@@ -1259,7 +1290,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <p class="muted">Hosts the <a href="#cmp-message">MessageList</a>, <a href="#cmp-typing">TypingIndicator</a>, and <a href="#cmp-composer">MessageComposer</a> in the centre column. All visual rules for messages live in the message component sections.</p>
 
   <h3 id="voice-page">voice-page <span class="id">routes/voice-page.tsx</span></h3>
-  <p class="muted">Thin wrapper that mounts <a href="#cmp-voice">VoiceRoom</a> with the channel ID and name. Owns the <code>onLeave</code> callback that navigates back to the server's first text channel. No additional chrome — VoiceRoom fills the column.</p>
+  <p class="muted">Thin wrapper that publishes the selected voice room into shell state. The shell keeps <a href="#cmp-voice">VoiceRoom</a> mounted and pairs it with <a href="#cmp-voiceside">VoiceSideChat</a>, which reuses <code>MessageList</code>, <code>TypingIndicator</code>, and <code>MessageComposer</code> against the same voice room ID. Every voice room therefore has its own chat by default.</p>
 
   <h3 id="search-page">search-page <span class="id">routes/search-page.tsx</span></h3>
   <p class="muted">Server-scoped full-text message search.</p>

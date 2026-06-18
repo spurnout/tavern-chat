@@ -9,7 +9,7 @@ This Markdown file exists so the design system is grep-discoverable from the doc
 - **For Claude Code** — read order, workflow, what the system does and does not cover.
 - **Principles** — four ideas that shape every decision.
 - **Foundations** — Colour (surface ramp + foregrounds + accents + tints), Type, Layout & spacing, Motion, Sound, Voice & copy, Accessibility (contrast pairings, focus rules, keyboard map, ARIA, color-blind safety).
-- **Components** — AppShell, ServerRail, ChannelSidebar, MemberSidebar, MessageList & Message, MessageComposer, ReactionBar, TypingIndicator, Modal & form atoms, the Create… modals, ReportDialog, NotificationInbox, VoiceRoom, AttachmentView, AuthGate, TavernLogo.
+- **Components** — AppShell, ServerRail, ChannelSidebar, MemberSidebar, MessageList & Message, MessageComposer, ReactionBar, TypingIndicator, Modal & form atoms, the Create… modals, ReportDialog, NotificationInbox, VoiceRoom, VoiceSideChat, AttachmentView, AuthGate, TavernLogo.
 - **Surfaces** — Onboarding & auth (register / login / bootstrap) and the product routes (app-home, server-home, channel-page, voice-page, search-page, campaigns-page, games-page, moderation-page, server-settings-page).
 - **Open follow-ups** — backend, integration, and product items the visual layer is ready for.
 
