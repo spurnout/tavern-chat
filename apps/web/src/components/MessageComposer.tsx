@@ -6,7 +6,8 @@ import {
   type ClipboardEvent,
   type KeyboardEvent,
 } from 'react';
-import { Dice5, Mic, Paperclip, Send, Smile, Square, X } from 'lucide-react';
+import { Dice5, Mic, Paperclip, Plus, Send, Smile, Square, X } from 'lucide-react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   ALLOWED_AUDIO_MIMES,
   ALLOWED_IMAGE_MIMES,
@@ -27,6 +28,10 @@ import { MentionAutocomplete } from './MentionAutocomplete.js';
 import { EmojiPicker } from './EmojiPicker.js';
 import { CreatePollModal } from './CreatePollModal.js';
 import { RemindModal } from './RemindModal.js';
+
+// Shared className for the composer's "+" overflow-menu items (3.3).
+const COMPOSER_MENU_ITEM =
+  'flex cursor-pointer items-center gap-2 rounded px-2 py-2 outline-none data-[highlighted]:bg-raised';
 
 interface Props {
   channelId: string;
@@ -407,7 +412,10 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   }
 
   return (
-    <div className="border-t border-subtle bg-sunken p-3">
+    <div className="border-t border-subtle bg-sunken px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+      {/* Centre the composer's content on the same 880px column the message
+          list uses; the border/background still span full width. */}
+      <div className="mx-auto w-full max-w-[880px]">
       <SlashAutocomplete
         channelId={channelId}
         text={content}
@@ -495,7 +503,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           </div>
         </div>
       ) : null}
-      <div className="flex items-end gap-2">
+      <div className="composer-cq flex items-end gap-2">
         <input
           type="file"
           multiple
@@ -503,48 +511,113 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           className="hidden"
           onChange={(e) => void onFileChange(e)}
         />
-        <button
-          type="button"
-          className="btn-ghost shrink-0"
-          title="Attach files"
-          onClick={() => fileRef.current?.click()}
-          disabled={busy}
-        >
-          <Paperclip size={18} />
-        </button>
-        <button
-          type="button"
-          className="btn-ghost shrink-0"
-          title="Roll dice (try /roll 1d20+5)"
-          onClick={() =>
-            setContent((c) => {
-              const next = c ? c : '/roll 1d20';
-              setComposerDraft(channelId, next);
-              return next;
-            })
-          }
-          disabled={busy}
-        >
-          <Dice5 size={18} />
-        </button>
-        <button
-          type="button"
-          className={recording ? 'btn-primary shrink-0' : 'btn-ghost shrink-0'}
-          title={recording ? 'Stop recording' : 'Record voice message'}
-          onClick={() => (recording ? stopRecording() : void startRecording())}
-          disabled={busy}
-        >
-          {recording ? <Square size={18} /> : <Mic size={18} />}
-        </button>
+        {/* Narrow-container overflow: collapse the secondary affordances into a
+            single "+" menu so the textarea keeps a usable width. */}
+        <div className="composer-actions-overflow shrink-0">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                className="btn-ghost shrink-0 touch-target-sq"
+                aria-label="More actions"
+                disabled={busy}
+              >
+                <Plus size={18} aria-hidden />
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content
+                side="top"
+                align="start"
+                sideOffset={6}
+                className="z-40 min-w-[11rem] rounded-md border border-subtle bg-surface p-1 text-sm text-fg shadow-lg"
+              >
+                <DropdownMenu.Item
+                  className={COMPOSER_MENU_ITEM}
+                  onSelect={() => fileRef.current?.click()}
+                >
+                  <Paperclip size={14} aria-hidden /> Attach files
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  className={COMPOSER_MENU_ITEM}
+                  onSelect={() =>
+                    setContent((c) => {
+                      const next = c ? c : '/roll 1d20';
+                      setComposerDraft(channelId, next);
+                      return next;
+                    })
+                  }
+                >
+                  <Dice5 size={14} aria-hidden /> Roll dice
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  className={COMPOSER_MENU_ITEM}
+                  onSelect={() => (recording ? stopRecording() : void startRecording())}
+                >
+                  <Mic size={14} aria-hidden /> {recording ? 'Stop recording' : 'Record voice'}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item className={COMPOSER_MENU_ITEM} onSelect={() => setEmojiOpen(true)}>
+                  <Smile size={14} aria-hidden /> Emoji
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
+        {/* Inline affordances — shown when the composer is wide enough. */}
+        <div className="composer-actions-inline items-end gap-2">
+          <button
+            type="button"
+            className="btn-ghost shrink-0 touch-target-sq"
+            aria-label="Attach files"
+            title="Attach files"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+          >
+            <Paperclip size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="btn-ghost shrink-0 touch-target-sq"
+            aria-label="Roll dice"
+            title="Roll dice (try /roll 1d20+5)"
+            onClick={() =>
+              setContent((c) => {
+                const next = c ? c : '/roll 1d20';
+                setComposerDraft(channelId, next);
+                return next;
+              })
+            }
+            disabled={busy}
+          >
+            <Dice5 size={18} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className={
+              recording
+                ? 'btn-primary shrink-0 touch-target-sq'
+                : 'btn-ghost shrink-0 touch-target-sq'
+            }
+            aria-label={recording ? 'Stop recording' : 'Record voice message'}
+            title={recording ? 'Stop recording' : 'Record voice message'}
+            onClick={() => (recording ? stopRecording() : void startRecording())}
+            disabled={busy}
+          >
+            {recording ? <Square size={18} aria-hidden /> : <Mic size={18} aria-hidden />}
+          </button>
+        </div>
+        {/* Emoji wrapper stays mounted so the picker keeps an anchor in both
+            modes; only the Smile button collapses. */}
         <div className="relative shrink-0">
           <button
             type="button"
-            className="btn-ghost"
+            className="composer-actions-inline btn-ghost touch-target-sq"
+            aria-label="Insert emoji"
             title="Insert emoji"
             onClick={() => setEmojiOpen((v) => !v)}
             disabled={busy}
           >
-            <Smile size={18} />
+            <Smile size={18} aria-hidden />
           </button>
           {emojiOpen ? (
             <div className="absolute bottom-full right-0 mb-2">
@@ -576,12 +649,12 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
         />
         <button
           type="button"
-          className="btn-primary shrink-0"
+          className="btn-primary shrink-0 touch-target-sq"
           disabled={busy || (!content.trim() && pending.length === 0)}
           onClick={() => void send()}
           aria-label="Send"
         >
-          <Send size={16} />
+          <Send size={16} aria-hidden />
         </button>
       </div>
       {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
@@ -599,6 +672,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
       {remindModal ? (
         <RemindModal initialText={remindModal.text} onClose={() => setRemindModal(null)} />
       ) : null}
+      </div>
     </div>
   );
 }

@@ -8,9 +8,11 @@ import {
   Forward,
   History,
   MessageSquare,
+  MoreHorizontal,
   Pin,
   Trash2,
 } from 'lucide-react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import type { DiceTermResult, Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
@@ -39,6 +41,10 @@ interface Props {
 }
 
 const EMPTY_MESSAGES: never[] = [];
+
+// Shared className for the touch overflow-menu items (3.2).
+const MENU_ITEM =
+  'flex cursor-pointer items-center gap-2 rounded px-2 py-2 outline-none data-[highlighted]:bg-raised';
 
 export function MessageList({ channelId }: Props): JSX.Element {
   // Subscribe to the dict; the `?? []` fallback would otherwise return a
@@ -153,7 +159,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
           No messages yet. Start the conversation.
         </div>
       ) : null}
-      <div style={{ height: totalSize, position: 'relative' }}>
+      <div className="mx-auto w-full max-w-[880px]" style={{ height: totalSize, position: 'relative' }}>
         {virtualizer.getVirtualItems().map((row) => {
           const message = sorted[row.index];
           if (!message) return null;
@@ -366,7 +372,7 @@ function MessageRow({
         />
         <ReactionBar message={message} />
       </div>
-      <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+      <div className="hidden shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 lg:flex">
         <button
           type="button"
           onClick={onOpenThread}
@@ -434,6 +440,58 @@ function MessageRow({
             <Trash2 size={14} />
           </button>
         ) : null}
+      </div>
+      {/* Touch affordance — below lg there is no hover, so the same actions
+          live behind a persistent overflow menu (Radix, portaled so it escapes
+          the virtualizer's overflow clipping). */}
+      <div className="shrink-0 lg:hidden">
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              aria-label="Message actions"
+              className="touch-target-sq rounded p-1 text-fg-muted hover:bg-raised"
+            >
+              <MoreHorizontal size={16} />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content
+              align="end"
+              sideOffset={4}
+              className="z-40 min-w-[10rem] rounded-md border border-subtle bg-surface p-1 text-sm text-fg shadow-lg"
+            >
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onOpenThread()}>
+                <MessageSquare size={14} aria-hidden /> Open thread
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onSave()}>
+                <Bookmark size={14} aria-hidden /> Save
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onForward()}>
+                <Forward size={14} aria-hidden /> Forward
+              </DropdownMenu.Item>
+              {message.editedAt ? (
+                <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onShowHistory()}>
+                  <History size={14} aria-hidden /> Edit history
+                </DropdownMenu.Item>
+              ) : null}
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onPin()}>
+                <Pin size={14} aria-hidden /> Pin
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onReport()}>
+                <Flag size={14} aria-hidden /> Report
+              </DropdownMenu.Item>
+              {mine ? (
+                <DropdownMenu.Item
+                  className={`${MENU_ITEM} text-danger`}
+                  onSelect={() => onDelete()}
+                >
+                  <Trash2 size={14} aria-hidden /> Delete
+                </DropdownMenu.Item>
+              ) : null}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
       </div>
     </div>
   );

@@ -17,9 +17,9 @@ const PRESENCE_LABEL: Record<Presence, string> = {
 };
 
 function hexFromRoleColor(color: number): string {
-  // Roles store color as a 24-bit integer; 0 means "no color" in the
-  // existing schema — render those as neutral instead of black.
-  if (color === 0) return '#9ca3af';
+  // Roles store color as a 24-bit integer rendered as a hex string. The
+  // "no colour" case (0) is handled by the caller with neutral semantic
+  // tokens, so it never reaches here.
   return `#${color.toString(16).padStart(6, '0')}`;
 }
 
@@ -276,6 +276,19 @@ export function MemberProfileCard({
                 <h3 className="text-xs uppercase tracking-wider text-fg-muted">Roles</h3>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {sortedRoles.map((role) => {
+                    // No-colour roles (0) render in neutral semantic tokens
+                    // rather than an off-system grey; coloured roles keep
+                    // their DB-driven hex (inline by necessity).
+                    if (role.color === 0) {
+                      return (
+                        <span
+                          key={role.id}
+                          className="rounded-full border border-subtle bg-tint-fg-04 px-2 py-0.5 text-xs text-fg-muted"
+                        >
+                          {role.name}
+                        </span>
+                      );
+                    }
                     const hex = hexFromRoleColor(role.color);
                     return (
                       <span

@@ -97,7 +97,7 @@ export function LoginPage(): JSX.Element {
   return (
     <div className="grid min-h-screen place-items-center px-4">
       <div className="w-full max-w-sm">
-        <TavernLogo className="mb-8" />
+        <TavernLogo className="mb-8 justify-center" />
         {stagedToken ? (
           <form className="card space-y-4" onSubmit={onSubmitTotp}>
             <h1 className="font-serif text-xl font-medium">Two-factor code</h1>
@@ -174,13 +174,13 @@ export function LoginPage(): JSX.Element {
             ) : null}
             <SsoSignInButton />
             <p className="text-center text-sm">
-              <Link to="/forgot-password" className="text-mead hover:underline">
+              <Link to="/forgot-password" className="text-dusk hover:underline">
                 Forgot your password?
               </Link>
             </p>
             <p className="text-center text-sm text-fg-muted">
               Have an invite?{' '}
-              <Link to="/register" className="text-mead hover:underline">
+              <Link to="/register" className="text-dusk hover:underline">
                 Create an account
               </Link>
             </p>

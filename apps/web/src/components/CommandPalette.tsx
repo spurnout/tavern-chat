@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from '@tanstack/react-router';
+import * as Dialog from '@radix-ui/react-dialog';
 import {
   Flame,
   Gavel,
@@ -26,8 +27,12 @@ import {
  * Wave 3 #6 — Cmd/Ctrl+K command palette. Fuzzy-find across rooms, DMs, and
  * settings; trigger app-shell actions; search messages. Grouped into
  * **Jump to** / **Action** / **Search**.
+ *
+ * Built on Radix Dialog so it's a proper modal: focus trap, focus restore,
+ * Escape-to-close, and scroll lock come for free. The internal arrow-key
+ * navigation and grouping are unchanged.
  */
-export function CommandPalette(): JSX.Element | null {
+export function CommandPalette(): JSX.Element {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
@@ -38,24 +43,22 @@ export function CommandPalette(): JSX.Element | null {
   const channelsByServer = useRealtime((s) => s.channelsByServer);
   const dmChannelsById = useRealtime((s) => s.dmChannelsById);
 
+  // Global Cmd/Ctrl+K toggle. Escape is handled by Radix Dialog now.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      const trigger = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
-      if (trigger) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault();
         setOpen((v) => !v);
-      } else if (open && e.key === 'Escape') {
-        e.preventDefault();
-        setOpen(false);
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
+  }, []);
 
+  // Reset the query + highlight each time the palette opens. Initial focus is
+  // directed to the input via Dialog's onOpenAutoFocus below.
   useEffect(() => {
     if (open) {
-      queueMicrotask(() => inputRef.current?.focus());
       setQ('');
       setActive(0);
     }
@@ -147,113 +150,108 @@ export function CommandPalette(): JSX.Element | null {
 
   useEffect(() => setActive(0), [q]);
 
-  if (!open) return null;
-
   const grouped = groupBy(filtered);
 
   return (
-    <div
-      role="dialog"
-      aria-label="Command palette"
-      className="fixed inset-0 z-50 grid place-items-start pt-[10vh]"
-      onClick={() => setOpen(false)}
-    >
-      <div
-        className="w-full max-w-xl rounded-lg border border-subtle bg-surface shadow-xl"
-        style={{ margin: '0 auto' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-center gap-2 border-b border-subtle px-3 py-2">
-          <Search size={14} className="text-fg-muted" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Find a room, member, message, or action…"
-            className="flex-1 bg-transparent text-sm outline-none"
-            onKeyDown={(e) => {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setActive((i) => Math.min(i + 1, filtered.length - 1));
-              } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActive((i) => Math.max(i - 1, 0));
-              } else if (e.key === 'Enter') {
-                e.preventDefault();
-                const choice = filtered[active];
-                if (choice) {
-                  choice.go();
-                  setOpen(false);
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60" />
+        <Dialog.Content
+          aria-describedby={undefined}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            inputRef.current?.focus();
+          }}
+          className="fixed left-1/2 top-[10vh] z-50 w-full max-w-xl -translate-x-1/2 rounded-lg border border-subtle bg-surface shadow-xl"
+        >
+          <Dialog.Title className="sr-only">Command palette</Dialog.Title>
+          <header className="flex items-center gap-2 border-b border-subtle px-3 py-2">
+            <Search size={14} className="text-fg-muted" />
+            <input
+              ref={inputRef}
+              type="text"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Find a room, member, message, or action…"
+              className="flex-1 rounded bg-transparent text-sm focus:outline-none focus:ring-2 focus:ring-ember"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setActive((i) => Math.min(i + 1, filtered.length - 1));
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setActive((i) => Math.max(i - 1, 0));
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  const choice = filtered[active];
+                  if (choice) {
+                    choice.go();
+                    setOpen(false);
+                  }
                 }
-              }
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => setOpen(false)}
-            className="rounded p-1 hover:bg-raised"
-            aria-label="Close"
-          >
-            <X size={12} />
-          </button>
-        </header>
-        <div className="max-h-96 overflow-y-auto py-1">
-          {filtered.length === 0 ? (
-            <p className="px-3 py-4 text-sm text-fg-muted">No matches.</p>
-          ) : null}
-          {(['jump', 'action', 'search'] as const).map((g) =>
-            grouped[g].length === 0 ? null : (
-              <section key={g}>
-                <div className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-fg-faint">
-                  {labelForGroup(g)}
-                </div>
-                <ul>
-                  {grouped[g].map((e) => {
-                    const idx = filtered.indexOf(e);
-                    return (
-                      <li key={e.id}>
-                        <button
-                          type="button"
-                          onMouseEnter={() => setActive(idx)}
-                          onClick={() => {
-                            e.go();
-                            setOpen(false);
-                          }}
-                          className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
-                            idx === active ? 'bg-tint-ember text-ember-hi' : 'text-fg-muted'
-                          }`}
-                        >
-                          <IconFor name={e.icon} active={idx === active} />
-                          <span className={idx === active ? 'text-ember-hi' : 'text-fg'}>
-                            {e.label}
-                          </span>
-                          {e.hint ? (
-                            <span className="ml-auto truncate text-xs text-fg-faint">
-                              {e.hint}
+              }}
+            />
+            <Dialog.Close className="rounded p-1 hover:bg-raised" aria-label="Close">
+              <X size={12} />
+            </Dialog.Close>
+          </header>
+          <div className="max-h-96 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-4 text-sm text-fg-muted">No matches.</p>
+            ) : null}
+            {(['jump', 'action', 'search'] as const).map((g) =>
+              grouped[g].length === 0 ? null : (
+                <section key={g}>
+                  <div className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-fg-faint">
+                    {labelForGroup(g)}
+                  </div>
+                  <ul>
+                    {grouped[g].map((e) => {
+                      const idx = filtered.indexOf(e);
+                      return (
+                        <li key={e.id}>
+                          <button
+                            type="button"
+                            onMouseEnter={() => setActive(idx)}
+                            onClick={() => {
+                              e.go();
+                              setOpen(false);
+                            }}
+                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                              idx === active ? 'bg-tint-ember text-ember-hi' : 'text-fg-muted'
+                            }`}
+                          >
+                            <IconFor name={e.icon} active={idx === active} />
+                            <span className={idx === active ? 'text-ember-hi' : 'text-fg'}>
+                              {e.label}
                             </span>
-                          ) : null}
-                          {e.kbd ? (
-                            <kbd className="ml-2 rounded border border-subtle bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-fg-faint">
-                              {e.kbd}
-                            </kbd>
-                          ) : null}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ),
-          )}
-        </div>
-        <footer className="border-t border-subtle px-3 py-1.5 text-xs text-fg-muted">
-          <span className="font-mono">↑ ↓</span> to navigate ·{' '}
-          <span className="font-mono">Enter</span> to open ·{' '}
-          <span className="font-mono">Esc</span> to close
-        </footer>
-      </div>
-    </div>
+                            {e.hint ? (
+                              <span className="ml-auto truncate text-xs text-fg-faint">
+                                {e.hint}
+                              </span>
+                            ) : null}
+                            {e.kbd ? (
+                              <kbd className="ml-2 rounded border border-subtle bg-canvas px-1.5 py-0.5 font-mono text-[10px] text-fg-faint">
+                                {e.kbd}
+                              </kbd>
+                            ) : null}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ),
+            )}
+          </div>
+          <footer className="border-t border-subtle px-3 py-1.5 text-xs text-fg-muted">
+            <span className="font-mono">↑ ↓</span> to navigate ·{' '}
+            <span className="font-mono">Enter</span> to open ·{' '}
+            <span className="font-mono">Esc</span> to close
+          </footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 

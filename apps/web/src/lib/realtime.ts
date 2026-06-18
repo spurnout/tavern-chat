@@ -17,6 +17,7 @@ import { GatewayClient } from './gateway-client.js';
 import { api } from './api-client.js';
 import { resolveTerminal } from './attachment-ready.js';
 import { maybePlayMessageSound } from './message-sound.js';
+import { announce } from './announce.js';
 import { startPresenceTracking } from './presence.js';
 import {
   emitBreakoutClose,
@@ -39,6 +40,32 @@ import {
 
 let client: GatewayClient | null = null;
 let stopPresence: (() => void) | null = null;
+
+/**
+ * Fire an assertive screen-reader announcement when *you* are @mentioned, so a
+ * directed ping isn't missed. Suppressed for the room you're actively viewing
+ * (the message arrives through the normal flow there) — the inbox badge still
+ * updates regardless, via onMentionCreate. Falls back to a name-free line when
+ * the room isn't in the loaded channel lists rather than reading a raw id.
+ */
+function announceMention(item: InboxItem): void {
+  const store = useRealtime.getState();
+  if (item.channelId && item.channelId === store.activeChannelId) return;
+  const author = item.message.authorDisplayName;
+  if (item.dmChannelId) {
+    announce(`${author} mentioned you in a direct message.`);
+    return;
+  }
+  let roomName: string | null = null;
+  for (const channels of Object.values(store.channelsByServer)) {
+    const match = channels.find((c) => c.id === item.channelId);
+    if (match) {
+      roomName = match.name;
+      break;
+    }
+  }
+  announce(roomName ? `${author} mentioned you in #${roomName}.` : `${author} mentioned you.`);
+}
 
 interface ReadyPayload {
   user: { id: string };
@@ -332,7 +359,9 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
       return;
     }
     case 'MENTION_CREATE': {
-      useInbox.getState().onMentionCreate(data as InboxItem);
+      const item = data as InboxItem;
+      useInbox.getState().onMentionCreate(item);
+      announceMention(item);
       return;
     }
     case 'BLOCK_ADD': {

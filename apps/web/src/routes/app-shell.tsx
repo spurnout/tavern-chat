@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { Link, Outlet, useNavigate, useParams, useRouter, useRouterState } from '@tanstack/react-router';
 import {
   Dice5,
@@ -28,6 +37,7 @@ import { api } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import type { Channel, Member, Presence, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
+import { useResizablePane } from '../lib/use-resizable-pane.js';
 import { CreateServerModal } from '../components/CreateServerModal.js';
 import { CreateChannelModal } from '../components/CreateChannelModal.js';
 import { NotificationSettingsModal } from '../components/NotificationSettingsModal.js';
@@ -41,6 +51,7 @@ import { onUi } from '../lib/ui-events.js';
 import { MemberProfileTrigger } from '../components/MemberProfileTrigger.js';
 import { PresenceDot } from '../components/PresenceDot.js';
 import { VoiceSideChat } from '../components/VoiceSideChat.js';
+import { LiveAnnouncer } from '../components/LiveAnnouncer.js';
 
 // Stable empty-array fallback; never mutated. Module-level so the same
 // reference survives every render and React.memo'd consumers see prop
@@ -102,6 +113,7 @@ export function AppShell(): JSX.Element {
   }, [navigate, currentVoice]);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const sideChat = useResizablePane();
   const [createServerOpen, setCreateServerOpen] = useState(false);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
@@ -186,7 +198,7 @@ export function AppShell(): JSX.Element {
   );
 
   return (
-    <div className="relative flex h-full overflow-hidden bg-canvas text-fg">
+    <div className="relative flex h-dvh overflow-hidden bg-canvas text-fg">
       {/* Parity gap #3 — first-run welcome screen for the active tavern. Keyed
           by serverId so it re-evaluates on tavern switch; self-hides when
           onboarding is disabled or already completed. */}
@@ -203,7 +215,7 @@ export function AppShell(): JSX.Element {
       <button
         type="button"
         aria-label="Toggle menu"
-        className="absolute left-3 top-3 z-30 rounded p-1.5 bg-surface shadow md:hidden"
+        className="touch-target-sq absolute left-3 top-3 z-30 grid place-items-center rounded p-1.5 bg-surface shadow md:hidden"
         onClick={() => setDrawerOpen((v) => !v)}
       >
         {drawerOpen ? <X size={18} /> : <Menu size={18} />}
@@ -264,11 +276,17 @@ export function AppShell(): JSX.Element {
             user's camera/mic state survive across channel changes. */}
         {currentVoice ? (
           <div
+            ref={isOnVoiceRoute ? sideChat.containerRef : undefined}
             className={cn(
               isOnVoiceRoute
                 ? 'flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row'
                 : 'shrink-0',
             )}
+            style={
+              isOnVoiceRoute
+                ? ({ '--side-w': `${sideChat.width}px` } as CSSProperties)
+                : undefined
+            }
           >
             <div className={isOnVoiceRoute ? 'min-h-0 min-w-0 flex-1' : 'min-w-0'}>
               <Suspense
@@ -290,10 +308,21 @@ export function AppShell(): JSX.Element {
               </Suspense>
             </div>
             {isOnVoiceRoute ? (
-              <VoiceSideChat
-                channelId={currentVoice.channelId}
-                channelName={currentVoice.channelName}
-              />
+              <>
+                {/* Drag handle — only in the side-by-side (xl) layout. Drives
+                    the side-chat width via --side-w; keyboard-resizable via the
+                    separator role (Arrow / Home / End). */}
+                <div
+                  {...sideChat.separatorProps}
+                  aria-label="Resize room chat"
+                  title="Drag to resize"
+                  className="hidden w-1.5 shrink-0 cursor-col-resize bg-raised transition-colors hover:bg-ember focus:bg-ember focus:outline-none xl:block"
+                />
+                <VoiceSideChat
+                  channelId={currentVoice.channelId}
+                  channelName={currentVoice.channelName}
+                />
+              </>
             ) : null}
           </div>
         ) : null}
@@ -313,6 +342,7 @@ export function AppShell(): JSX.Element {
       />
       <ImageLightbox />
       <CommandPalette />
+      <LiveAnnouncer />
     </div>
   );
 }
@@ -327,7 +357,7 @@ function ServerRail({
   onCreateServer: () => void;
 }): JSX.Element {
   return (
-    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-subtle bg-sunken py-4">
+    <aside className="flex h-full w-[72px] shrink-0 flex-col items-center gap-3 overflow-y-auto border-r border-subtle bg-sunken py-4 pl-safe">
       <Link
         to="/app/dms"
         aria-label="Direct messages"
@@ -575,7 +605,7 @@ function ChannelSidebar({
         <Link
           to="/app/account"
           aria-label="Account settings"
-          className="rounded p-1 hover:bg-raised"
+          className="touch-target-sq rounded p-1 hover:bg-raised"
           title="Account settings"
         >
           <UserIcon size={16} />
@@ -583,7 +613,7 @@ function ChannelSidebar({
         <button
           aria-label="Notification settings"
           onClick={onOpenSettings}
-          className="rounded p-1 hover:bg-raised"
+          className="touch-target-sq rounded p-1 hover:bg-raised"
           title="Notification settings"
         >
           <Settings size={16} />
@@ -591,7 +621,7 @@ function ChannelSidebar({
         <button
           aria-label="Sign out"
           onClick={onLogout}
-          className="rounded p-1 hover:bg-raised"
+          className="touch-target-sq rounded p-1 hover:bg-raised"
           title="Sign out"
         >
           <LogOut size={16} />

@@ -227,7 +227,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <h3>What this system does <em>not</em> cover</h3>
   <ul>
     <li>Backend / API shape. <code>NotificationInbox</code>, <code>InviteModal</code>, and <code>SettingsModal</code> have placeholder endpoints — wire them when the API ships.</li>
-    <li>OAuth flows. SSO buttons are inert. Wire to <code>auth.ts</code>.</li>
+    <li>Identity-provider breadth. Passkey (WebAuthn) sign-in and a config-gated SSO button are wired; adding more OIDC providers happens in <code>auth.ts</code>.</li>
     <li>Mobile-native concerns. The web app is responsive but not a PWA.</li>
     <li>Internationalization. All copy is English; no i18n scaffolding yet.</li>
   </ul>
@@ -636,7 +636,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <h3>Focus management</h3>
   <ul>
     <li><b>Visible focus ring</b> — <code>border-strong</code> 2px outline + 2px offset. Never <code>outline:none</code>.</li>
-    <li><b>Modals + popovers + drawers</b> trap focus when open and restore it on close. Radix Dialog handles this for <code>Modal</code> and <code>ReportDialog</code>; the inbox popover does it via the <code>useFocusTrap</code> helper.</li>
+    <li><b>Modals + popovers + drawers</b> trap focus when open and restore it on close. Radix Dialog/Popover handle this for <code>Modal</code>, <code>ReportDialog</code>, the <code>CommandPalette</code>, and the inbox popover; the floating <code>EmojiPicker</code> uses the <code>useFocusTrap</code> helper (<code>lib/useFocusTrap.ts</code>).</li>
     <li><b>Esc</b> closes the topmost overlay (popover before drawer before modal). Never closes more than one layer per press.</li>
     <li><b>Skip link</b> at the top of <code>AppShell</code> jumps to the message column, so keyboard users don't tab through the rail every navigation.</li>
   </ul>
@@ -1257,16 +1257,10 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
     <p class="role">Three routes, one visual language. Centred column on warm canvas, serif headline, mono kicker, ember primary CTA. All errors use the rust ErrorAlert pattern.</p>
 
     <h4>Register flow</h4>
-    <p class="muted">Four-step stepped form with a top stepper. Each step has a bottom-anchored nav row (Back · Primary). Inline validation per step.</p>
-    <ol>
-      <li><b>Invite</b> — SSO buttons (placeholder), divider, invite code (mono, uppercase).</li>
-      <li><b>Account</b> — email + password with show/hide eye, four-segment strength meter (rust → mead → moss).</li>
-      <li><b>Identity</b> — <code>@username</code> with sanitisation, display name, live preview card showing how the avatar + name will appear in chat.</li>
-      <li><b>Welcome</b> — ember check, serif "Welcome, {name}.", CTA "Enter the hall" → routes to <code>/app</code>.</li>
-    </ol>
+    <p class="muted">Single-screen, invite-only form: invite code (mono, uppercase), username, display name, email, password, then a full-width "Create account" CTA. Serif heading "Pull up a chair." with the line "Tavern is invite-only. Enter the code your innkeeper gave you." Errors render as <code>text-danger</code> below the form. (The four-step stepper with a strength meter and live identity preview is an aspirational enhancement, not what ships today.)</p>
 
     <h4>Login</h4>
-    <p class="muted">Single screen. SSO row above the password form. Show/hide password. Inline "Forgot?" link beside the password label.</p>
+    <p class="muted">Single screen. Below the password form: a "Sign in with passkey" button (shown when the browser supports WebAuthn) and an SSO button (shown only when the instance has configured OIDC — it 302s to <code>/api/auth/sso/start</code>). "Forgot your password?" and "Create an account" links below, in <code>dusk</code>.</p>
 
     <h4>Bootstrap (first-run)</h4>
     <p class="muted">Single screen, only reachable when <code>/auth/bootstrap-status</code> returns <code>needsBootstrap: true</code>. Two grouped cards: <b>The keeper</b> (display name, username, email, password) and <b>The room</b> (first server name). CTA: "Open the doors".</p>
@@ -1353,7 +1347,7 @@ footer{margin-top:80px;padding:24px 0;border-top:1px solid var(--border-subtle);
   <table class="tbl">
     <thead><tr><th>Item</th><th>Owner</th><th>What's needed</th></tr></thead>
     <tbody>
-      <tr><td class="tok">SSO endpoints</td><td class="val">backend</td><td class="desc">Google / GitHub / Discord OAuth routes + redirect handlers in <code>auth.ts</code>. UI buttons exist (Login + Register).</td></tr>
+      <tr><td class="tok">SSO breadth</td><td class="val">backend</td><td class="desc">The login SSO button is wired to <code>/api/auth/sso/start</code> and shown when the instance reports <code>ssoEnabled</code>; passkey sign-in is live. Additional OIDC providers / redirect handlers extend <code>auth.ts</code>.</td></tr>
       <tr><td class="tok">Password reset</td><td class="val">backend + UI</td><td class="desc">Reset request screen + email flow. Login "Forgot?" link is currently <code>href="#"</code>.</td></tr>
       <tr><td class="tok">/notifications API</td><td class="val">backend</td><td class="desc">Endpoint + realtime topic. <code>NotificationInbox</code> runs on mock fixture until wired.</td></tr>
       <tr><td class="tok">Theme + density wiring</td><td class="val">frontend</td><td class="desc">Settings → Appearance is local state. Needs theme provider writing a class to <code>&lt;html&gt;</code> + density data-attribute the CSS hooks into.</td></tr>

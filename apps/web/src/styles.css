@@ -121,6 +121,29 @@
     color: var(--fg-default);
   }
 
+  /* Hearth glow — a faint ember/mead wash on the warm-dark canvas, per the
+     design system. Sits on the canvas (z-index:-1, above the body background,
+     behind all content) and is pointer-inert, so it warms exposed canvas
+     (the auth screens, empty states) without affecting opaque surfaces. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        80% 50% at 20% 0%,
+        color-mix(in oklch, var(--ember) 6%, transparent),
+        transparent 60%
+      ),
+      radial-gradient(
+        60% 40% at 100% 100%,
+        color-mix(in oklch, var(--mead) 4%, transparent),
+        transparent 60%
+      );
+  }
+
   /* Default keyboard-focus outline. Composed classes (.btn-primary, .input)
      override this with a tuned focus ring; everything else falls back here.
      Specificity is 0 thanks to :where, so any explicit focus styles win. */
@@ -153,11 +176,52 @@
       min-width: 44px;
     }
   }
+
+  /* Safe-area insets — no-ops on desktop (env() resolves to 0). Pair with
+     `viewport-fit=cover` in index.html so they resolve on notched devices. */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .pr-safe {
+    padding-right: env(safe-area-inset-right);
+  }
+  .pl-safe {
+    padding-left: env(safe-area-inset-left);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/*
+ * MessageComposer affordance collapse — driven by the composer's *own* width
+ * via a container query, not the viewport. Below ~30rem (a phone, the voice
+ * side chat, or the voice split dragged narrow) the secondary affordances
+ * collapse into a single "+" overflow menu so the textarea keeps a usable
+ * width; at/above 30rem they sit inline. See MessageComposer and the resizable
+ * voice divider.
+ */
+.composer-cq {
+  container-type: inline-size;
+}
+.composer-actions-inline {
+  display: none;
+}
+.composer-actions-overflow {
+  display: inline-flex;
+}
+@container (min-width: 30rem) {
+  .composer-actions-inline {
+    display: inline-flex;
+  }
+  .composer-actions-overflow {
+    display: none;
+  }
 }
 
 @layer components {
   .input {
-    @apply w-full rounded-md bg-sunken border border-default px-3 py-2 text-fg placeholder:text-fg-faint focus:outline-none focus:ring-2 focus:ring-ember;
+    @apply w-full rounded-md bg-sunken border border-strong px-3 py-2 text-fg placeholder:text-fg-faint focus:outline-none focus:ring-2 focus:ring-ember;
   }
 
   .btn {

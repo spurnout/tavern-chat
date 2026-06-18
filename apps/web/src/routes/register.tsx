@@ -95,7 +95,7 @@ export function RegisterPage(): JSX.Element {
   return (
     <div className="grid min-h-screen place-items-center px-4 py-12">
       <div className="w-full max-w-sm">
-        <TavernLogo className="mb-8" />
+        <TavernLogo className="mb-8 justify-center" />
         <form className="card space-y-4" onSubmit={onSubmit}>
           <h1 className="font-serif text-xl font-medium">Pull up a chair</h1>
           <p className="text-sm text-fg-muted">
@@ -148,7 +148,7 @@ export function RegisterPage(): JSX.Element {
 
           <p className="text-center text-sm text-fg-muted">
             Already have an account?{' '}
-            <Link to="/login" className="text-mead hover:underline">
+            <Link to="/login" className="text-dusk hover:underline">
               Sign in
             </Link>
           </p>
