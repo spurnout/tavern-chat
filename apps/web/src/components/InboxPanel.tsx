@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Bell, CheckCheck, X } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import { useNavigate } from '@tanstack/react-router';
 import { EmptyState } from './EmptyState.js';
 import { useInbox } from '../lib/inbox-store.js';
@@ -10,6 +11,10 @@ import { messagePreview } from '../lib/message-preview.js';
  * Activity inbox bell. Shows the total unread @mention count and opens a
  * popover listing recent unread mentions. Clicking a mention navigates to
  * the room and acks it.
+ *
+ * Built on Radix Popover so it gets focus-move-in, focus-restore-to-bell,
+ * Escape-to-close, outside-click dismissal, and the trigger's
+ * aria-haspopup/aria-expanded wiring for free.
  */
 export function InboxPanel(): JSX.Element {
   const totalUnread = useInbox((s) => s.totalUnreadMentions);
@@ -22,22 +27,10 @@ export function InboxPanel(): JSX.Element {
   const channelsByServer = useRealtime((s) => s.channelsByServer);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open) void loadInbox(true);
   }, [open, loadInbox]);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClickOutside(e: MouseEvent): void {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
 
   function openMention(item: (typeof items)[number]): void {
     void ackMention(item.id);
@@ -63,31 +56,35 @@ export function InboxPanel(): JSX.Element {
   const unreadOnly = items.filter((i) => !i.isRead);
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        aria-label={
-          totalUnread > 0
-            ? `Activity inbox — ${totalUnread} unread mention${totalUnread === 1 ? '' : 's'}`
-            : 'Activity inbox'
-        }
-        title="Activity inbox"
-        onClick={() => setOpen((v) => !v)}
-        className="relative rounded p-1 hover:bg-raised"
-      >
-        <Bell size={16} />
-        {totalUnread > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-[1.1rem] rounded-full bg-ember px-1 text-center font-mono text-[10px] leading-[1.1rem] text-fg">
-            {totalUnread > 99 ? '99+' : totalUnread}
-          </span>
-        ) : null}
-      </button>
-      {open ? (
-        <div
-          ref={popoverRef}
-          className="absolute bottom-full left-0 z-40 mb-2 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label={
+            totalUnread > 0
+              ? `Activity inbox — ${totalUnread} unread mention${totalUnread === 1 ? '' : 's'}`
+              : 'Activity inbox'
+          }
+          title="Activity inbox"
+          className="relative rounded p-1 hover:bg-raised"
+        >
+          <Bell size={16} />
+          {totalUnread > 0 ? (
+            <span className="absolute -right-1 -top-1 min-w-[1.1rem] rounded-full bg-ember px-1 text-center font-mono text-[10px] leading-[1.1rem] text-fg">
+              {totalUnread > 99 ? '99+' : totalUnread}
+            </span>
+          ) : null}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="start"
+          sideOffset={8}
+          collisionPadding={12}
           role="dialog"
           aria-label="Activity inbox"
+          className="z-40 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
         >
           <header className="flex items-center justify-between border-b border-subtle px-3 py-2">
             <h2 className="font-serif text-sm">Mentions</h2>
@@ -101,14 +98,9 @@ export function InboxPanel(): JSX.Element {
               >
                 <CheckCheck size={12} /> Mark all
               </button>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="rounded p-1 hover:bg-raised"
-                aria-label="Close"
-              >
+              <Popover.Close className="rounded p-1 hover:bg-raised" aria-label="Close">
                 <X size={12} />
-              </button>
+              </Popover.Close>
             </div>
           </header>
           <div className="max-h-96 overflow-y-auto">
@@ -143,9 +135,9 @@ export function InboxPanel(): JSX.Element {
               </ul>
             )}
           </div>
-        </div>
-      ) : null}
-    </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

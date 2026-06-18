@@ -149,7 +149,7 @@ export function DmMessageComposer({ dmChannelId }: Props): JSX.Element {
 
   return (
     <div className="border-t border-subtle bg-sunken p-3">
-      {error ? <div className="mb-2 text-xs text-rose-400">{error}</div> : null}
+      {error ? <div className="mb-2 text-xs text-danger">{error}</div> : null}
       {pending.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-2">
           {pending.map((p) => (

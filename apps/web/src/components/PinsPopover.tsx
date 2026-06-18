@@ -55,7 +55,7 @@ export function PinsPopover({ channelId }: Props): JSX.Element {
         aria-label="Pinned messages"
         title="Pinned messages"
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-1 hover:bg-raised"
+        className="touch-target-sq rounded p-1 hover:bg-raised"
       >
         <Pin size={14} />
       </button>

@@ -65,7 +65,7 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="rounded p-1 hover:bg-raised"
+        className="touch-target-sq rounded p-1 hover:bg-raised"
         aria-label="Channel settings"
         title="Channel settings"
       >

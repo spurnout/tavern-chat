@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
+import { useFocusTrap } from '../lib/useFocusTrap.js';
 
 /**
  * Lightweight emoji picker. No external data dependency — we ship a curated
@@ -252,6 +253,12 @@ export function EmojiPicker({ open, onClose, onPick }: Props): JSX.Element | nul
   const [query, setQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Trap focus inside the floating picker and restore it to whatever opened
+  // it (the Smile trigger) on close. Radix isn't used here because the picker
+  // is a controlled child positioned by each caller; see useFocusTrap.
+  useFocusTrap(containerRef, open, { initialFocusRef: inputRef, restoreFocus: true });
 
   useEffect(() => {
     if (!open) return;
@@ -260,8 +267,18 @@ export function EmojiPicker({ open, onClose, onPick }: Props): JSX.Element | nul
         onClose();
       }
     }
+    function onKeyDown(e: KeyboardEvent): void {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    }
     document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [open, onClose]);
 
   const visible = useMemo(() => {
@@ -288,15 +305,15 @@ export function EmojiPicker({ open, onClose, onPick }: Props): JSX.Element | nul
       className="z-50 w-80 rounded border border-subtle bg-surface shadow-lg"
     >
       <div className="border-b border-subtle p-2">
-        <div className="flex items-center gap-2 rounded bg-canvas px-2 py-1">
+        <div className="flex items-center gap-2 rounded bg-canvas px-2 py-1 focus-within:ring-2 focus-within:ring-ember">
           <Search size={14} className="text-fg-muted" />
           <input
+            ref={inputRef}
             type="text"
             placeholder="Search emoji"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="flex-1 bg-transparent text-sm outline-none"
-            autoFocus
           />
         </div>
       </div>

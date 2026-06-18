@@ -123,9 +123,10 @@ export function VoiceControlBar({
         onClick={onToggleMic}
         disabled={status !== 'connected'}
         aria-pressed={!muted}
+        aria-label={muted ? 'Unmute' : 'Mute'}
         title={muted ? 'Unmute' : 'Mute'}
       >
-        {muted ? <MicOff size={16} /> : <Mic size={16} />}
+        {muted ? <MicOff size={16} aria-hidden /> : <Mic size={16} aria-hidden />}
       </button>
       <button
         type="button"
@@ -133,9 +134,10 @@ export function VoiceControlBar({
         onClick={onToggleCamera}
         disabled={status !== 'connected' || !allowed?.canPublishVideo}
         aria-pressed={cameraOn}
+        aria-label={cameraOn ? 'Stop camera' : 'Start camera'}
         title={cameraOn ? 'Stop camera' : 'Start camera'}
       >
-        {cameraOn ? <Video size={16} /> : <VideoOff size={16} />}
+        {cameraOn ? <Video size={16} aria-hidden /> : <VideoOff size={16} aria-hidden />}
       </button>
       <div className="flex items-center">
         <button
@@ -144,6 +146,13 @@ export function VoiceControlBar({
           onClick={onToggleScreenShare}
           disabled={status !== 'connected' || !allowed?.canPublishScreenShare || shareInflight}
           aria-pressed={screenOn}
+          aria-label={
+            !allowed?.canPublishScreenShare
+              ? "Screen sharing isn't allowed in this room."
+              : screenOn
+                ? 'Stop sharing'
+                : 'Share your screen'
+          }
           title={
             !allowed?.canPublishScreenShare
               ? "Screen sharing isn't allowed in this room."
@@ -152,7 +161,7 @@ export function VoiceControlBar({
                 : 'Share your screen'
           }
         >
-          {screenOn ? <Monitor size={16} /> : <MonitorOff size={16} />}
+          {screenOn ? <Monitor size={16} aria-hidden /> : <MonitorOff size={16} aria-hidden />}
         </button>
         <ScreenShareSettingsPopover
           disabled={status !== 'connected' || !allowed?.canPublishScreenShare || screenOn || shareInflight}
@@ -169,9 +178,10 @@ export function VoiceControlBar({
           onClick={onSoundboardToggle}
           disabled={status !== 'connected'}
           aria-pressed={soundboardOpen}
+          aria-label="Soundboard"
           title="Soundboard"
         >
-          <Music size={16} />
+          <Music size={16} aria-hidden />
         </button>
         {soundboardOpen ? (
           <SoundboardPanel
@@ -188,9 +198,10 @@ export function VoiceControlBar({
           onClick={onWhiteboardToggle}
           disabled={status !== 'connected'}
           aria-pressed={whiteboardOpen}
+          aria-label="Whiteboard"
           title="Whiteboard"
         >
-          <Pen size={16} />
+          <Pen size={16} aria-hidden />
         </button>
         {whiteboardOpen ? (
           <Whiteboard
@@ -216,9 +227,10 @@ export function VoiceControlBar({
             onClick={onBreakoutsToggle}
             disabled={status !== 'connected'}
             aria-pressed={breakoutsOpen}
+            aria-label="Breakouts"
             title="Breakouts"
           >
-            <Users size={16} />
+            <Users size={16} aria-hidden />
           </button>
           {breakoutsOpen ? (
             <BreakoutsPanel
@@ -236,18 +248,20 @@ export function VoiceControlBar({
           onClick={myHandRaisedAt ? onLowerHand : onRaiseHand}
           disabled={status !== 'connected'}
           aria-pressed={!!myHandRaisedAt}
+          aria-label={myHandRaisedAt ? 'Lower hand' : 'Raise hand'}
           title={myHandRaisedAt ? 'Lower hand' : 'Raise hand'}
         >
-          <Hand size={16} />
+          <Hand size={16} aria-hidden />
         </button>
       ) : null}
       <button
         type="button"
         className="btn-danger"
         onClick={onLeave}
+        aria-label="Leave the room"
         title="Leave the room"
       >
-        <PhoneOff size={16} />
+        <PhoneOff size={16} aria-hidden />
       </button>
     </>
   );

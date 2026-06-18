@@ -3,11 +3,14 @@ import { cn } from '../lib/cn.js';
 
 // Semantic tokens, not raw Tailwind palette — see the design-system colour
 // grammar: online=moss, idle=mead, do-not-disturb=rust, offline=fg-faint.
-const COLORS: Record<Presence, string> = {
-  active: 'bg-moss',
-  idle: 'bg-mead',
-  dnd: 'bg-rust',
-  offline: 'bg-fg-faint',
+// Colour is never the sole signal (WCAG 1.4.1): each state also carries a
+// distinct shape — filled circle / hollow ring / filled square — so presence
+// stays legible in greyscale and for colour-blind viewers.
+const SHAPES: Record<Presence, string> = {
+  active: 'rounded-full bg-moss',
+  idle: 'rounded-full border-2 border-mead bg-transparent',
+  dnd: 'rounded-none bg-rust',
+  offline: 'rounded-full border border-fg-faint bg-transparent opacity-70',
 };
 
 const LABELS: Record<Presence, string> = {
@@ -36,8 +39,8 @@ export function PresenceDot({ presence, size = 2.5, className }: Props): JSX.Ele
       aria-label={LABELS[presence]}
       title={LABELS[presence]}
       className={cn(
-        'inline-block rounded-full ring-2 ring-sunken',
-        COLORS[presence],
+        'inline-block ring-2 ring-sunken',
+        SHAPES[presence],
         className,
       )}
       style={{ width: `${size * 0.25}rem`, height: `${size * 0.25}rem` }}

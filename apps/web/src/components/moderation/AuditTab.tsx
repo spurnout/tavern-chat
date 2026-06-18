@@ -61,7 +61,7 @@ export function AuditTab({ serverId }: Props): JSX.Element {
             {c.label}
           </button>
         ))}
-        <div className="ml-auto flex items-center gap-2 rounded border border-subtle bg-canvas px-2">
+        <div className="ml-auto flex items-center gap-2 rounded border border-subtle bg-canvas px-2 focus-within:ring-2 focus-within:ring-ember">
           <Search size={12} className="text-fg-muted" />
           <input
             type="search"
