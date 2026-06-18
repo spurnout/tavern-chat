@@ -43,8 +43,20 @@ export type Block =
   | { kind: 'codeblock'; language: string | null; value: string }
   | { kind: 'blockquote'; segments: Segment[] };
 
-/** URL detector. Conservative — won't match bare domains, only `http(s)://...`. */
-const URL_RE = /\bhttps?:\/\/[^\s<>()\[\]]+/g;
+/**
+ * URL detector. Conservative — won't match bare domains, only `http(s)://...`.
+ * Sticky so the inline tokenizer can consume a URL straight from the cursor,
+ * *before* the emphasis branches. That ordering is what keeps marker characters
+ * inside a URL (`_`, `*`, `~`, `|`) from being read as formatting and splitting
+ * the link (e.g. `.../Songs_of_Syx/`). A leading `\b` is reproduced at the
+ * call-site with a preceding-word-char guard.
+ */
+const URL_AT_RE = /https?:\/\/[^\s<>()\[\]]+/y;
+
+/** Word-character test matching JS `\b` semantics (`[A-Za-z0-9_]`). */
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
 
 /**
  * Mention regex — re-exported from `@tavern/shared` (MENTION_REGEX). Uses a
@@ -124,8 +136,9 @@ export function parseInlineSegments(input: string): Segment[] {
 
   function flushText(): void {
     if (textBuf.length === 0) return;
-    // Auto-link URLs inside accumulated plain text.
-    const subSegments = splitOnUrlsAndMentions(textBuf);
+    // Resolve @mentions and #channel-mentions in the accumulated plain text.
+    // (URLs are already tokenized atomically in the main loop above.)
+    const subSegments = splitOnMentions(textBuf);
     for (const s of subSegments) out.push(s);
     textBuf = '';
   }
@@ -133,6 +146,22 @@ export function parseInlineSegments(input: string): Segment[] {
   while (i < input.length) {
     const ch = input[i];
     const next = input[i + 1];
+    // Autolink URLs as a single atom *before* any emphasis branch, so marker
+    // characters inside the URL (`_`, `*`, `~`, `|`) are never interpreted as
+    // formatting. Gated on `h` plus a non-word preceding char to mirror
+    // URL_RE's `\b`; a URL glued to a preceding word stays literal, as before.
+    // (Code spans still win: a backtick opener is consumed by the branch below
+    // before its inner `h` is ever reached.)
+    if (ch === 'h' && !isWordChar(input[i - 1])) {
+      URL_AT_RE.lastIndex = i;
+      const m = URL_AT_RE.exec(input);
+      if (m) {
+        flushText();
+        out.push({ kind: 'link', href: m[0], label: m[0] });
+        i = URL_AT_RE.lastIndex;
+        continue;
+      }
+    }
     // Inline code: `code`
     if (ch === '`') {
       const close = input.indexOf('`', i + 1);
@@ -212,20 +241,14 @@ export function parseInlineSegments(input: string): Segment[] {
 }
 
 /**
- * Walk a plain-text run and split out URL and mention segments. Anything not
- * matched is preserved as a `text` segment.
+ * Walk a plain-text run and split out @mention and #channel-mention segments.
+ * Anything not matched is preserved as a `text` segment. URLs are handled by
+ * the inline tokenizer (see URL_AT_RE), not here.
  */
-function splitOnUrlsAndMentions(input: string): Segment[] {
+function splitOnMentions(input: string): Segment[] {
   type Hit = { start: number; end: number; build: () => Segment };
   const hits: Hit[] = [];
   let m: RegExpExecArray | null;
-  URL_RE.lastIndex = 0;
-  while ((m = URL_RE.exec(input)) !== null) {
-    const start = m.index;
-    const end = m.index + m[0].length;
-    const href = m[0];
-    hits.push({ start, end, build: () => ({ kind: 'link', href, label: href }) });
-  }
   MENTION_REGEX.lastIndex = 0;
   while ((m = MENTION_REGEX.exec(input)) !== null) {
     // MENTION_REGEX uses a non-capturing lead group: group 1 = localpart,
