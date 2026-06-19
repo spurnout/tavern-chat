@@ -40,7 +40,7 @@ export function VoiceParticipantGrid({
           <WatchPartyMount channelId={channelId} />
         </div>
       ) : null}
-      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {rows.map(({ participant, stageBadge, handRaised, hostActions }) => (
           <ParticipantCameraTile
             key={participant.identity}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   Bookmark,
@@ -42,6 +42,16 @@ interface Props {
 
 const EMPTY_MESSAGES: never[] = [];
 
+// Vertical breathing room (px) at the top and bottom of the message list.
+// This lives INSIDE the virtualizer's coordinate space — the sized track is
+// grown by 2× this and every row is shifted down by it — rather than as
+// padding on the scroll element. Padding on the scroll element offsets the
+// track from the scrollTop origin while react-virtual measures offsets from
+// the track's own top, so the two disagree by the padding and scroll-anchoring
+// / jump-to-reply drift by that amount. Folding the gap into the row transform
+// keeps offsets and the scroll range sharing one origin.
+const VERTICAL_PAD = 16;
+
 // Shared className for the touch overflow-menu items (3.2).
 const MENU_ITEM =
   'flex cursor-pointer items-center gap-2 rounded px-2 py-2 outline-none data-[highlighted]:bg-raised';
@@ -62,35 +72,45 @@ export function MessageList({ channelId }: Props): JSX.Element {
   const [historyTarget, setHistoryTarget] = useState<Message | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
-  async function openThread(message: Message): Promise<void> {
-    try {
-      const thread = await api<{ id: string }>(
-        `/channels/${channelId}/messages/${message.id}/threads`,
-        { method: 'POST', body: {} },
-      );
-      setActiveThread({ id: thread.id, root: message });
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not open thread');
-    }
-  }
+  // Stable per-action callbacks (each takes the row's message) so MessageRow's
+  // React.memo stays effective — inline `() => …` props would change identity
+  // every render and defeat the memo. State setters are already stable; the
+  // async ones are wrapped in useCallback keyed on channelId.
+  const openThread = useCallback(
+    async (message: Message): Promise<void> => {
+      try {
+        const thread = await api<{ id: string }>(
+          `/channels/${channelId}/messages/${message.id}/threads`,
+          { method: 'POST', body: {} },
+        );
+        setActiveThread({ id: thread.id, root: message });
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : 'Could not open thread');
+      }
+    },
+    [channelId],
+  );
 
-  async function pin(message: Message): Promise<void> {
-    try {
-      await api(`/channels/${channelId}/pins/${message.id}`, { method: 'POST', body: {} });
-      toast.info('Pinned.');
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not pin');
-    }
-  }
+  const pin = useCallback(
+    async (message: Message): Promise<void> => {
+      try {
+        await api(`/channels/${channelId}/pins/${message.id}`, { method: 'POST', body: {} });
+        toast.info('Pinned.');
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : 'Could not pin');
+      }
+    },
+    [channelId],
+  );
 
-  async function save(message: Message): Promise<void> {
+  const save = useCallback(async (message: Message): Promise<void> => {
     try {
       await api(`/me/saved/${message.id}`, { method: 'POST', body: {} });
       toast.info('Saved.');
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not save');
     }
-  }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,7 +169,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
       aria-live="polite"
       aria-atomic="false"
       aria-label="Messages"
-      className="flex-1 overflow-y-auto px-4 py-4"
+      className="flex-1 overflow-y-auto px-4"
     >
       {loading && sorted.length === 0 ? (
         <div className="grid h-full place-items-center text-sm text-fg-muted">Loading…</div>
@@ -159,7 +179,10 @@ export function MessageList({ channelId }: Props): JSX.Element {
           No messages yet. Start the conversation.
         </div>
       ) : null}
-      <div className="mx-auto w-full max-w-[880px]" style={{ height: totalSize, position: 'relative' }}>
+      <div
+        className="mx-auto w-full max-w-[880px]"
+        style={{ height: totalSize + VERTICAL_PAD * 2, position: 'relative' }}
+      >
         {virtualizer.getVirtualItems().map((row) => {
           const message = sorted[row.index];
           if (!message) return null;
@@ -167,7 +190,10 @@ export function MessageList({ channelId }: Props): JSX.Element {
             <div
               key={message.id}
               className="absolute left-0 right-0"
-              style={{ transform: `translateY(${row.start}px)`, paddingBottom: '0.5rem' }}
+              style={{
+                transform: `translateY(${row.start + VERTICAL_PAD}px)`,
+                paddingBottom: '0.5rem',
+              }}
               ref={virtualizer.measureElement}
               data-index={row.index}
               data-message-id={message.id}
@@ -175,13 +201,13 @@ export function MessageList({ channelId }: Props): JSX.Element {
               <MessageRow
                 message={message}
                 mine={me?.id === message.authorId}
-                onReport={() => setReportTarget(message)}
-                onDelete={() => setDeleteTarget(message)}
-                onOpenThread={() => void openThread(message)}
-                onPin={() => void pin(message)}
-                onSave={() => void save(message)}
-                onForward={() => setForwardTarget(message)}
-                onShowHistory={() => setHistoryTarget(message)}
+                onReport={setReportTarget}
+                onDelete={setDeleteTarget}
+                onOpenThread={openThread}
+                onPin={pin}
+                onSave={save}
+                onForward={setForwardTarget}
+                onShowHistory={setHistoryTarget}
               />
             </div>
           );
@@ -239,16 +265,16 @@ export function MessageList({ channelId }: Props): JSX.Element {
 interface RowProps {
   message: Message;
   mine: boolean;
-  onReport: () => void;
-  onDelete: () => void;
-  onOpenThread: () => void;
-  onPin: () => void;
-  onSave: () => void;
-  onForward: () => void;
-  onShowHistory: () => void;
+  onReport: (message: Message) => void;
+  onDelete: (message: Message) => void;
+  onOpenThread: (message: Message) => void | Promise<void>;
+  onPin: (message: Message) => void | Promise<void>;
+  onSave: (message: Message) => void | Promise<void>;
+  onForward: (message: Message) => void;
+  onShowHistory: (message: Message) => void;
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   message,
   mine,
   onReport,
@@ -368,14 +394,18 @@ function MessageRow({
         <ThreadFooter
           summary={message.threadSummary ?? null}
           isThreadRoot={message.isThreadRoot ?? false}
-          onOpen={onOpenThread}
+          onOpen={() => void onOpenThread(message)}
         />
         <ReactionBar message={message} />
       </div>
-      <div className="hidden shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 lg:flex">
+      {/* Hover action cluster — only on hover-capable pointers AND wide
+          viewports. Gating on `hover:hover` (not width alone) keeps it off
+          touch tablets in the 1024–1279px band, where hover is unreliable;
+          those users fall through to the overflow menu + 44px targets below. */}
+      <div className="hidden shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100 [@media(hover:hover)]:lg:flex">
         <button
           type="button"
-          onClick={onOpenThread}
+          onClick={() => void onOpenThread(message)}
           aria-label="Open thread"
           title="Open thread"
           className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -384,7 +414,7 @@ function MessageRow({
         </button>
         <button
           type="button"
-          onClick={onSave}
+          onClick={() => void onSave(message)}
           aria-label="Save message"
           title="Save"
           className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -393,7 +423,7 @@ function MessageRow({
         </button>
         <button
           type="button"
-          onClick={onForward}
+          onClick={() => onForward(message)}
           aria-label="Forward message"
           title="Forward"
           className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -403,7 +433,7 @@ function MessageRow({
         {message.editedAt ? (
           <button
             type="button"
-            onClick={onShowHistory}
+            onClick={() => onShowHistory(message)}
             aria-label="View edit history"
             title="Edit history"
             className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -413,7 +443,7 @@ function MessageRow({
         ) : null}
         <button
           type="button"
-          onClick={onPin}
+          onClick={() => void onPin(message)}
           aria-label="Pin message"
           title="Pin (requires MANAGE_MESSAGES)"
           className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -422,7 +452,7 @@ function MessageRow({
         </button>
         <button
           type="button"
-          onClick={onReport}
+          onClick={() => onReport(message)}
           aria-label="Report message"
           title="Report"
           className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -432,7 +462,7 @@ function MessageRow({
         {mine ? (
           <button
             type="button"
-            onClick={onDelete}
+            onClick={() => onDelete(message)}
             aria-label="Delete message"
             title="Delete"
             className="rounded p-1 text-fg-muted hover:bg-raised"
@@ -441,10 +471,12 @@ function MessageRow({
           </button>
         ) : null}
       </div>
-      {/* Touch affordance — below lg there is no hover, so the same actions
-          live behind a persistent overflow menu (Radix, portaled so it escapes
-          the virtualizer's overflow clipping). */}
-      <div className="shrink-0 lg:hidden">
+      {/* Touch affordance — the persistent overflow menu (Radix, portaled so
+          it escapes the virtualizer's overflow clipping). Shown whenever the
+          hover cluster is hidden: on narrow viewports, and on touch (no-hover)
+          pointers at any width. The `[@media(hover:hover)]:lg:hidden` gate is
+          the exact inverse of the cluster's, so exactly one is visible. */}
+      <div className="shrink-0 [@media(hover:hover)]:lg:hidden">
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button
@@ -461,30 +493,30 @@ function MessageRow({
               sideOffset={4}
               className="z-40 min-w-[10rem] rounded-md border border-subtle bg-surface p-1 text-sm text-fg shadow-lg"
             >
-              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onOpenThread()}>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => void onOpenThread(message)}>
                 <MessageSquare size={14} aria-hidden /> Open thread
               </DropdownMenu.Item>
-              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onSave()}>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => void onSave(message)}>
                 <Bookmark size={14} aria-hidden /> Save
               </DropdownMenu.Item>
-              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onForward()}>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onForward(message)}>
                 <Forward size={14} aria-hidden /> Forward
               </DropdownMenu.Item>
               {message.editedAt ? (
-                <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onShowHistory()}>
+                <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onShowHistory(message)}>
                   <History size={14} aria-hidden /> Edit history
                 </DropdownMenu.Item>
               ) : null}
-              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onPin()}>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => void onPin(message)}>
                 <Pin size={14} aria-hidden /> Pin
               </DropdownMenu.Item>
-              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onReport()}>
+              <DropdownMenu.Item className={MENU_ITEM} onSelect={() => onReport(message)}>
                 <Flag size={14} aria-hidden /> Report
               </DropdownMenu.Item>
               {mine ? (
                 <DropdownMenu.Item
                   className={`${MENU_ITEM} text-danger`}
-                  onSelect={() => onDelete()}
+                  onSelect={() => onDelete(message)}
                 >
                   <Trash2 size={14} aria-hidden /> Delete
                 </DropdownMenu.Item>
@@ -495,7 +527,7 @@ function MessageRow({
       </div>
     </div>
   );
-}
+});
 
 /**
  * Render a `dice_roll` message. When the API includes the inline `diceRoll`

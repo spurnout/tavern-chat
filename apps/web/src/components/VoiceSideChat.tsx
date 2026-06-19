@@ -12,7 +12,7 @@ interface Props {
 export function VoiceSideChat({ channelId, channelName }: Props): JSX.Element {
   return (
     <aside
-      className="flex h-[42vh] min-h-[18rem] min-w-0 flex-col border-t border-subtle bg-canvas xl:h-auto xl:min-h-0 xl:w-[var(--side-w,400px)] xl:shrink-0 xl:border-l xl:border-t-0"
+      className="flex h-[42dvh] min-h-[18rem] min-w-0 flex-col border-t border-subtle bg-canvas xl:h-auto xl:min-h-0 xl:w-[var(--side-w,400px)] xl:shrink-0 xl:border-l xl:border-t-0"
       aria-label={`${channelName} room chat`}
     >
       <header className="flex items-center gap-2 border-b border-subtle bg-sunken px-3 py-2">
