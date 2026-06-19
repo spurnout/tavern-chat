@@ -60,7 +60,7 @@ export function ServerSettingsPage(): JSX.Element {
       <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
         <Settings size={16} className="text-fg-muted" />
         <span className="font-serif font-medium">Tavern settings</span>
-        <div className="ml-auto flex gap-1 text-xs">
+        <div className="ml-auto flex gap-1 text-xs" role="tablist" aria-label="Tavern settings sections">
           <TabButton active={tab === 'roles'} onClick={() => setTab('roles')}>
             <Tag size={12} /> Roles
           </TabButton>

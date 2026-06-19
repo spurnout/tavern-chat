@@ -45,11 +45,13 @@ export function AuditTab({ serverId }: Props): JSX.Element {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Filter audit log by category">
         {AUDIT_CATEGORIES.map((c) => (
           <button
             key={c.id}
             type="button"
+            role="tab"
+            aria-selected={category === c.id}
             onClick={() => setCategory(c.id)}
             className={cn(
               'rounded-full border px-3 py-1 text-xs',
