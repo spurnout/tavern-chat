@@ -45,24 +45,39 @@ export function AuditTab({ serverId }: Props): JSX.Element {
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Filter audit log by category">
-        {AUDIT_CATEGORIES.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            role="tab"
-            aria-selected={category === c.id}
-            onClick={() => setCategory(c.id)}
-            className={cn(
-              'rounded-full border px-3 py-1 text-xs',
-              category === c.id
-                ? 'border-ember bg-tint-ember text-ember-hi'
-                : 'border-subtle text-fg-muted hover:bg-raised',
-            )}
-          >
-            {c.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Single-select filter over one in-place list — a radiogroup, not
+            tabs (there are no separate tabpanels, and the search box can't live
+            inside a tablist). Native radios give roving focus + arrow-key
+            navigation for free; the visible pill is the label, the radio itself
+            is screen-reader-only. */}
+        <div
+          role="radiogroup"
+          aria-label="Filter audit log by category"
+          className="flex flex-wrap items-center gap-2"
+        >
+          {AUDIT_CATEGORIES.map((c) => (
+            <label
+              key={c.id}
+              className={cn(
+                'cursor-pointer rounded-full border px-3 py-1 text-xs transition-colors focus-within:ring-2 focus-within:ring-ember',
+                category === c.id
+                  ? 'border-ember bg-tint-ember text-ember-hi'
+                  : 'border-subtle text-fg-muted hover:bg-raised',
+              )}
+            >
+              <input
+                type="radio"
+                name="audit-category"
+                value={c.id}
+                checked={category === c.id}
+                onChange={() => setCategory(c.id)}
+                className="sr-only"
+              />
+              {c.label}
+            </label>
+          ))}
+        </div>
         <div className="ml-auto flex items-center gap-2 rounded border border-subtle bg-canvas px-2 focus-within:ring-2 focus-within:ring-ember">
           <Search size={12} className="text-fg-muted" />
           <input
@@ -70,6 +85,7 @@ export function AuditTab({ serverId }: Props): JSX.Element {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search audit…"
+            aria-label="Search audit log"
             className="w-48 bg-transparent py-1 text-xs outline-none placeholder:text-fg-faint"
           />
         </div>

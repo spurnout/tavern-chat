@@ -14,6 +14,7 @@ import { DecksPanel } from '../components/DecksPanel.js';
 import { CharactersPanel } from '../components/CharactersPanel.js';
 import { NpcRosterPanel } from '../components/NpcRosterPanel.js';
 import { RandomTablesPanel } from '../components/RandomTablesPanel.js';
+import { Tabs, TabList, Tab, TabPanel } from '../components/Tabs.js';
 
 export function CampaignsPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
@@ -120,97 +121,78 @@ function CampaignDetail({ campaign }: { campaign: Campaign }): JSX.Element {
     | 'gm';
   const [tab, setTab] = useState<CampaignTab>('sessions');
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <header>
-        <h2 className="font-serif text-2xl font-medium">{campaign.name}</h2>
-        {campaign.description ? (
-          <p className="mt-1 text-sm text-fg">{campaign.description}</p>
-        ) : null}
-      </header>
-      {campaign.safetyBoundaries.length > 0 ? (
-        <div className="rounded border border-subtle bg-surface p-3 text-xs">
-          <div className="mb-1 uppercase tracking-wider text-fg-muted">Safety lines &amp; veils</div>
-          <ul className="space-y-0.5">
-            {campaign.safetyBoundaries.map((b) => (
-              <li key={b.topic}>
-                <strong>{b.topic}:</strong>{' '}
-                <span className="text-fg-muted">{b.action.replace(/_/g, ' ')}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      <div className="flex gap-1 text-xs" role="tablist" aria-label="Campaign sections">
-        <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
-          Sessions
-        </TabButton>
-        <TabButton active={tab === 'notes'} onClick={() => setTab('notes')}>
-          Notes
-        </TabButton>
-        <TabButton active={tab === 'handouts'} onClick={() => setTab('handouts')}>
-          Handouts
-        </TabButton>
-        <TabButton active={tab === 'characters'} onClick={() => setTab('characters')}>
-          Characters
-        </TabButton>
-        <TabButton active={tab === 'npcs'} onClick={() => setTab('npcs')}>
-          NPCs
-        </TabButton>
-        <TabButton active={tab === 'tables'} onClick={() => setTab('tables')}>
-          Tables
-        </TabButton>
-        <TabButton active={tab === 'safety'} onClick={() => setTab('safety')}>
-          Safety
-        </TabButton>
-        <TabButton active={tab === 'decks'} onClick={() => setTab('decks')}>
-          Decks
-        </TabButton>
-        <TabButton active={tab === 'gm'} onClick={() => setTab('gm')}>
-          GM screen
-        </TabButton>
-      </div>
-      <div className="flex-1 min-h-0">
-        {tab === 'sessions' ? <SessionsTab campaign={campaign} /> : null}
-        {tab === 'notes' ? <NotesTab campaign={campaign} /> : null}
-        {tab === 'handouts' ? <HandoutsTab campaign={campaign} /> : null}
-        {tab === 'characters' ? <CharactersPanel campaignId={campaign.id} /> : null}
-        {tab === 'npcs' ? <NpcRosterPanel campaignId={campaign.id} /> : null}
-        {tab === 'tables' ? (
-          <RandomTablesPanel serverId={campaign.serverId} campaignId={campaign.id} />
-        ) : null}
-        {tab === 'safety' ? <SafetyTab campaign={campaign} /> : null}
-        {tab === 'decks' ? (
-          <DecksPanel
-            serverId={campaign.serverId}
-            {...(campaign.defaultChannelId ? { channelId: campaign.defaultChannelId } : {})}
-          />
-        ) : null}
-        {tab === 'gm' ? <GmScreenTab campaign={campaign} onJumpTab={setTab} /> : null}
-      </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`rounded px-2 py-1 ${
-        active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'
-      }`}
+    <Tabs
+      value={tab}
+      onValueChange={(v) => setTab(v as CampaignTab)}
+      asChild
     >
-      {children}
-    </button>
+      <div className="flex h-full min-h-0 flex-col gap-4">
+        <header>
+          <h2 className="font-serif text-2xl font-medium">{campaign.name}</h2>
+          {campaign.description ? (
+            <p className="mt-1 text-sm text-fg">{campaign.description}</p>
+          ) : null}
+        </header>
+        {campaign.safetyBoundaries.length > 0 ? (
+          <div className="rounded border border-subtle bg-surface p-3 text-xs">
+            <div className="mb-1 uppercase tracking-wider text-fg-muted">Safety lines &amp; veils</div>
+            <ul className="space-y-0.5">
+              {campaign.safetyBoundaries.map((b) => (
+                <li key={b.topic}>
+                  <strong>{b.topic}:</strong>{' '}
+                  <span className="text-fg-muted">{b.action.replace(/_/g, ' ')}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <TabList className="text-xs" aria-label="Campaign sections">
+          <Tab value="sessions">Sessions</Tab>
+          <Tab value="notes">Notes</Tab>
+          <Tab value="handouts">Handouts</Tab>
+          <Tab value="characters">Characters</Tab>
+          <Tab value="npcs">NPCs</Tab>
+          <Tab value="tables">Tables</Tab>
+          <Tab value="safety">Safety</Tab>
+          <Tab value="decks">Decks</Tab>
+          <Tab value="gm">GM screen</Tab>
+        </TabList>
+        <div className="min-h-0 flex-1">
+          {/* Panels fill the height-constrained content area so tabs that
+              manage their own internal scroll (GM screen, Safety) keep working;
+              `h-full` resolves against the `flex-1 min-h-0` parent. */}
+          <TabPanel value="sessions" className="h-full min-h-0">
+            <SessionsTab campaign={campaign} />
+          </TabPanel>
+          <TabPanel value="notes" className="h-full min-h-0">
+            <NotesTab campaign={campaign} />
+          </TabPanel>
+          <TabPanel value="handouts" className="h-full min-h-0">
+            <HandoutsTab campaign={campaign} />
+          </TabPanel>
+          <TabPanel value="characters" className="h-full min-h-0">
+            <CharactersPanel campaignId={campaign.id} />
+          </TabPanel>
+          <TabPanel value="npcs" className="h-full min-h-0">
+            <NpcRosterPanel campaignId={campaign.id} />
+          </TabPanel>
+          <TabPanel value="tables" className="h-full min-h-0">
+            <RandomTablesPanel serverId={campaign.serverId} campaignId={campaign.id} />
+          </TabPanel>
+          <TabPanel value="safety" className="h-full min-h-0">
+            <SafetyTab campaign={campaign} />
+          </TabPanel>
+          <TabPanel value="decks" className="h-full min-h-0">
+            <DecksPanel
+              serverId={campaign.serverId}
+              {...(campaign.defaultChannelId ? { channelId: campaign.defaultChannelId } : {})}
+            />
+          </TabPanel>
+          <TabPanel value="gm" className="h-full min-h-0">
+            <GmScreenTab campaign={campaign} onJumpTab={setTab} />
+          </TabPanel>
+        </div>
+      </div>
+    </Tabs>
   );
 }

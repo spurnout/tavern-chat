@@ -3,6 +3,7 @@ import { useParams } from '@tanstack/react-router';
 import { Shield } from 'lucide-react';
 import { AuditTab } from '../components/moderation/AuditTab.js';
 import { ReportsTab } from '../components/moderation/ReportsTab.js';
+import { Tabs, TabList, Tab, TabPanel } from '../components/Tabs.js';
 
 type Tab = 'queue' | 'audit';
 
@@ -20,50 +21,25 @@ export function ModerationPage(): JSX.Element {
   if (!serverId) return <div className="p-12">Pick a tavern.</div>;
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
-        <Shield size={16} className="text-fg-muted" />
-        <span className="font-serif font-medium">Moderation</span>
-        <div className="ml-auto flex gap-1 text-xs" role="tablist" aria-label="Moderation sections">
-          <TabButton active={tab === 'queue'} onClick={() => setTab('queue')}>
-            Reports
-          </TabButton>
-          <TabButton active={tab === 'audit'} onClick={() => setTab('audit')}>
-            Audit log
-          </TabButton>
+    <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} asChild>
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
+        <header className="flex flex-wrap items-center gap-2 border-b border-subtle px-4 py-3">
+          <Shield size={16} className="text-fg-muted" />
+          <span className="font-serif font-medium">Moderation</span>
+          <TabList className="ml-auto text-xs" aria-label="Moderation sections">
+            <Tab value="queue">Reports</Tab>
+            <Tab value="audit">Audit log</Tab>
+          </TabList>
+        </header>
+        <div className="p-6">
+          <TabPanel value="queue">
+            <ReportsTab serverId={serverId} />
+          </TabPanel>
+          <TabPanel value="audit">
+            <AuditTab serverId={serverId} />
+          </TabPanel>
         </div>
-      </header>
-      <div className="p-6">
-        {tab === 'queue' ? (
-          <ReportsTab serverId={serverId} />
-        ) : (
-          <AuditTab serverId={serverId} />
-        )}
       </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`rounded px-2 py-1 ${
-        active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'
-      }`}
-    >
-      {children}
-    </button>
+    </Tabs>
   );
 }
