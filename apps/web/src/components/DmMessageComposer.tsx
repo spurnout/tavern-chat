@@ -18,6 +18,7 @@ import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { uploadFile } from '../lib/uploads.js';
 import { filesFromClipboard } from '../lib/clipboard-files.js';
+import { ErrorAlert } from './ErrorAlert.js';
 
 interface Props {
   dmChannelId: string;
@@ -149,7 +150,7 @@ export function DmMessageComposer({ dmChannelId }: Props): JSX.Element {
 
   return (
     <div className="border-t border-subtle bg-sunken p-3">
-      {error ? <div className="mb-2 text-xs text-danger">{error}</div> : null}
+      {error ? <ErrorAlert className="mb-2 text-xs">{error}</ErrorAlert> : null}
       {pending.length > 0 ? (
         <div className="mb-2 flex flex-wrap gap-2">
           {pending.map((p) => (
@@ -198,6 +199,7 @@ export function DmMessageComposer({ dmChannelId }: Props): JSX.Element {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           rows={1}
+          aria-label="Message"
           className="min-h-[40px] max-h-40 flex-1 resize-none rounded border border-subtle bg-canvas px-3 py-2 text-sm text-fg focus:outline-none focus:ring-1 focus:ring-ember"
           placeholder={`Message (${DICE_PREFIX}1d20 to roll)`}
         />

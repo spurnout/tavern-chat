@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { Member, Presence } from '@tavern/shared';
-import { api } from '../lib/api-client.js';
+import { useEffect, useMemo } from 'react';
+import type { Member } from '@tavern/shared';
 import { useRealtime } from '../lib/store.js';
 import { cn } from '../lib/cn.js';
 import { PresenceDot } from './PresenceDot.js';
 import { MemberProfileTrigger } from './MemberProfileTrigger.js';
-
-type LoadState = 'loading' | 'loaded' | 'error';
 
 // Module-level frozen default so the "no overrides yet" path returns a stable
 // reference across renders. Returning a fresh `{}` from the zustand selector
 // re-fires useSyncExternalStore on every render and infinite-loops React;
 // same trap as the channelsByServer fix in server-home.tsx.
 const EMPTY_NICK_OVERRIDES: Record<string, string | null> = Object.freeze({});
+// Same stability trap for the roster: the selector returns the store dict
+// (stable ref) and we fall back to this shared empty array, never a fresh [].
+const EMPTY_MEMBERS: Member[] = [];
 
 export function MemberSidebar({
   serverId,
@@ -24,12 +24,22 @@ export function MemberSidebar({
   open: boolean;
   onClose: () => void;
 }): JSX.Element {
-  const [members, setMembers] = useState<Member[]>([]);
-  // FE-10: distinguish loading / error / empty so a network failure doesn't
-  // present as "No members yet." (which looks like real success).
-  const [loadState, setLoadState] = useState<LoadState>('loading');
+  // Roster + load state come from the shared `ensureMembers` cache so this
+  // column and the ChannelSidebar's presence hydration share ONE fetch per
+  // server. FE-10: the tri-state still distinguishes loading / error / empty
+  // so a network failure doesn't present as "No members yet." Missing key →
+  // 'loading' (the fetch effect below kicks in on mount). Select the store
+  // dicts (stable refs) and derive the per-server slices via useMemo so the
+  // empty-case fallbacks stay stable references.
+  const ensureMembers = useRealtime((s) => s.ensureMembers);
+  const membersByServer = useRealtime((s) => s.membersByServer);
+  const membersLoadByServer = useRealtime((s) => s.membersLoadByServer);
+  const members = useMemo(
+    () => membersByServer[serverId] ?? EMPTY_MEMBERS,
+    [membersByServer, serverId],
+  );
+  const loadState = membersLoadByServer[serverId] ?? 'loading';
   const presenceByUserId = useRealtime((s) => s.presenceByUserId);
-  const setPresences = useRealtime((s) => s.setPresences);
   // Nickname overlays applied on top of whatever the initial members fetch
   // returned. Updated by MEMBER_UPDATE dispatches so a rename event reflects
   // here without a refetch. Subscribe to the dict; derive the per-server
@@ -43,26 +53,8 @@ export function MemberSidebar({
   );
 
   useEffect(() => {
-    let cancelled = false;
-    setLoadState('loading');
-    api<Member[]>(`/servers/${serverId}/members`)
-      .then((m) => {
-        if (cancelled) return;
-        setMembers(m);
-        setLoadState('loaded');
-        // Hydrate the realtime store with what the server reported at fetch
-        // time. PRESENCE_UPDATE events keep these fresh from here on.
-        const entries: Record<string, Presence> = {};
-        for (const item of m) entries[item.userId] = item.user.presence;
-        setPresences(entries);
-      })
-      .catch(() => {
-        if (!cancelled) setLoadState('error');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [serverId, setPresences]);
+    void ensureMembers(serverId);
+  }, [serverId, ensureMembers]);
 
   return (
     <>

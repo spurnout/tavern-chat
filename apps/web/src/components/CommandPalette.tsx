@@ -173,6 +173,12 @@ export function CommandPalette(): JSX.Element {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Find a room, member, message, or action…"
+              role="combobox"
+              aria-expanded={filtered.length > 0}
+              aria-controls="command-palette-list"
+              aria-activedescendant={
+                filtered[active] ? optionDomId(filtered[active].id) : undefined
+              }
               className="flex-1 rounded bg-transparent text-sm focus:outline-none focus:ring-2 focus:ring-ember"
               onKeyDown={(e) => {
                 if (e.key === 'ArrowDown') {
@@ -195,23 +201,34 @@ export function CommandPalette(): JSX.Element {
               <X size={12} />
             </Dialog.Close>
           </header>
-          <div className="max-h-96 overflow-y-auto py-1">
+          <p className="sr-only" aria-live="polite">
+            {filtered.length} {filtered.length === 1 ? 'result' : 'results'}
+          </p>
+          <div
+            id="command-palette-list"
+            role="listbox"
+            aria-label="Command palette results"
+            className="max-h-96 overflow-y-auto py-1"
+          >
             {filtered.length === 0 ? (
               <p className="px-3 py-4 text-sm text-fg-muted">No matches.</p>
             ) : null}
             {(['jump', 'action', 'search'] as const).map((g) =>
               grouped[g].length === 0 ? null : (
-                <section key={g}>
+                <section key={g} role="presentation">
                   <div className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-fg-faint">
                     {labelForGroup(g)}
                   </div>
-                  <ul>
+                  <ul role="presentation">
                     {grouped[g].map((e) => {
                       const idx = filtered.indexOf(e);
                       return (
-                        <li key={e.id}>
+                        <li key={e.id} role="presentation">
                           <button
                             type="button"
+                            id={optionDomId(e.id)}
+                            role="option"
+                            aria-selected={idx === active}
                             onMouseEnter={() => setActive(idx)}
                             onClick={() => {
                               e.go();
@@ -253,6 +270,16 @@ export function CommandPalette(): JSX.Element {
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+/**
+ * Stable DOM id for a result row, derived from the entry's own id. Used by the
+ * input's `aria-activedescendant` and each `role="option"` element so screen
+ * readers can follow the arrow-key highlight. Non-`[A-Za-z0-9_-]` characters
+ * (e.g. the `:` in `jump:room:…`) are replaced so the value is a safe IDREF.
+ */
+function optionDomId(entryId: string): string {
+  return `command-palette-option-${entryId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 }
 
 function groupBy(entries: PaletteEntry[]): Record<PaletteGroup, PaletteEntry[]> {

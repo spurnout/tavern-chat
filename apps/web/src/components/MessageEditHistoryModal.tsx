@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { History, X } from 'lucide-react';
+import { Modal } from './Modal.js';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 
@@ -41,43 +41,36 @@ export function MessageEditHistoryModal({ messageId, currentContent, onClose }: 
   }, [messageId]);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-canvas/70" onClick={onClose}>
-      <div
-        className="w-full max-w-lg rounded border border-subtle bg-surface p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 font-serif text-lg">
-            <History size={16} /> Edit history
-          </h2>
-          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-raised" aria-label="Close">
-            <X size={14} />
-          </button>
-        </header>
-        <div className="mt-3 space-y-3 text-sm">
-          {loading ? (
-            <p className="text-fg-muted">Loading…</p>
-          ) : (
-            <>
-              <Revision label="Current" content={currentContent} />
-              {edits.length === 0 ? (
-                <p className="text-fg-muted">This message has no recorded edits.</p>
-              ) : (
-                [...edits]
-                  .reverse()
-                  .map((e) => (
-                    <Revision
-                      key={e.id}
-                      label={`${new Date(e.editedAt).toLocaleString()} · ${e.editor.displayName}`}
-                      content={e.content}
-                    />
-                  ))
-              )}
-            </>
-          )}
-        </div>
+    <Modal
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      title="Edit history"
+    >
+      <div className="space-y-3 text-sm">
+        {loading ? (
+          <p className="text-fg-muted">Loading…</p>
+        ) : (
+          <>
+            <Revision label="Current" content={currentContent} />
+            {edits.length === 0 ? (
+              <p className="text-fg-muted">This message has no recorded edits.</p>
+            ) : (
+              [...edits]
+                .reverse()
+                .map((e) => (
+                  <Revision
+                    key={e.id}
+                    label={`${new Date(e.editedAt).toLocaleString()} · ${e.editor.displayName}`}
+                    content={e.content}
+                  />
+                ))
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 

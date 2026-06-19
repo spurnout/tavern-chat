@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api-client.js';
+import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { PeersTable, type PeerRow } from '../components/admin/PeersTable.js';
 import { AddPeerModal } from '../components/admin/AddPeerModal.js';
 import { RevokePeerModal } from '../components/admin/RevokePeerModal.js';
@@ -20,6 +21,7 @@ export function AdminFederationPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [pendingRevoke, setPendingRevoke] = useState<PeerRow | null>(null);
+  const [pendingDiscard, setPendingDiscard] = useState<FailedJob | null>(null);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -160,19 +162,24 @@ export function AdminFederationPage(): JSX.Element {
                         {job.failedReason}
                       </td>
                       <td className="py-2 pr-4 text-center">{job.attemptsMade}</td>
-                      <td className="py-2 space-x-2">
-                        <button
-                          className="text-xs text-ember hover:underline"
-                          onClick={() => void retryJob(job.id)}
-                        >
-                          Retry
-                        </button>
-                        <button
-                          className="text-xs text-fg-muted hover:text-danger hover:underline"
-                          onClick={() => void discardJob(job.id)}
-                        >
-                          Discard
-                        </button>
+                      <td className="py-2">
+                        <div className="flex items-center gap-3">
+                          <button
+                            className="text-xs text-ember hover:underline"
+                            onClick={() => void retryJob(job.id)}
+                          >
+                            Retry
+                          </button>
+                          <span aria-hidden className="text-fg-muted/40">
+                            |
+                          </span>
+                          <button
+                            className="text-xs text-danger hover:underline"
+                            onClick={() => setPendingDiscard(job)}
+                          >
+                            Discard
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -181,6 +188,21 @@ export function AdminFederationPage(): JSX.Element {
             )}
           </div>
         </section>
+
+        {pendingDiscard ? (
+          <ConfirmDialog
+            title="Discard this failed event?"
+            description="This permanently drops a federation event that could otherwise be retried. Once discarded it cannot be recovered or re-queued."
+            confirmLabel="Discard"
+            destructive
+            onCancel={() => setPendingDiscard(null)}
+            onConfirm={async () => {
+              const id = pendingDiscard.id;
+              setPendingDiscard(null);
+              await discardJob(id);
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );

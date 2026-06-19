@@ -16,6 +16,7 @@ import {
   Permission,
   type Channel,
   type DmChannel,
+  type Member,
   type Message,
   type Presence,
   type Role,
@@ -51,6 +52,15 @@ function scheduleDraftSync(channelId: string, content: string): void {
   }, DRAFT_SYNC_DEBOUNCE_MS);
   draftSyncTimers.set(channelId, timer);
 }
+
+/**
+ * In-flight roster fetches keyed by serverId. Module-level (NOT store state)
+ * so two consumers opening the same server in the same tick — the ChannelSidebar
+ * presence-hydration effect and the MemberSidebar render effect — coalesce onto
+ * a single `GET /servers/:id/members` instead of racing two identical fetches.
+ * Cleared in `ensureMembers`' finally so a later refetch can start fresh.
+ */
+const membersInFlight = new Map<string, Promise<void>>();
 
 /**
  * The voice room the local user is currently in (or trying to enter). Set
@@ -90,6 +100,20 @@ const EMPTY_VOICE_STATES_BY_USER = Object.freeze(
 interface RealtimeState {
   serversById: Record<string, Server>;
   channelsByServer: Record<string, Channel[]>;
+  /**
+   * Authoritative member roster per server, keyed by serverId. Populated by
+   * `ensureMembers` (single shared fetch) and kept fresh by MEMBER_ADD /
+   * MEMBER_REMOVE dispatches. The MemberSidebar renders straight from this;
+   * the ChannelSidebar reads it to map voice rows to members. Absence of a
+   * key means "never fetched for this server".
+   */
+  membersByServer: Record<string, Member[]>;
+  /**
+   * Load state for each server's roster, mirroring `rolesByServerId`'s
+   * loading/loaded/error tri-state. Drives the MemberSidebar's three load
+   * panes. Missing key reads as `'loading'` at the call site.
+   */
+  membersLoadByServer: Record<string, 'loading' | 'loaded' | 'error'>;
   messagesByChannel: Record<string, Message[]>;
   /** threadId -> messages array, kept sorted by id like messagesByChannel. */
   messagesByThread: Record<string, Message[]>;
@@ -239,6 +263,15 @@ interface RealtimeState {
   setProfile: (userId: string, profile: UserProfile) => void;
   mergeProfileOverlay: (userId: string, overlay: Partial<UserProfile>) => void;
   loadRolesForServer: (serverId: string, opts?: { force?: boolean }) => Promise<void>;
+  /**
+   * Fetch (once) and cache the member roster for `serverId`. Concurrent callers
+   * in the same tick share a single in-flight request; a `'loaded'` roster is
+   * reused without a refetch unless `force` is set. Hydrates `presenceByUserId`
+   * from the response in the same atomic update.
+   */
+  ensureMembers: (serverId: string, opts?: { force?: boolean }) => Promise<void>;
+  /** Splice a member out of a cached roster (MEMBER_REMOVE dispatch). */
+  removeMember: (serverId: string, userId: string) => void;
   setComposerDraft: (channelId: string, draft: string) => void;
   /**
    * Bootstrap drafts from the server. Called from AppShell once the user is
@@ -310,6 +343,8 @@ function voiceStateMapsEqual(
 export const useRealtime = create<RealtimeState>((set, get) => ({
   serversById: {},
   channelsByServer: {},
+  membersByServer: {},
+  membersLoadByServer: {},
   messagesByChannel: {},
   messagesByThread: {},
   typingByChannel: {},
@@ -507,7 +542,14 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
     set((s) => {
       const { [serverId]: _removedServer, ...nextServers } = s.serversById;
       const { [serverId]: _removedChannels, ...nextChannels } = s.channelsByServer;
-      return { serversById: nextServers, channelsByServer: nextChannels };
+      const { [serverId]: _removedMembers, ...nextMembers } = s.membersByServer;
+      const { [serverId]: _removedMembersLoad, ...nextMembersLoad } = s.membersLoadByServer;
+      return {
+        serversById: nextServers,
+        channelsByServer: nextChannels,
+        membersByServer: nextMembers,
+        membersLoadByServer: nextMembersLoad,
+      };
     }),
 
   upsertChannels: (serverId, channels) =>
@@ -742,6 +784,72 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       }));
     }
   },
+
+  ensureMembers: (serverId, opts) => {
+    const force = opts?.force === true;
+    // Already cached and fresh — nothing to do.
+    if (!force && get().membersLoadByServer[serverId] === 'loaded') {
+      return Promise.resolve();
+    }
+    // A request is already in flight for this server — coalesce onto it so
+    // two consumers mounting in the same tick don't double-fetch.
+    const inFlight = membersInFlight.get(serverId);
+    if (inFlight && !force) return inFlight;
+
+    set((s) => ({
+      membersLoadByServer: { ...s.membersLoadByServer, [serverId]: 'loading' },
+    }));
+
+    const fetchOnce = async (): Promise<void> => {
+      try {
+        const list = await api<Member[]>(`/servers/${encodeURIComponent(serverId)}/members`);
+        set((s) => {
+          // Hydrate presence from the roster snapshot in the SAME atomic
+          // update so the sidebar never paints members with a stale dot.
+          const entries: Record<string, Presence> = {};
+          for (const m of list) entries[m.userId] = m.user.presence;
+          return {
+            membersByServer: { ...s.membersByServer, [serverId]: list },
+            membersLoadByServer: { ...s.membersLoadByServer, [serverId]: 'loaded' },
+            presenceByUserId: { ...s.presenceByUserId, ...entries },
+          };
+        });
+      } catch {
+        set((s) => ({
+          membersLoadByServer: { ...s.membersLoadByServer, [serverId]: 'error' },
+        }));
+      }
+    };
+
+    // A forced refetch while a request is already in flight CHAINS onto it
+    // rather than racing a second concurrent GET, so the coalescing contract
+    // holds for `force` too. The cleanup clears the map only while it still
+    // points at THIS promise, so an older fetch settling can't evict the newer
+    // forced one that replaced it.
+    let promise: Promise<void>;
+    promise = (inFlight ?? Promise.resolve()).then(fetchOnce, fetchOnce).finally(() => {
+      if (membersInFlight.get(serverId) === promise) {
+        membersInFlight.delete(serverId);
+      }
+    });
+
+    membersInFlight.set(serverId, promise);
+    return promise;
+  },
+
+  removeMember: (serverId, userId) =>
+    set((s) => {
+      const list = s.membersByServer[serverId];
+      // No cached roster, or the member isn't in it — preserve the reference
+      // so subscribers don't re-render on a no-op.
+      if (!list) return s;
+      const idx = list.findIndex((m) => m.userId === userId);
+      if (idx < 0) return s;
+      const next = [...list.slice(0, idx), ...list.slice(idx + 1)];
+      return {
+        membersByServer: { ...s.membersByServer, [serverId]: next },
+      };
+    }),
 
   loadDrafts: async () => {
     try {

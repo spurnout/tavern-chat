@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Dice5, Plus, Trash2 } from 'lucide-react';
+import { Dice5, Dices, Plus, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useRealtime } from '../lib/store.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { EmptyState } from './EmptyState.js';
 
 interface TableRow {
   id: string;
@@ -35,7 +37,9 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [notation, setNotation] = useState('1d6');
+  const [creating, setCreating] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Table | null>(null);
   const activeChannelId = useRealtime((s) => s.activeChannelId);
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -56,6 +60,7 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
 
   async function create(): Promise<void> {
     if (!name.trim()) return;
+    setCreating(true);
     try {
       await api(`/servers/${serverId}/tables`, {
         method: 'POST',
@@ -72,6 +77,8 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
       void refresh();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not create');
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -111,6 +118,7 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
           <div className="flex gap-1">
             <input
               type="text"
+              aria-label="New table name"
               placeholder="New table name"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -121,6 +129,7 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
           <div className="flex gap-1">
             <input
               type="text"
+              aria-label="Default dice notation"
               value={notation}
               onChange={(e) => setNotation(e.target.value)}
               className="input flex-1 font-mono text-xs"
@@ -131,7 +140,9 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
               type="button"
               onClick={() => void create()}
               className="btn-primary text-xs"
-              disabled={!name.trim()}
+              disabled={creating || !name.trim()}
+              aria-label="Add table"
+              title="Add table"
             >
               <Plus size={12} />
             </button>
@@ -141,7 +152,14 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
           {loading ? (
             <li className="px-3 py-2 text-fg-muted">Loading…</li>
           ) : tables.length === 0 ? (
-            <li className="px-3 py-2 text-fg-muted">No tables.</li>
+            <li>
+              <EmptyState
+                icon={<Dices size={28} strokeWidth={1.5} />}
+                title="No tables yet."
+                description="Build one to roll on — encounters, loot, rumors, anything you'd reach for at the table."
+                className="px-4 py-8"
+              />
+            </li>
           ) : (
             tables.map((t) => (
               <li
@@ -165,7 +183,7 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
                 </button>
                 <button
                   type="button"
-                  onClick={() => void remove(t.id)}
+                  onClick={() => setPendingDelete(t)}
                   className="rounded p-1 text-fg-muted hover:bg-raised"
                   aria-label="Delete"
                 >
@@ -183,6 +201,20 @@ export function RandomTablesPanel({ serverId, campaignId }: Props): JSX.Element 
           <p className="text-fg-muted">Select a table or create one.</p>
         )}
       </main>
+      {pendingDelete ? (
+        <ConfirmDialog
+          title="Delete this table?"
+          description={`Delete "${pendingDelete.name}"? This can't be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={async () => {
+            const id = pendingDelete.id;
+            setPendingDelete(null);
+            await remove(id);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Settings, X } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import type { Channel, FederationMode } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
@@ -31,18 +32,6 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
     channel.federationMode ?? 'inherit',
   );
   const [busy, setBusy] = useState(false);
-  const popoverRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClickOutside(e: MouseEvent): void {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -61,31 +50,32 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
   }
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="touch-target-sq rounded p-1 hover:bg-raised"
-        aria-label="Channel settings"
-        title="Channel settings"
-      >
-        <Settings size={14} />
-      </button>
-      {open ? (
-        <div
-          ref={popoverRef}
-          className="absolute right-0 top-full z-30 mt-2 w-80 rounded border border-subtle bg-surface shadow-lg"
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          className="touch-target-sq rounded p-1 hover:bg-raised"
+          aria-label="Room settings"
+          title="Room settings"
+        >
+          <Settings size={14} />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="bottom"
+          align="end"
+          sideOffset={8}
+          collisionPadding={12}
+          role="dialog"
+          aria-label="Room settings"
+          className="z-40 w-80 rounded border border-subtle bg-surface shadow-lg"
         >
           <header className="flex items-center justify-between border-b border-subtle px-3 py-2">
             <h2 className="font-serif text-sm">Room settings</h2>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="rounded p-1 hover:bg-raised"
-              aria-label="Close"
-            >
+            <Popover.Close className="rounded p-1 hover:bg-raised" aria-label="Close">
               <X size={12} />
-            </button>
+            </Popover.Close>
           </header>
           <div className="space-y-3 px-3 py-2 text-sm">
             <label className="block">
@@ -149,9 +139,9 @@ export function ChannelSettingsPopover({ channel, canManage }: Props): JSX.Eleme
               </p>
             )}
           </div>
-        </div>
-      ) : null}
-    </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 

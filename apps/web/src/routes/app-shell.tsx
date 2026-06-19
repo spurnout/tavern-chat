@@ -35,7 +35,7 @@ import { useNotificationSettings } from '../lib/notification-settings.js';
 import { startRealtime, stopRealtime } from '../lib/realtime.js';
 import { api } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
-import type { Channel, Member, Presence, Server } from '@tavern/shared';
+import type { Channel, Member, Server } from '@tavern/shared';
 import { cn } from '../lib/cn.js';
 import { useResizablePane } from '../lib/use-resizable-pane.js';
 import { CreateServerModal } from '../components/CreateServerModal.js';
@@ -57,6 +57,10 @@ import { LiveAnnouncer } from '../components/LiveAnnouncer.js';
 // reference survives every render and React.memo'd consumers see prop
 // equality. Cast away ReadonlyArray so consumers still get Channel[].
 const EMPTY_CHANNELS = [] as Channel[];
+// Stable empty roster for the "server not fetched yet" path. Module-level so
+// the same reference survives every render and the useMemo below stays cheap;
+// returning a fresh [] from the selector would loop useSyncExternalStore.
+const EMPTY_MEMBERS: Member[] = [];
 const VoiceRoom = lazy(() =>
   import('../components/VoiceRoom.js').then((module) => ({ default: module.VoiceRoom })),
 );
@@ -431,8 +435,17 @@ function ChannelSidebar({
   onOpenSettings,
 }: ChannelSidebarProps): JSX.Element {
   const isAdmin = me?.isInstanceAdmin === true;
-  const [members, setMembers] = useState<Member[]>([]);
-  const setPresences = useRealtime((s) => s.setPresences);
+  // Roster is fetched once per server by the shared `ensureMembers` action and
+  // cached in the store — the MemberSidebar reads the same slice, so opening a
+  // room no longer triggers two `GET /servers/:id/members` fetches. We only
+  // need the member map here to label voice rows; the dedicated members column
+  // owns the authoritative render + load states.
+  const ensureMembers = useRealtime((s) => s.ensureMembers);
+  const membersByServer = useRealtime((s) => s.membersByServer);
+  const members = useMemo(
+    () => (activeServerId ? membersByServer[activeServerId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS),
+    [membersByServer, activeServerId],
+  );
   const membersByUserId = useMemo(() => {
     const byUser: Record<string, Member> = {};
     for (const member of members) byUser[member.userId] = member;
@@ -440,26 +453,8 @@ function ChannelSidebar({
   }, [members]);
 
   useEffect(() => {
-    if (!activeServerId) {
-      setMembers([]);
-      return;
-    }
-    let cancelled = false;
-    api<Member[]>(`/servers/${activeServerId}/members`)
-      .then((list) => {
-        if (cancelled) return;
-        setMembers(list);
-        const entries: Record<string, Presence> = {};
-        for (const item of list) entries[item.userId] = item.user.presence;
-        setPresences(entries);
-      })
-      .catch(() => {
-        if (!cancelled) setMembers([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeServerId, setPresences]);
+    if (activeServerId) void ensureMembers(activeServerId);
+  }, [activeServerId, ensureMembers]);
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-subtle bg-sunken">

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Bookmark, Trash2, X } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import { useNavigate } from '@tanstack/react-router';
 import type { Message } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
@@ -23,7 +24,6 @@ export function SavedPanel(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const channelsByServer = useRealtime((s) => s.channelsByServer);
-  const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -32,17 +32,6 @@ export function SavedPanel(): JSX.Element {
       .then((res) => setItems(res.items))
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    function onClickOutside(e: MouseEvent): void {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
   }, [open]);
 
   function openEntry(entry: SavedEntry): void {
@@ -76,33 +65,32 @@ export function SavedPanel(): JSX.Element {
   }
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        aria-label="Saved messages"
-        title="Saved messages"
-        onClick={() => setOpen((v) => !v)}
-        className="rounded p-1 hover:bg-raised"
-      >
-        <Bookmark size={16} />
-      </button>
-      {open ? (
-        <div
-          ref={popoverRef}
-          className="absolute bottom-full left-0 z-40 mb-2 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          aria-label="Saved messages"
+          title="Saved messages"
+          className="rounded p-1 hover:bg-raised"
+        >
+          <Bookmark size={16} />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="start"
+          sideOffset={8}
+          collisionPadding={12}
           role="dialog"
           aria-label="Saved messages"
+          className="z-40 w-96 max-w-[90vw] rounded border border-subtle bg-surface shadow-lg"
         >
           <header className="flex items-center justify-between border-b border-subtle px-3 py-2">
             <h2 className="font-serif text-sm">Saved messages</h2>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="rounded p-1 hover:bg-raised"
-              aria-label="Close"
-            >
+            <Popover.Close className="rounded p-1 hover:bg-raised" aria-label="Close">
               <X size={12} />
-            </button>
+            </Popover.Close>
           </header>
           <div className="max-h-96 overflow-y-auto">
             {loading ? (
@@ -151,8 +139,8 @@ export function SavedPanel(): JSX.Element {
               </ul>
             )}
           </div>
-        </div>
-      ) : null}
-    </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

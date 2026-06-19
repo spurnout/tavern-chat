@@ -5,6 +5,7 @@ import type { Message } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { useRealtime } from '../lib/store.js';
 import { EmptyState } from '../components/EmptyState.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 
 export function SearchPage(): JSX.Element {
   const { serverId } = useParams({ strict: false }) as { serverId?: string };
@@ -77,7 +78,7 @@ export function SearchPage(): JSX.Element {
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search messages in this tavern (min 2 chars)…"
         />
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
+        {error ? <ErrorAlert>{error}</ErrorAlert> : null}
         {busy ? <p className="text-sm text-fg-muted">Searching…</p> : null}
         {!busy && q.trim().length >= 2 && results.length === 0 ? (
           <EmptyState

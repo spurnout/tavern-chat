@@ -4,6 +4,7 @@ import { Plus, Swords } from 'lucide-react';
 import type { Campaign } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
 import { CreateCampaignModal } from '../components/CreateCampaignModal.js';
+import { EmptyState } from '../components/EmptyState.js';
 import { SessionsTab } from '../components/campaigns/SessionsTab.js';
 import { NotesTab } from '../components/campaigns/NotesTab.js';
 import { HandoutsTab } from '../components/campaigns/HandoutsTab.js';
@@ -64,7 +65,11 @@ export function CampaignsPage(): JSX.Element {
           {loading ? <p className="text-fg-muted">Loading…</p> : null}
           {error ? <p className="text-danger">{error}</p> : null}
           {!loading && campaigns.length === 0 ? (
-            <p className="text-sm text-fg-muted">No campaigns yet.</p>
+            <EmptyState
+              title="No campaigns yet"
+              description="Start your first campaign and gather the party."
+              className="py-6"
+            />
           ) : null}
           <ul className="space-y-1">
             {campaigns.map((c) => (
@@ -135,7 +140,7 @@ function CampaignDetail({ campaign }: { campaign: Campaign }): JSX.Element {
           </ul>
         </div>
       ) : null}
-      <div className="flex gap-1 text-xs">
+      <div className="flex gap-1 text-xs" role="tablist" aria-label="Campaign sections">
         <TabButton active={tab === 'sessions'} onClick={() => setTab('sessions')}>
           Sessions
         </TabButton>
@@ -198,6 +203,8 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={`rounded px-2 py-1 ${
         active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'

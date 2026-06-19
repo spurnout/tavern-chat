@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 import { api, ApiError } from '../lib/api-client.js';
 
 /**
@@ -67,7 +68,7 @@ export function ResetPasswordPage(): JSX.Element {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
+    <div className="grid min-h-dvh place-items-center px-4">
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8" />
         {missingToken ? (
@@ -107,6 +108,7 @@ export function ResetPasswordPage(): JSX.Element {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 disabled={busy}
+                aria-invalid={error !== null}
               />
             </label>
             <label className="block text-sm">
@@ -120,9 +122,10 @@ export function ResetPasswordPage(): JSX.Element {
                 onChange={(e) => setConfirm(e.target.value)}
                 required
                 disabled={busy}
+                aria-invalid={error !== null}
               />
             </label>
-            {error ? <p className="text-sm text-danger">{error}</p> : null}
+            {error ? <ErrorAlert>{error}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy || !token}>
               {busy ? 'Setting password…' : 'Set new password'}
             </button>

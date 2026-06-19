@@ -24,7 +24,7 @@ export function ModerationPage(): JSX.Element {
       <header className="flex items-center gap-2 border-b border-subtle px-4 py-3">
         <Shield size={16} className="text-fg-muted" />
         <span className="font-serif font-medium">Moderation</span>
-        <div className="ml-auto flex gap-1 text-xs">
+        <div className="ml-auto flex gap-1 text-xs" role="tablist" aria-label="Moderation sections">
           <TabButton active={tab === 'queue'} onClick={() => setTab('queue')}>
             Reports
           </TabButton>
@@ -56,6 +56,8 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={`rounded px-2 py-1 ${
         active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'

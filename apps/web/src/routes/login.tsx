@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyRound, LogIn } from 'lucide-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { TavernLogo } from '../components/TavernLogo.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 import { useAuth } from '../lib/auth.js';
 import { api } from '../lib/api-client.js';
 import { clearPendingInvite, readPendingInvite } from '../lib/pending-invite.js';
@@ -16,6 +17,7 @@ export function LoginPage(): JSX.Element {
   const error = useAuth((s) => s.error);
   const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const [identifier, setIdentifier] = useState('');
+  const identifierRef = useRef<HTMLInputElement>(null);
   const [password, setPassword] = useState('');
   const [stagedToken, setStagedToken] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -78,7 +80,12 @@ export function LoginPage(): JSX.Element {
   }
 
   async function onPasskeySignIn(): Promise<void> {
-    if (!identifier.trim()) return;
+    if (!identifier.trim()) {
+      // The button stays reachable (not disabled) so it's operable by keyboard
+      // and screen readers; clicking it empty points the user at what's needed.
+      identifierRef.current?.focus();
+      return;
+    }
     try {
       await loginWebauthn(identifier.trim());
       // If the user cancelled the platform prompt the store leaves us idle
@@ -95,7 +102,7 @@ export function LoginPage(): JSX.Element {
   const busy = status === 'loading';
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
+    <div className="grid min-h-dvh place-items-center px-4">
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8 justify-center" />
         {stagedToken ? (
@@ -114,8 +121,9 @@ export function LoginPage(): JSX.Element {
               onChange={(e) => setCode(e.target.value)}
               required
               disabled={busy}
+              aria-invalid={status === 'error'}
             />
-            {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
+            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Verifying…' : 'Verify'}
             </button>
@@ -136,6 +144,7 @@ export function LoginPage(): JSX.Element {
             <label className="block text-sm">
               <span className="mb-1 inline-block text-fg-muted">Username or email</span>
               <input
+                ref={identifierRef}
                 className="input"
                 autoComplete="username"
                 value={identifier}
@@ -154,23 +163,31 @@ export function LoginPage(): JSX.Element {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 disabled={busy}
+                aria-invalid={status === 'error'}
               />
             </label>
-            {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
+            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
             {webauthnSupported ? (
-              <button
-                type="button"
-                className="btn-ghost w-full"
-                onClick={() => void onPasskeySignIn()}
-                disabled={busy || !identifier.trim()}
-                title={!identifier.trim() ? 'Enter your username first' : 'Use a passkey'}
-              >
-                <KeyRound size={14} className="mr-1.5 inline-block" />
-                Sign in with passkey
-              </button>
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  className="btn-ghost w-full"
+                  onClick={() => void onPasskeySignIn()}
+                  disabled={busy}
+                  aria-describedby={!identifier.trim() ? 'passkey-hint' : undefined}
+                >
+                  <KeyRound size={14} className="mr-1.5 inline-block" />
+                  Sign in with passkey
+                </button>
+                {!identifier.trim() ? (
+                  <p id="passkey-hint" className="text-center text-xs text-fg-muted">
+                    Enter your username above to use a passkey.
+                  </p>
+                ) : null}
+              </div>
             ) : null}
             <SsoSignInButton />
             <p className="text-center text-sm">

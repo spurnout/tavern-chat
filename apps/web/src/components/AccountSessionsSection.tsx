@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 interface SessionRow {
   id: string;
@@ -22,6 +23,10 @@ export function AccountSessionsSection(): JSX.Element {
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // FE-13: confirm before signing a device out. The trash-can button was
+  // single-click → fire — an accidental tap kicked a device's session with
+  // no undo.
+  const [pendingRevoke, setPendingRevoke] = useState<SessionRow | null>(null);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -103,7 +108,7 @@ export function AccountSessionsSection(): JSX.Element {
               <button
                 type="button"
                 className="rounded p-1 text-fg-muted hover:bg-raised"
-                onClick={() => void revoke(s.id)}
+                onClick={() => setPendingRevoke(s)}
                 disabled={busy}
                 aria-label="Revoke session"
                 title="Revoke"
@@ -114,6 +119,21 @@ export function AccountSessionsSection(): JSX.Element {
           ))
         )}
       </div>
+
+      {pendingRevoke ? (
+        <ConfirmDialog
+          title="Sign this device out?"
+          description={`This signs out "${pendingRevoke.deviceName ?? 'Browser session'}". That device will need to sign in again.`}
+          confirmLabel="Sign out"
+          destructive
+          onCancel={() => setPendingRevoke(null)}
+          onConfirm={async () => {
+            const id = pendingRevoke.id;
+            setPendingRevoke(null);
+            await revoke(id);
+          }}
+        />
+      ) : null}
     </section>
   );
 }

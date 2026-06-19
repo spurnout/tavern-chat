@@ -231,18 +231,21 @@ export function ModerationHardeningPanel({ serverId }: { serverId: string }): JS
         <p className="text-sm text-fg-muted">
           Require new members to clear a bar before they can post.
         </p>
-        <select
-          className="input w-full"
-          value={server?.verificationLevel ?? 'none'}
-          disabled={busy}
-          onChange={(e) => void saveVerification({ verificationLevel: e.target.value as VerificationLevel })}
-        >
-          {(Object.keys(VERIFICATION_LABELS) as VerificationLevel[]).map((lvl) => (
-            <option key={lvl} value={lvl}>
-              {VERIFICATION_LABELS[lvl]}
-            </option>
-          ))}
-        </select>
+        <label className="block text-sm">
+          <span className="mb-1 inline-block text-fg-muted">Verification level</span>
+          <select
+            className="input w-full"
+            value={server?.verificationLevel ?? 'none'}
+            disabled={busy}
+            onChange={(e) => void saveVerification({ verificationLevel: e.target.value as VerificationLevel })}
+          >
+            {(Object.keys(VERIFICATION_LABELS) as VerificationLevel[]).map((lvl) => (
+              <option key={lvl} value={lvl}>
+                {VERIFICATION_LABELS[lvl]}
+              </option>
+            ))}
+          </select>
+        </label>
         {server?.verificationLevel === 'account_age' ? (
           <label className="block text-sm">
             <span className="mb-1 inline-block text-fg-muted">Minimum account age (hours)</span>

@@ -10,6 +10,8 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={`inline-flex items-center gap-1 rounded px-2 py-1 ${
         active ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'

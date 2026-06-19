@@ -3,6 +3,7 @@ import { useParams } from '@tanstack/react-router';
 import { Calendar, Dice5, Plus } from 'lucide-react';
 import type { BoardGame, GameNight } from '@tavern/shared';
 import { api, ApiError } from '../lib/api-client.js';
+import { EmptyState } from '../components/EmptyState.js';
 import { GameNightCard } from '../components/games/GameNightCard.js';
 import { CreateBoardGameModal } from '../components/games/CreateBoardGameModal.js';
 import { CreateGameNightModal } from '../components/games/CreateGameNightModal.js';
@@ -93,7 +94,15 @@ export function GamesPage(): JSX.Element {
           </div>
           {loading ? <p className="text-fg-muted">Loading…</p> : null}
           {!loading && games.length === 0 ? (
-            <p className="text-fg-muted">No games match.</p>
+            <EmptyState
+              title="Nothing on the shelf yet"
+              description={
+                filterPlayers || filterTime
+                  ? 'No games match these filters — try loosening them.'
+                  : 'Add a game to start your library.'
+              }
+              className="py-6"
+            />
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {games.map((g) => (
@@ -140,7 +149,11 @@ export function GamesPage(): JSX.Element {
             </button>
           </div>
           {nights.length === 0 ? (
-            <p className="text-fg-muted">No game nights scheduled yet.</p>
+            <EmptyState
+              title="No game nights on the calendar"
+              description="Plan a night and rally the table."
+              className="py-6"
+            />
           ) : (
             <ul className="space-y-3">
               {nights.map((n) => (

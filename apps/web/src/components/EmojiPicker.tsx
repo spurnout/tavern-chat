@@ -311,6 +311,7 @@ export function EmojiPicker({ open, onClose, onPick }: Props): JSX.Element | nul
             ref={inputRef}
             type="text"
             placeholder="Search emoji"
+            aria-label="Search emoji"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="flex-1 bg-transparent text-sm outline-none"
@@ -323,6 +324,7 @@ export function EmojiPicker({ open, onClose, onPick }: Props): JSX.Element | nul
             <button
               key={c.label}
               type="button"
+              aria-pressed={idx === activeCategory}
               onClick={() => setActiveCategory(idx)}
               className={`rounded px-2 py-1 text-xs ${
                 idx === activeCategory ? 'bg-raised text-fg' : 'text-fg-muted hover:bg-raised'

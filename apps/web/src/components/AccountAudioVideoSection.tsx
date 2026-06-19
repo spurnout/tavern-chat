@@ -183,7 +183,7 @@ function MicrophoneSetting({ devices }: { devices: MediaDeviceInfo[] }): JSX.Ele
       {testing && (
         <div className="mt-2 h-2 w-full overflow-hidden rounded bg-sunken" aria-hidden>
           <div
-            className="h-full rounded bg-ember transition-[width] duration-75"
+            className="h-full rounded bg-ember transition-[width] duration-[80ms]"
             style={{ width: `${Math.round(level * 100)}%` }}
           />
         </div>

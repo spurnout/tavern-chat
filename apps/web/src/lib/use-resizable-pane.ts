@@ -80,14 +80,33 @@ export function useResizablePane(): ResizablePane {
       const startX = e.clientX;
       const startWidth = width;
       const m = computeMax();
+      // Pane sits on the right, so dragging left (clientX decreasing) grows it.
+      const widthFor = (clientX: number): number =>
+        Math.min(Math.max(startWidth - (clientX - startX), MIN_WIDTH), m);
+
+      // Coalesce pointermove → one setWidth per animation frame. Resizing a
+      // heavy panel on every raw pointer event drops frames; instead we stash
+      // the latest clientX and let a single scheduled rAF apply it.
+      let latestX = startX;
+      let frame: number | null = null;
+      const flush = (): void => {
+        frame = null;
+        setWidth(widthFor(latestX));
+      };
       const move = (ev: PointerEvent): void => {
-        // Pane sits on the right, so dragging left (clientX decreasing) grows it.
-        setWidth(Math.min(Math.max(startWidth - (ev.clientX - startX), MIN_WIDTH), m));
+        latestX = ev.clientX;
+        if (frame === null) frame = window.requestAnimationFrame(flush);
       };
       const up = (ev: PointerEvent): void => {
+        if (frame !== null) {
+          window.cancelAnimationFrame(frame);
+          frame = null;
+        }
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', up);
-        persist(Math.min(Math.max(startWidth - (ev.clientX - startX), MIN_WIDTH), m));
+        const final = widthFor(ev.clientX);
+        setWidth(final);
+        persist(final);
       };
       document.addEventListener('pointermove', move);
       document.addEventListener('pointerup', up);
