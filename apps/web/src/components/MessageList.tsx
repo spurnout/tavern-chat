@@ -43,13 +43,11 @@ interface Props {
 const EMPTY_MESSAGES: never[] = [];
 
 // Vertical breathing room (px) at the top and bottom of the message list.
-// This lives INSIDE the virtualizer's coordinate space — the sized track is
-// grown by 2× this and every row is shifted down by it — rather than as
-// padding on the scroll element. Padding on the scroll element offsets the
-// track from the scrollTop origin while react-virtual measures offsets from
-// the track's own top, so the two disagree by the padding and scroll-anchoring
-// / jump-to-reply drift by that amount. Folding the gap into the row transform
-// keeps offsets and the scroll range sharing one origin.
+// Fed to the virtualizer as paddingStart/paddingEnd so the gap lives in the
+// SAME coordinate space as row offsets and getTotalSize(): react-virtual folds
+// it into every row.start and the total size, so scroll-anchoring and
+// jump-to-reply stay exact. (Padding on the scroll element instead would shift
+// the track from the scrollTop origin and drift offsets by VERTICAL_PAD.)
 const VERTICAL_PAD = 16;
 
 // Shared className for the touch overflow-menu items (3.2).
@@ -139,6 +137,8 @@ export function MessageList({ channelId }: Props): JSX.Element {
     getScrollElement: () => parentRef.current,
     estimateSize: () => 80,
     overscan: 8,
+    paddingStart: VERTICAL_PAD,
+    paddingEnd: VERTICAL_PAD,
   });
   const totalSize = virtualizer.getTotalSize();
   useRememberedMessageScroll(parentRef, {
@@ -181,7 +181,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
       ) : null}
       <div
         className="mx-auto w-full max-w-[880px]"
-        style={{ height: totalSize + VERTICAL_PAD * 2, position: 'relative' }}
+        style={{ height: totalSize, position: 'relative' }}
       >
         {virtualizer.getVirtualItems().map((row) => {
           const message = sorted[row.index];
@@ -191,7 +191,7 @@ export function MessageList({ channelId }: Props): JSX.Element {
               key={message.id}
               className="absolute left-0 right-0"
               style={{
-                transform: `translateY(${row.start + VERTICAL_PAD}px)`,
+                transform: `translateY(${row.start}px)`,
                 paddingBottom: '0.5rem',
               }}
               ref={virtualizer.measureElement}

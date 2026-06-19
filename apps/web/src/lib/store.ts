@@ -800,7 +800,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
       membersLoadByServer: { ...s.membersLoadByServer, [serverId]: 'loading' },
     }));
 
-    const promise = (async () => {
+    const fetchOnce = async (): Promise<void> => {
       try {
         const list = await api<Member[]>(`/servers/${serverId}/members`);
         set((s) => {
@@ -818,10 +818,20 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
         set((s) => ({
           membersLoadByServer: { ...s.membersLoadByServer, [serverId]: 'error' },
         }));
-      } finally {
+      }
+    };
+
+    // A forced refetch while a request is already in flight CHAINS onto it
+    // rather than racing a second concurrent GET, so the coalescing contract
+    // holds for `force` too. The cleanup clears the map only while it still
+    // points at THIS promise, so an older fetch settling can't evict the newer
+    // forced one that replaced it.
+    let promise: Promise<void>;
+    promise = (inFlight ?? Promise.resolve()).then(fetchOnce, fetchOnce).finally(() => {
+      if (membersInFlight.get(serverId) === promise) {
         membersInFlight.delete(serverId);
       }
-    })();
+    });
 
     membersInFlight.set(serverId, promise);
     return promise;
