@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 import { useAuth } from '../lib/auth.js';
 
 /**
@@ -60,14 +61,14 @@ export function BootstrapPage(): JSX.Element {
 
   if (needsBootstrap === null) {
     return (
-      <div className="grid min-h-screen place-items-center text-fg-muted">
+      <div className="grid min-h-dvh place-items-center text-fg-muted">
         <span className="animate-pulse text-sm">Checking instance…</span>
       </div>
     );
   }
 
   return (
-    <div className="grid min-h-screen place-items-center px-4 py-12">
+    <div className="grid min-h-dvh place-items-center px-4 py-12">
       <div className="w-full max-w-md">
         <TavernLogo className="mb-8" />
         <form className="card space-y-4" onSubmit={onSubmit}>
@@ -115,6 +116,7 @@ export function BootstrapPage(): JSX.Element {
               minLength={8}
               required
               disabled={busy || !ready}
+              aria-invalid={status === 'error'}
               {...bind('password')}
             />
             <span className="mt-1 inline-block text-xs text-fg-muted">
@@ -135,9 +137,7 @@ export function BootstrapPage(): JSX.Element {
             </span>
           </label>
 
-          {error && status === 'error' ? (
-            <p className="text-sm text-danger">{error}</p>
-          ) : null}
+          {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
 
           <button
             className="btn-primary w-full"

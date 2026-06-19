@@ -28,6 +28,7 @@ import { MentionAutocomplete } from './MentionAutocomplete.js';
 import { EmojiPicker } from './EmojiPicker.js';
 import { CreatePollModal } from './CreatePollModal.js';
 import { RemindModal } from './RemindModal.js';
+import { ErrorAlert } from './ErrorAlert.js';
 
 // Shared className for the composer's "+" overflow-menu items (3.3).
 const COMPOSER_MENU_ITEM =
@@ -644,6 +645,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           onClick={(e) => setCursorOffset(e.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          aria-label="Message"
           placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice. @everyone to call the table."
           rows={1}
         />
@@ -657,7 +659,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           <Send size={16} aria-hidden />
         </button>
       </div>
-      {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
+      {error ? <ErrorAlert className="mt-2 text-xs">{error}</ErrorAlert> : null}
       {recording ? (
         <p className="mt-1 text-xs text-mead">● Recording… click stop to send</p>
       ) : null}

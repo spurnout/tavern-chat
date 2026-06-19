@@ -3,6 +3,7 @@ import { KeyRound, LogIn } from 'lucide-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { browserSupportsWebAuthn } from '@simplewebauthn/browser';
 import { TavernLogo } from '../components/TavernLogo.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 import { useAuth } from '../lib/auth.js';
 import { api } from '../lib/api-client.js';
 import { clearPendingInvite, readPendingInvite } from '../lib/pending-invite.js';
@@ -95,7 +96,7 @@ export function LoginPage(): JSX.Element {
   const busy = status === 'loading';
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
+    <div className="grid min-h-dvh place-items-center px-4">
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8 justify-center" />
         {stagedToken ? (
@@ -114,8 +115,9 @@ export function LoginPage(): JSX.Element {
               onChange={(e) => setCode(e.target.value)}
               required
               disabled={busy}
+              aria-invalid={status === 'error'}
             />
-            {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
+            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Verifying…' : 'Verify'}
             </button>
@@ -154,9 +156,10 @@ export function LoginPage(): JSX.Element {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 disabled={busy}
+                aria-invalid={status === 'error'}
               />
             </label>
-            {error && status === 'error' ? <p className="text-sm text-danger">{error}</p> : null}
+            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>

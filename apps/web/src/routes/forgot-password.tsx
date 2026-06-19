@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { TavernLogo } from '../components/TavernLogo.js';
+import { ErrorAlert } from '../components/ErrorAlert.js';
 import { api, ApiError } from '../lib/api-client.js';
 
 /**
@@ -47,7 +48,7 @@ export function ForgotPasswordPage(): JSX.Element {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
+    <div className="grid min-h-dvh place-items-center px-4">
       <div className="w-full max-w-sm">
         <TavernLogo className="mb-8" />
         {submitted ? (
@@ -80,9 +81,10 @@ export function ForgotPasswordPage(): JSX.Element {
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 disabled={busy}
+                aria-invalid={networkError !== null}
               />
             </label>
-            {networkError ? <p className="text-sm text-danger">{networkError}</p> : null}
+            {networkError ? <ErrorAlert>{networkError}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Sending…' : 'Send reset link'}
             </button>
