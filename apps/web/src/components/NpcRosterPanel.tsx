@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Skull, Trash2 } from 'lucide-react';
+import { Plus, Skull, Trash2, Users } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { EmptyState } from './EmptyState.js';
 
 interface Npc {
   id: string;
@@ -24,7 +26,9 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Npc | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -50,6 +54,7 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
 
   async function create(): Promise<void> {
     if (!newName.trim()) return;
+    setCreating(true);
     try {
       const n = await api<Npc>(`/campaigns/${campaignId}/npcs`, {
         method: 'POST',
@@ -60,6 +65,8 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
       setActiveId(n.id);
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : 'Could not create');
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -108,7 +115,7 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
               type="button"
               onClick={() => void create()}
               className="btn-primary text-xs"
-              disabled={!newName.trim()}
+              disabled={creating || !newName.trim()}
             >
               <Plus size={12} />
             </button>
@@ -118,7 +125,18 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
           {loading ? (
             <li className="px-3 py-2 text-fg-muted">Loading…</li>
           ) : filtered.length === 0 ? (
-            <li className="px-3 py-2 text-fg-muted">No NPCs yet.</li>
+            <li>
+              <EmptyState
+                icon={<Users size={28} strokeWidth={1.5} />}
+                title={query ? 'No one by that name.' : 'No NPCs yet.'}
+                description={
+                  query
+                    ? 'Try a different name, faction, or place.'
+                    : 'Add the faces your party will meet — innkeepers, rivals, patrons, and the rest.'
+                }
+                className="px-4 py-8"
+              />
+            </li>
           ) : (
             filtered.map((n) => (
               <li
@@ -156,8 +174,8 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
               />
               <button
                 type="button"
-                onClick={() => void remove(active.id)}
-                className="rounded p-2 text-danger hover:bg-raised"
+                onClick={() => setPendingDelete(active)}
+                className="rounded p-2 text-fg-muted hover:bg-raised hover:text-danger"
                 aria-label="Delete NPC"
                 title="Delete"
               >
@@ -206,6 +224,20 @@ export function NpcRosterPanel({ campaignId }: Props): JSX.Element {
           <p className="text-fg-muted">Select an NPC or create one.</p>
         )}
       </main>
+      {pendingDelete ? (
+        <ConfirmDialog
+          title="Delete this NPC?"
+          description={`Delete "${pendingDelete.name}"? This can't be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={async () => {
+            const id = pendingDelete.id;
+            setPendingDelete(null);
+            await remove(id);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }

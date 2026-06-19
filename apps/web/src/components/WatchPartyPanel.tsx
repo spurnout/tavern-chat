@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pause, Play, Tv, X } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 import { toast } from '../lib/toast.js';
 
 interface WatchParty {
@@ -41,6 +42,8 @@ export function WatchPartyPanel({ channelId, userId }: Props): JSX.Element | nul
   const [loading, setLoading] = useState(true);
   const [urlDraft, setUrlDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [confirmTakeover, setConfirmTakeover] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   async function refresh(): Promise<void> {
@@ -202,14 +205,15 @@ export function WatchPartyPanel({ channelId, userId }: Props): JSX.Element | nul
           <button
             type="button"
             className="ml-auto btn-ghost text-xs"
-            onClick={() => void takeover()}
+            onClick={() => setConfirmTakeover(true)}
+            title="Takes over playback from the current host — they'll stop controlling the video."
           >
             Take over
           </button>
         ) : null}
         <button
           type="button"
-          onClick={() => void end()}
+          onClick={() => setConfirmEnd(true)}
           className={`${isHost ? '' : 'ml-auto'} rounded p-1 text-fg-muted hover:bg-raised`}
           aria-label="End party"
           title="End party"
@@ -254,6 +258,33 @@ export function WatchPartyPanel({ channelId, userId }: Props): JSX.Element | nul
           {party.isPlaying ? <Play size={12} /> : <Pause size={12} />}
           <span>Synced to host</span>
         </div>
+      ) : null}
+
+      {confirmEnd ? (
+        <ConfirmDialog
+          title="End the watch party?"
+          description="This stops playback for everyone in the room and closes the party."
+          confirmLabel="End party"
+          destructive
+          onCancel={() => setConfirmEnd(false)}
+          onConfirm={async () => {
+            setConfirmEnd(false);
+            await end();
+          }}
+        />
+      ) : null}
+
+      {confirmTakeover ? (
+        <ConfirmDialog
+          title="Take over playback?"
+          description="You'll become the host and control the video. The current host stops controlling playback."
+          confirmLabel="Take over"
+          onCancel={() => setConfirmTakeover(false)}
+          onConfirm={async () => {
+            setConfirmTakeover(false);
+            await takeover();
+          }}
+        />
       ) : null}
     </section>
   );

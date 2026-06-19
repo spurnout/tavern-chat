@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Dice5, Plus, Swords, Trash2 } from 'lucide-react';
+import { Dice5, Plus, Swords, Trash2, UserRound } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useAuth } from '../lib/auth.js';
 import { CharacterSheetDnD5e } from './CharacterSheetDnD5e.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { EmptyState } from './EmptyState.js';
 
 interface Character {
   id: string;
@@ -42,6 +44,7 @@ export function CharactersPanel({ campaignId, channelId }: Props): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<Character | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -130,7 +133,14 @@ export function CharactersPanel({ campaignId, channelId }: Props): JSX.Element {
           {loading ? (
             <li className="px-3 py-2 text-fg-muted">Loading…</li>
           ) : characters.length === 0 ? (
-            <li className="px-3 py-2 text-fg-muted">No characters yet.</li>
+            <li>
+              <EmptyState
+                icon={<UserRound size={28} strokeWidth={1.5} />}
+                title="No characters yet."
+                description="Name one above to roll up a sheet and start playing."
+                className="px-4 py-8"
+              />
+            </li>
           ) : (
             characters.map((c) => (
               <li
@@ -152,8 +162,8 @@ export function CharactersPanel({ campaignId, channelId }: Props): JSX.Element {
                 {c.ownerUserId === me?.id ? (
                   <button
                     type="button"
-                    onClick={() => void remove(c.id)}
-                    className="rounded p-1 text-fg-muted hover:bg-raised"
+                    onClick={() => setPendingDelete(c)}
+                    className="rounded p-1 text-fg-muted hover:bg-raised hover:text-danger"
                     aria-label="Delete"
                   >
                     <Trash2 size={12} />
@@ -180,6 +190,20 @@ export function CharactersPanel({ campaignId, channelId }: Props): JSX.Element {
           <p className="text-fg-muted">Select a character or create one.</p>
         )}
       </main>
+      {pendingDelete ? (
+        <ConfirmDialog
+          title="Delete this character?"
+          description={`Delete "${pendingDelete.name}"? This can't be undone.`}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={async () => {
+            const id = pendingDelete.id;
+            setPendingDelete(null);
+            await remove(id);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -201,8 +225,8 @@ function MacrosPanel({
     try {
       const r = await api<MacroRow[]>(`/characters/${character.id}/macros`);
       setMacros(r);
-    } catch {
-      // silent
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not load macros');
     }
   }, [character.id]);
   useEffect(() => {

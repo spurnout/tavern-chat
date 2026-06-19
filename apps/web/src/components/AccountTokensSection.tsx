@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
 
 interface TokenRow {
   id: string;
@@ -26,13 +27,17 @@ export function AccountTokensSection(): JSX.Element {
   const [label, setLabel] = useState('');
   const [latest, setLatest] = useState<CreateResp | null>(null);
   const [busy, setBusy] = useState(false);
+  // FE-13: confirm before destructive revoke. The trash-can button was
+  // single-click → fire a DELETE — an accidental tap permanently killed a
+  // token still in use by a script/integration, with no undo.
+  const [pendingRevoke, setPendingRevoke] = useState<TokenRow | null>(null);
 
   async function refresh(): Promise<void> {
     try {
       const r = await api<TokenRow[]>('/me/tokens');
       setRows(r.filter((t) => !t.revokedAt));
-    } catch {
-      // silent
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not load tokens');
     }
   }
   useEffect(() => {
@@ -129,7 +134,7 @@ export function AccountTokensSection(): JSX.Element {
                 <button
                   type="button"
                   className="ml-auto rounded p-1 text-fg-muted hover:bg-raised"
-                  onClick={() => void revoke(t.id)}
+                  onClick={() => setPendingRevoke(t)}
                   aria-label="Revoke"
                   title="Revoke"
                 >
@@ -140,6 +145,21 @@ export function AccountTokensSection(): JSX.Element {
           )}
         </ul>
       </div>
+
+      {pendingRevoke ? (
+        <ConfirmDialog
+          title="Revoke this token?"
+          description={`Revoking "${pendingRevoke.label}" immediately breaks any script, integration, or CLI using it. This cannot be undone.`}
+          confirmLabel="Revoke"
+          destructive
+          onCancel={() => setPendingRevoke(null)}
+          onConfirm={async () => {
+            const id = pendingRevoke.id;
+            setPendingRevoke(null);
+            await revoke(id);
+          }}
+        />
+      ) : null}
     </section>
   );
 }
