@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
-import { Hash, MessageCircle, X } from 'lucide-react';
+import { Hash, MessageCircle } from 'lucide-react';
 import type { Message } from '@tavern/shared';
+import { Modal } from './Modal.js';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 import { useRealtime } from '../lib/store.js';
@@ -100,76 +101,77 @@ export function ForwardMessageModal({ source, onClose }: Props): JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-canvas/70">
-      <div className="w-full max-w-md rounded border border-subtle bg-surface p-4 shadow-lg">
-        <header className="flex items-center justify-between">
-          <h2 className="font-serif text-lg">Forward</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-raised" aria-label="Close">
-            <X size={14} />
-          </button>
-        </header>
-        <div className="mt-3 space-y-3">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search rooms and DMs"
-            className="input w-full"
-            autoFocus
-          />
-          <ul className="max-h-64 overflow-y-auto rounded border border-subtle bg-canvas">
-            {filtered.map((t) => {
-              const id = t.kind === 'channel' ? t.channelId : t.dmChannelId;
-              const active =
-                target &&
-                (target.kind === 'channel' && t.kind === 'channel'
-                  ? target.channelId === t.channelId
-                  : target.kind === 'dm' && t.kind === 'dm'
-                    ? target.dmChannelId === t.dmChannelId
-                    : false);
-              return (
-                <li key={id}>
-                  <button
-                    type="button"
-                    onClick={() => setTarget(t)}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-raised ${
-                      active ? 'bg-raised' : ''
-                    }`}
-                  >
-                    {t.kind === 'channel' ? (
-                      <>
-                        <Hash size={12} className="text-fg-muted" />
-                        <span className="font-mono text-xs text-fg-muted">{t.serverName}</span>
-                        <span className="truncate">#{t.channelName}</span>
-                      </>
-                    ) : (
-                      <>
-                        <MessageCircle size={12} className="text-fg-muted" />
-                        <span className="truncate">{t.label}</span>
-                      </>
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Add a comment (optional)"
-            className="input min-h-[3rem] w-full resize-none"
-            rows={2}
-          />
-        </div>
-        <footer className="mt-4 flex justify-end gap-2">
+    <Modal
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      title="Forward"
+      widthClass="w-[min(95vw,460px)]"
+      footer={
+        <>
           <button type="button" onClick={onClose} className="btn-ghost">
             Cancel
           </button>
           <button type="button" onClick={() => void submit()} className="btn-primary" disabled={busy || !target}>
             Forward
           </button>
-        </footer>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search rooms and DMs"
+          className="input w-full"
+          autoFocus
+        />
+        <ul className="max-h-64 overflow-y-auto rounded border border-subtle bg-canvas">
+          {filtered.map((t) => {
+            const id = t.kind === 'channel' ? t.channelId : t.dmChannelId;
+            const active =
+              target &&
+              (target.kind === 'channel' && t.kind === 'channel'
+                ? target.channelId === t.channelId
+                : target.kind === 'dm' && t.kind === 'dm'
+                  ? target.dmChannelId === t.dmChannelId
+                  : false);
+            return (
+              <li key={id}>
+                <button
+                  type="button"
+                  onClick={() => setTarget(t)}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-raised ${
+                    active ? 'bg-raised' : ''
+                  }`}
+                >
+                  {t.kind === 'channel' ? (
+                    <>
+                      <Hash size={12} className="text-fg-muted" />
+                      <span className="font-mono text-xs text-fg-muted">{t.serverName}</span>
+                      <span className="truncate">#{t.channelName}</span>
+                    </>
+                  ) : (
+                    <>
+                      <MessageCircle size={12} className="text-fg-muted" />
+                      <span className="truncate">{t.label}</span>
+                    </>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <textarea
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          placeholder="Add a comment (optional)"
+          className="input min-h-[3rem] w-full resize-none"
+          rows={2}
+        />
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { Modal } from './Modal.js';
 import { api, ApiError } from '../lib/api-client.js';
 import { toast } from '../lib/toast.js';
 
@@ -49,53 +49,54 @@ export function RemindModal({ initialText = '', onClose }: Props): JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-canvas/70">
-      <div className="w-full max-w-sm rounded border border-subtle bg-surface p-4 shadow-lg">
-        <header className="flex items-center justify-between">
-          <h2 className="font-serif text-lg">Remind me</h2>
-          <button type="button" onClick={onClose} className="rounded p-1 hover:bg-raised" aria-label="Close">
-            <X size={14} />
-          </button>
-        </header>
-        <div className="mt-3 space-y-3">
-          <label className="block text-sm">
-            <span className="text-fg-muted">About</span>
-            <input
-              type="text"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              className="input mt-1 w-full"
-              placeholder="Feed the cat"
-              maxLength={280}
-              autoFocus
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="text-fg-muted">In</span>
-            <select
-              value={delay}
-              onChange={(e) => setDelay(e.target.value)}
-              className="input mt-1 w-full"
-            >
-              <option value="5m">5 minutes</option>
-              <option value="15m">15 minutes</option>
-              <option value="1h">1 hour</option>
-              <option value="6h">6 hours</option>
-              <option value="1d">1 day</option>
-              <option value="7d">7 days</option>
-            </select>
-          </label>
-        </div>
-        <footer className="mt-4 flex justify-end gap-2">
+    <Modal
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      title="Remind me"
+      widthClass="w-[min(95vw,400px)]"
+      footer={
+        <>
           <button type="button" onClick={onClose} className="btn-ghost">
             Cancel
           </button>
           <button type="button" onClick={() => void submit()} className="btn-primary" disabled={busy}>
             Schedule
           </button>
-        </footer>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <label className="block text-sm">
+          <span className="text-fg-muted">About</span>
+          <input
+            type="text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            className="input mt-1 w-full"
+            placeholder="Feed the cat"
+            maxLength={280}
+            autoFocus
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-fg-muted">In</span>
+          <select
+            value={delay}
+            onChange={(e) => setDelay(e.target.value)}
+            className="input mt-1 w-full"
+          >
+            <option value="5m">5 minutes</option>
+            <option value="15m">15 minutes</option>
+            <option value="1h">1 hour</option>
+            <option value="6h">6 hours</option>
+            <option value="1d">1 day</option>
+            <option value="7d">7 days</option>
+          </select>
+        </label>
       </div>
-    </div>
+    </Modal>
   );
 }
 
