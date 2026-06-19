@@ -802,7 +802,7 @@ export const useRealtime = create<RealtimeState>((set, get) => ({
 
     const fetchOnce = async (): Promise<void> => {
       try {
-        const list = await api<Member[]>(`/servers/${serverId}/members`);
+        const list = await api<Member[]>(`/servers/${encodeURIComponent(serverId)}/members`);
         set((s) => {
           // Hydrate presence from the roster snapshot in the SAME atomic
           // update so the sidebar never paints members with a stale dot.

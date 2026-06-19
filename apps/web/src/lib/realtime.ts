@@ -317,10 +317,14 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
       // Wire payload is {serverId, userId} only — no full Member. Refetch the
       // roster (forced, to bypass the 'loaded' short-circuit) ONLY when this
       // server is already open/cached; never warm a roster for a server the
-      // user hasn't opened. ensureMembers coalesces if a fetch is already in
-      // flight.
+      // user hasn't opened. Skip while a fetch is already in flight so a burst
+      // of joins collapses onto the refetch already running instead of firing
+      // a GET per event.
       const d = data as { serverId: string; userId: string };
-      if (store.membersByServer[d.serverId]) {
+      if (
+        store.membersByServer[d.serverId] &&
+        store.membersLoadByServer[d.serverId] !== 'loading'
+      ) {
         void store.ensureMembers(d.serverId, { force: true });
       }
       return;
