@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyRound, LogIn } from 'lucide-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { browserSupportsWebAuthn } from '@simplewebauthn/browser';
@@ -17,6 +17,7 @@ export function LoginPage(): JSX.Element {
   const error = useAuth((s) => s.error);
   const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const [identifier, setIdentifier] = useState('');
+  const identifierRef = useRef<HTMLInputElement>(null);
   const [password, setPassword] = useState('');
   const [stagedToken, setStagedToken] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -79,7 +80,12 @@ export function LoginPage(): JSX.Element {
   }
 
   async function onPasskeySignIn(): Promise<void> {
-    if (!identifier.trim()) return;
+    if (!identifier.trim()) {
+      // The button stays reachable (not disabled) so it's operable by keyboard
+      // and screen readers; clicking it empty points the user at what's needed.
+      identifierRef.current?.focus();
+      return;
+    }
     try {
       await loginWebauthn(identifier.trim());
       // If the user cancelled the platform prompt the store leaves us idle
@@ -138,6 +144,7 @@ export function LoginPage(): JSX.Element {
             <label className="block text-sm">
               <span className="mb-1 inline-block text-fg-muted">Username or email</span>
               <input
+                ref={identifierRef}
                 className="input"
                 autoComplete="username"
                 value={identifier}
@@ -164,16 +171,23 @@ export function LoginPage(): JSX.Element {
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
             {webauthnSupported ? (
-              <button
-                type="button"
-                className="btn-ghost w-full"
-                onClick={() => void onPasskeySignIn()}
-                disabled={busy || !identifier.trim()}
-                title={!identifier.trim() ? 'Enter your username first' : 'Use a passkey'}
-              >
-                <KeyRound size={14} className="mr-1.5 inline-block" />
-                Sign in with passkey
-              </button>
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  className="btn-ghost w-full"
+                  onClick={() => void onPasskeySignIn()}
+                  disabled={busy}
+                  aria-describedby={!identifier.trim() ? 'passkey-hint' : undefined}
+                >
+                  <KeyRound size={14} className="mr-1.5 inline-block" />
+                  Sign in with passkey
+                </button>
+                {!identifier.trim() ? (
+                  <p id="passkey-hint" className="text-center text-xs text-fg-muted">
+                    Enter your username above to use a passkey.
+                  </p>
+                ) : null}
+              </div>
             ) : null}
             <SsoSignInButton />
             <p className="text-center text-sm">

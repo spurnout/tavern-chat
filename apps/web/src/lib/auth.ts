@@ -13,6 +13,7 @@ import type {
   TokenPair,
 } from '@tavern/shared';
 import { api, ApiError, tokenStore } from './api-client.js';
+import { authErrorMessage } from './auth-error.js';
 
 interface AuthState {
   me: Me | null;
@@ -100,7 +101,7 @@ export const useAuth = create<AuthState>((set) => ({
       set({ me, status: 'authenticated', needsBootstrap: false, error: null });
       return { totpRequired: false };
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Login failed';
+      const msg = authErrorMessage(err, 'Login failed');
       set({ status: 'error', error: msg });
       throw err;
     }
@@ -117,7 +118,7 @@ export const useAuth = create<AuthState>((set) => ({
       const me = await fetchMe();
       set({ me, status: 'authenticated', needsBootstrap: false, error: null });
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Code did not match';
+      const msg = authErrorMessage(err, 'Code did not match');
       set({ status: 'error', error: msg });
       throw err;
     }
@@ -159,7 +160,7 @@ export const useAuth = create<AuthState>((set) => ({
         set({ status: 'idle', error: null });
         return;
       }
-      const msg = err instanceof ApiError ? err.message : 'Passkey sign-in failed';
+      const msg = authErrorMessage(err, 'Passkey sign-in failed');
       set({ status: 'error', error: msg });
       throw err;
     }
@@ -176,7 +177,7 @@ export const useAuth = create<AuthState>((set) => ({
       const me = await fetchMe();
       set({ me, status: 'authenticated', needsBootstrap: false, error: null });
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Registration failed';
+      const msg = authErrorMessage(err, 'Registration failed');
       set({ status: 'error', error: msg });
       throw err;
     }
@@ -193,7 +194,7 @@ export const useAuth = create<AuthState>((set) => ({
       const me = await fetchMe();
       set({ me, status: 'authenticated', needsBootstrap: false, error: null });
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Setup failed';
+      const msg = authErrorMessage(err, 'Setup failed');
       set({ status: 'error', error: msg });
       throw err;
     }
