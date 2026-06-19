@@ -313,6 +313,24 @@ function dispatchEvent(event: GatewayDispatchEventName, data: unknown): void {
       }
       return;
     }
+    case 'MEMBER_ADD': {
+      // Wire payload is {serverId, userId} only — no full Member. Refetch the
+      // roster (forced, to bypass the 'loaded' short-circuit) ONLY when this
+      // server is already open/cached; never warm a roster for a server the
+      // user hasn't opened. ensureMembers coalesces if a fetch is already in
+      // flight.
+      const d = data as { serverId: string; userId: string };
+      if (store.membersByServer[d.serverId]) {
+        void store.ensureMembers(d.serverId, { force: true });
+      }
+      return;
+    }
+    case 'MEMBER_REMOVE': {
+      // Wire payload is {serverId, userId} only. Splice locally — no refetch.
+      const d = data as { serverId: string; userId: string };
+      store.removeMember(d.serverId, d.userId);
+      return;
+    }
     case 'DM_CHANNEL_CREATE':
     case 'DM_CHANNEL_UPDATE':
       store.upsertDmChannel(data as DmChannel);
