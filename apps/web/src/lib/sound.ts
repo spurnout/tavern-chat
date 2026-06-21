@@ -21,6 +21,27 @@ let ctx: AudioContext | null = null;
 let unlocked = false;
 let settingsReader: () => SoundSettings = readLocalStorage;
 
+const SOUND_ASSET_PATHS: Record<SoundName, string> = {
+  'vc-self-join': '/sounds/system/vc-self-join.mp3',
+  'vc-self-leave': '/sounds/system/vc-self-leave.mp3',
+  'screenshare-start': '/sounds/system/screenshare-start.mp3',
+  'screenshare-stop': '/sounds/system/screenshare-stop.mp3',
+  message: '/sounds/system/message.mp3',
+  mention: '/sounds/system/mention.mp3',
+  dm: '/sounds/system/dm.mp3',
+  roll: '/sounds/system/roll.mp3',
+  'voice-join': '/sounds/system/voice-join.mp3',
+  'voice-leave': '/sounds/system/voice-leave.mp3',
+  'mic-toggle': '/sounds/system/mic-toggle.mp3',
+};
+
+type AssetCacheEntry =
+  | { status: 'missing' }
+  | { status: 'loading'; promise: Promise<AudioBuffer | null> }
+  | { status: 'ready'; buffer: AudioBuffer };
+
+const assetCache = new Map<SoundName, AssetCacheEntry>();
+
 function getContext(): AudioContext | null {
   if (typeof window === 'undefined') return null;
   if (!ctx) {
@@ -119,6 +140,41 @@ function cleanup(...nodes: AudioNode[]): () => void {
       }
     }
   };
+}
+
+async function loadAsset(c: AudioContext, name: SoundName): Promise<AudioBuffer | null> {
+  const cached = assetCache.get(name);
+  if (cached?.status === 'ready') return cached.buffer;
+  if (cached?.status === 'missing') return null;
+  if (cached?.status === 'loading') return cached.promise;
+  if (typeof fetch === 'undefined') return null;
+
+  const promise = fetch(SOUND_ASSET_PATHS[name], { cache: 'force-cache' })
+    .then(async (res) => {
+      if (!res.ok) {
+        assetCache.set(name, { status: 'missing' });
+        return null;
+      }
+      const buffer = await c.decodeAudioData(await res.arrayBuffer());
+      assetCache.set(name, { status: 'ready', buffer });
+      return buffer;
+    })
+    .catch(() => {
+      assetCache.set(name, { status: 'missing' });
+      return null;
+    });
+
+  assetCache.set(name, { status: 'loading', promise });
+  return promise;
+}
+
+function playAsset(c: AudioContext, dest: AudioNode, buffer: AudioBuffer, now: number): number {
+  const source = c.createBufferSource();
+  source.buffer = buffer;
+  source.connect(dest);
+  source.start(now);
+  source.onended = cleanup(source);
+  return Math.max(500, (buffer.duration + 0.25) * 1000);
 }
 
 function tone(
@@ -229,13 +285,20 @@ export function playSound(name: SoundName, opts: { volume?: number } = {}): void
   master.gain.value = settings.volume * local;
   master.connect(c.destination);
   const now = c.currentTime + 0.01;
-  SOUNDS[name](c, master, now);
-  // Worst-case sound length is ~0.5s; disconnect after 1.5s to be safe.
+  const cachedAsset = assetCache.get(name);
+  let cleanupDelayMs = 1500;
+  if (cachedAsset?.status === 'ready') {
+    cleanupDelayMs = playAsset(c, master, cachedAsset.buffer, now);
+  } else {
+    if (cachedAsset?.status !== 'missing') void loadAsset(c, name);
+    SOUNDS[name](c, master, now);
+  }
+  // Procedural sounds are short; generated assets report their own duration.
   window.setTimeout(() => {
     try {
       master.disconnect();
     } catch {
       // already disconnected
     }
-  }, 1500);
+  }, cleanupDelayMs);
 }

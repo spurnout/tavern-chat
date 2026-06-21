@@ -47,7 +47,9 @@
     "docker:down": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit down",
     "docker:logs": "docker compose -f infra/docker/docker-compose.yml --profile apps --profile livekit logs -f",
     "garage:bootstrap": "node scripts/garage-bootstrap.mjs",
-    "garage:cors": "node scripts/garage-cors.mjs"
+    "garage:cors": "node scripts/garage-cors.mjs",
+    "sfx:generate": "node scripts/comfyui-sfx-runner.mjs",
+    "sfx:prepare": "node scripts/prepare-sfx-assets.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

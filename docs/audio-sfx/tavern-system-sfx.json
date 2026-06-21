@@ -1,0 +1,130 @@
+{
+  "$schema": "./tavern-system-sfx.schema.json",
+  "version": 1,
+  "purpose": "Prompt and delivery manifest for Tavern system sound effects generated in ComfyUI.",
+  "runtimeOwner": "apps/web/src/lib/sound.ts",
+  "assetOutputDir": "apps/web/public/sounds/system",
+  "comfy": {
+    "preferredWorkflow": "Stable Audio 3 Medium Base or Stable Audio 3 Small-SFX",
+    "defaultHost": "http://127.0.0.1:8188",
+    "localInstallPath": "E:\\Comfy-Desktop\\ComfyUI-Installs\\comfy",
+    "localOutputPath": "E:\\Comfy-Desktop\\ComfyUI-Shared\\output"
+  },
+  "promptDefaults": {
+    "category": "One-shot",
+    "useReprompt": false,
+    "negativePrompt": "speech, human voice, spoken words, vocals, melody, long music loop, harsh alarm, distortion, clipping, hiss, noisy reverb tail, horror sting, cartoon boing, recognizable franchise sound",
+    "styleAnchor": "short premium app UI sound for a cozy tabletop tavern voice chat, warm wood and soft brass texture, clean transient, gentle tail, non-distracting, game-ready"
+  },
+  "normalization": {
+    "format": "mp3",
+    "bitrate": "128k",
+    "sampleRate": 44100,
+    "channels": 2,
+    "targetLufs": -20,
+    "peakDb": -1.5,
+    "fadeInSeconds": 0.01,
+    "fadeOutSeconds": 0.05
+  },
+  "sounds": [
+    {
+      "name": "vc-self-join",
+      "trigger": "The local user enters a voice room.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.7,
+      "seed": 420101,
+      "category": "One-shot",
+      "prompt": "You pull up a chair at a cozy tabletop tavern: soft upward wooden chair slide, tiny warm brass shimmer, confident but quiet confirmation. No speech. No melody."
+    },
+    {
+      "name": "vc-self-leave",
+      "trigger": "The local user leaves a voice room.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.65,
+      "seed": 420102,
+      "category": "One-shot",
+      "prompt": "You step away from a cozy tabletop tavern table: gentle downward wooden chair tuck, soft air hush, calm closing gesture. No speech. No melody."
+    },
+    {
+      "name": "voice-join",
+      "trigger": "Another member enters the voice room.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.55,
+      "seed": 420103,
+      "category": "One-shot",
+      "prompt": "Another member quietly joins the tavern table: light chair contact, short upward glassy chime, friendly presence cue, very subtle. No speech. No melody."
+    },
+    {
+      "name": "voice-leave",
+      "trigger": "Another member leaves the voice room.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.55,
+      "seed": 420104,
+      "category": "One-shot",
+      "prompt": "Another member quietly leaves the tavern table: soft chair slide away, short downward chime, polite and unobtrusive. No speech. No melody."
+    },
+    {
+      "name": "mic-toggle",
+      "trigger": "The local user toggles microphone mute.",
+      "generationDurationSeconds": 1,
+      "targetDurationSeconds": 0.25,
+      "seed": 420105,
+      "category": "One-shot",
+      "prompt": "Tiny tactile microphone toggle for a tabletop tavern app: muted wooden switch click with a soft felt stop, crisp and dry. No speech. No melody."
+    },
+    {
+      "name": "screenshare-start",
+      "trigger": "The local user starts screen sharing.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.6,
+      "seed": 420106,
+      "category": "SFX",
+      "prompt": "A magical tabletop map projector turns on: soft relay click, faint arcane shimmer rising, clean bright start cue, not loud. No speech. No melody."
+    },
+    {
+      "name": "screenshare-stop",
+      "trigger": "The local user stops screen sharing.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.55,
+      "seed": 420107,
+      "category": "SFX",
+      "prompt": "A magical tabletop map projector powers down: gentle relay click, shimmer fades downward, calm stop cue, short tail. No speech. No melody."
+    },
+    {
+      "name": "message",
+      "trigger": "A regular chat message should chime.",
+      "generationDurationSeconds": 1,
+      "targetDurationSeconds": 0.35,
+      "seed": 420108,
+      "category": "One-shot",
+      "prompt": "Small cozy tavern message chime: one soft wooden tap with a tiny warm bell overtone, readable but low attention. No speech. No melody."
+    },
+    {
+      "name": "mention",
+      "trigger": "The local user is mentioned.",
+      "generationDurationSeconds": 1,
+      "targetDurationSeconds": 0.55,
+      "seed": 420109,
+      "category": "One-shot",
+      "prompt": "Important mention chime for a tavern app: two gentle brass-and-glass notes, brighter than a message but not alarming, clear priority cue. No speech."
+    },
+    {
+      "name": "dm",
+      "trigger": "A direct message should chime.",
+      "generationDurationSeconds": 1,
+      "targetDurationSeconds": 0.5,
+      "seed": 420110,
+      "category": "One-shot",
+      "prompt": "Private message cue for a cozy tavern app: quick two-tap wooden knock with a warm low bell, personal and discreet. No speech. No melody."
+    },
+    {
+      "name": "roll",
+      "trigger": "The local user's dice roll resolves.",
+      "generationDurationSeconds": 2,
+      "targetDurationSeconds": 0.75,
+      "seed": 420111,
+      "category": "SFX",
+      "prompt": "Dice result confirmation: three tiny dice clacks on a wooden table followed by a soft bright bell, playful tabletop feel, clean and short. No speech."
+    }
+  ]
+}

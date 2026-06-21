@@ -65,6 +65,12 @@ logs/
 tmp/
 .temp/
 
+# Generated SFX draft takes. Final reviewed app sounds live under
+# apps/web/public/sounds/system/ and are intentionally trackable.
+docs/audio-sfx/generated/
+docs/audio-sfx/raw/
+docs/audio-sfx/*.local.json
+
 # Claude Code local state (memory, plans, project metadata)
 .claude/
 # AGENTS.md is per-clone agent config — keep local
