@@ -51,6 +51,7 @@ import { onUi } from '../lib/ui-events.js';
 import { MemberProfileTrigger } from '../components/MemberProfileTrigger.js';
 import { PresenceDot } from '../components/PresenceDot.js';
 import { VoiceSideChat } from '../components/VoiceSideChat.js';
+import { VoiceRoomChatLink } from '../components/VoiceRoomChatLink.js';
 import { LiveAnnouncer } from '../components/LiveAnnouncer.js';
 
 // Stable empty-array fallback; never mutated. Module-level so the same
@@ -677,26 +678,38 @@ function SidebarChannelLink({
   if (isVoice) {
     return (
       <div>
-        <Link
-          to="/app/servers/$serverId/voice/$channelId"
-          params={{ serverId: channel.serverId, channelId: channel.id }}
-          className={className}
+        {/* Row is a flex container, not a single link: the name link joins the
+            call, while the chat link (hover-revealed sibling, never nested)
+            opens the room chat without joining. The row's hover/active bg and
+            the `group` that drives the chat-icon reveal live here. */}
+        <div
+          className={cn(
+            'group flex items-center rounded text-fg',
+            active ? 'bg-raised' : 'hover:bg-raised',
+          )}
         >
-          <span className="text-fg-muted">{icon}</span>
-          <span className="truncate flex-1">{channel.name}</span>
-          {someoneSharing ? (
-            <>
-              <Monitor size={12} className="text-ember shrink-0" aria-hidden />
-              <span className="sr-only">(screen share active)</span>
-            </>
-          ) : null}
-          {someoneOnVideo ? (
-            <>
-              <Video size={12} className="text-mead shrink-0" aria-hidden />
-              <span className="sr-only">(camera active)</span>
-            </>
-          ) : null}
-        </Link>
+          <Link
+            to="/app/servers/$serverId/voice/$channelId"
+            params={{ serverId: channel.serverId, channelId: channel.id }}
+            className="touch-target flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5"
+          >
+            <span className="text-fg-muted">{icon}</span>
+            <span className="truncate flex-1">{channel.name}</span>
+            {someoneSharing ? (
+              <>
+                <Monitor size={12} className="text-ember shrink-0" aria-hidden />
+                <span className="sr-only">(screen share active)</span>
+              </>
+            ) : null}
+            {someoneOnVideo ? (
+              <>
+                <Video size={12} className="text-mead shrink-0" aria-hidden />
+                <span className="sr-only">(camera active)</span>
+              </>
+            ) : null}
+          </Link>
+          <VoiceRoomChatLink serverId={channel.serverId} channelId={channel.id} />
+        </div>
         {voiceParticipants.length > 0 ? (
           <div className="ml-6 mt-0.5 space-y-0.5">
             {voiceParticipants.map((state) => (

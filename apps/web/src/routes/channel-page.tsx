@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from '@tanstack/react-router';
-import { Hash, Users } from 'lucide-react';
+import { Hash, Users, Volume2 } from 'lucide-react';
 import { MessageList } from '../components/MessageList.js';
 import { MessageComposer } from '../components/MessageComposer.js';
 import { MemberSidebar } from '../components/MemberSidebar.js';
@@ -9,6 +9,7 @@ import { PinsPopover } from '../components/PinsPopover.js';
 import { EncounterPanel } from '../components/EncounterPanel.js';
 import { LiveSessionDock } from '../components/LiveSessionDock.js';
 import { ChannelSettingsPopover } from '../components/ChannelSettingsPopover.js';
+import { PullUpAChairButton } from '../components/PullUpAChairButton.js';
 import { useCanIn } from '../lib/store.js';
 import { Permission } from '@tavern/shared';
 import { api } from '../lib/api-client.js';
@@ -33,6 +34,9 @@ export function ChannelPage(): JSX.Element {
   });
   const upsertChannel = useRealtime((s) => s.upsertChannel);
   const canManageChannel = useCanIn(serverId ?? null, Permission.MANAGE_CHANNELS);
+  // Voice rooms can be opened as plain chat (no call) via this same route, so
+  // the header reads as a voice room and offers a way into the call.
+  const isVoice = channel?.type === 'voice';
   // Roster is a static column at lg+, a right-side drawer below it. Local
   // state on purpose: ChannelPage doesn't remount on channel change, so the
   // drawer survives room-hopping (read members while switching rooms).
@@ -53,12 +57,19 @@ export function ChannelPage(): JSX.Element {
         {/* pl-14 below md clears the app-shell's floating hamburger; symmetric
             px-4 returns once the hamburger is gone at md+. */}
         <header className="flex items-center gap-2 border-b border-subtle py-3 pl-14 pr-4 md:px-4">
-          <Hash size={16} className="text-fg-muted" />
+          {isVoice ? (
+            <Volume2 size={16} className="text-fg-muted" aria-hidden />
+          ) : (
+            <Hash size={16} className="text-fg-muted" aria-hidden />
+          )}
           <span className="font-serif font-medium">{channel?.name ?? '…'}</span>
           {channel?.topic ? (
             <span className="ml-3 truncate text-sm text-fg-muted">{channel.topic}</span>
           ) : null}
           <div className="ml-auto flex items-center gap-1">
+            {isVoice && serverId ? (
+              <PullUpAChairButton serverId={serverId} channelId={channelId} />
+            ) : null}
             <PinsPopover channelId={channelId} />
             {channel ? (
               <ChannelSettingsPopover
