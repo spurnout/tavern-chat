@@ -14,6 +14,24 @@ interface FailedJob {
   attemptsMade: number;
 }
 
+function formatEventType(eventType: string): string {
+  return eventType
+    .replace(/[_.:-]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function shortPeerId(peerInstanceId: string): string {
+  if (peerInstanceId.length <= 24) return peerInstanceId;
+  return `${peerInstanceId.slice(0, 10)}...${peerInstanceId.slice(-8)}`;
+}
+
+function formatFailedAt(failedAt: string | null): string {
+  if (!failedAt) return 'Unknown time';
+  return new Date(failedAt).toLocaleString();
+}
+
 export function AdminFederationPage(): JSX.Element {
   const [peers, setPeers] = useState<PeerRow[]>([]);
   const [failedJobs, setFailedJobs] = useState<FailedJob[]>([]);
@@ -130,61 +148,66 @@ export function AdminFederationPage(): JSX.Element {
             Federation events that exhausted all delivery attempts. Retry to re-queue or discard to
             remove.
           </p>
-          <div className="bg-surface border border-subtle rounded p-6">
+          <div className="rounded border border-subtle bg-surface p-6">
             {loading ? (
               <p className="text-sm text-fg-muted">Loading…</p>
             ) : failedJobs.length === 0 ? (
               <p className="text-sm text-fg-muted">No failed jobs</p>
             ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-subtle text-left text-fg-muted">
-                    <th className="pb-2 pr-4 font-medium">Event type</th>
-                    <th className="pb-2 pr-4 font-medium">Peer</th>
-                    <th className="pb-2 pr-4 font-medium">Failed at</th>
-                    <th className="pb-2 pr-4 font-medium">Error</th>
-                    <th className="pb-2 pr-4 font-medium">Attempts</th>
-                    <th className="pb-2 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {failedJobs.map((job) => (
-                    <tr key={job.id} className="border-b border-subtle last:border-0">
-                      <td className="py-2 pr-4 font-mono text-xs">{job.eventType}</td>
-                      <td className="py-2 pr-4">{job.peerInstanceId}</td>
-                      <td className="py-2 pr-4 text-fg-muted">
-                        {job.failedAt ? new Date(job.failedAt).toLocaleString() : '—'}
-                      </td>
-                      <td
-                        className="py-2 pr-4 max-w-xs truncate text-fg-muted"
-                        title={job.failedReason}
-                      >
-                        {job.failedReason}
-                      </td>
-                      <td className="py-2 pr-4 text-center">{job.attemptsMade}</td>
-                      <td className="py-2">
-                        <div className="flex items-center gap-3">
-                          <button
-                            className="text-xs text-ember hover:underline"
-                            onClick={() => void retryJob(job.id)}
-                          >
-                            Retry
-                          </button>
-                          <span aria-hidden className="text-fg-muted/40">
-                            |
+              <ul className="space-y-3">
+                {failedJobs.map((job) => (
+                  <li key={job.id} className="rounded border border-subtle bg-canvas p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded bg-tint-rust px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-rust">
+                            Delivery failed
                           </span>
-                          <button
-                            className="text-xs text-danger hover:underline"
-                            onClick={() => setPendingDiscard(job)}
-                          >
-                            Discard
-                          </button>
+                          <h3 className="font-serif text-base">
+                            {formatEventType(job.eventType)}
+                          </h3>
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        <p className="mt-1 text-sm text-fg-muted">
+                          Peer{' '}
+                          <span className="font-mono" title={job.peerInstanceId}>
+                            {shortPeerId(job.peerInstanceId)}
+                          </span>
+                        </p>
+                      </div>
+                      <dl className="grid gap-1 text-right text-xs text-fg-muted">
+                        <div>
+                          <dt className="inline">Failed </dt>
+                          <dd className="inline text-fg">{formatFailedAt(job.failedAt)}</dd>
+                        </div>
+                        <div>
+                          <dt className="inline">Attempts </dt>
+                          <dd className="inline text-fg">{job.attemptsMade}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                    <p
+                      className="mt-3 rounded border border-subtle bg-sunken px-3 py-2 text-sm text-fg-muted break-words"
+                      title={job.failedReason}
+                    >
+                      {job.failedReason}
+                    </p>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button
+                        className="btn-primary text-xs"
+                        onClick={() => void retryJob(job.id)}
+                      >
+                        Retry
+                      </button>
+                      <button
+                        className="btn-ghost text-xs text-danger"
+                        onClick={() => setPendingDiscard(job)}
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </section>

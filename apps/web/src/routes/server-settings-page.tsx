@@ -58,10 +58,15 @@ export function ServerSettingsPage(): JSX.Element {
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} asChild>
       <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-        <header className="flex flex-wrap items-center gap-2 border-b border-subtle px-4 py-3">
-          <Settings size={16} className="text-fg-muted" />
-          <span className="font-serif font-medium">Tavern settings</span>
-          <TabList className="ml-auto text-xs" aria-label="Tavern settings sections">
+        <header className="flex flex-col gap-3 border-b border-subtle px-4 py-3 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2">
+            <Settings size={16} className="text-fg-muted" />
+            <span className="font-serif font-medium">Tavern settings</span>
+          </div>
+          <TabList
+            className="w-full text-xs sm:ml-auto sm:w-auto"
+            aria-label="Tavern settings sections"
+          >
             <Tab value="roles">
               <Tag size={12} /> Roles
             </Tab>

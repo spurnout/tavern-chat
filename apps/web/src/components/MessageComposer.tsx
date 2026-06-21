@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
@@ -71,6 +72,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const recordingChunks = useRef<Blob[]>([]);
+  const composerHelpId = useId();
 
   function insertAtCursor(text: string): void {
     setContent((prev) => {
@@ -511,6 +513,7 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           ref={fileRef}
           className="hidden"
           onChange={(e) => void onFileChange(e)}
+          aria-label="Attach files"
         />
         {/* Narrow-container overflow: collapse the secondary affordances into a
             single "+" menu so the textarea keeps a usable width. */}
@@ -646,7 +649,8 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           aria-label="Message"
-          placeholder="Message — Shift+Enter for newline. /roll 1d20+5 to roll dice. @everyone to call the table."
+          aria-describedby={composerHelpId}
+          placeholder="Message this room"
           rows={1}
         />
         <button
@@ -659,6 +663,9 @@ export function MessageComposer({ channelId }: Props): JSX.Element {
           <Send size={16} aria-hidden />
         </button>
       </div>
+      <p id={composerHelpId} className="mt-2 text-xs text-fg-muted">
+        Press Shift+Enter for a new line. Try /roll 1d20+5 for dice or @ to mention someone.
+      </p>
       {error ? <ErrorAlert className="mt-2 text-xs">{error}</ErrorAlert> : null}
       {recording ? (
         <p className="mt-1 text-xs text-mead">● Recording… click stop to send</p>

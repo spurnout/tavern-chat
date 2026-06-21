@@ -30,13 +30,24 @@ interface Props {
   onClose: () => void;
 }
 
-const COLORS = ['#1f1d1b', '#c0392b', '#27ae60', '#2c6fd1', '#8e44ad', '#e8b03a'] as const;
+const COLORS = [
+  { name: 'Ink', value: '#1f1d1b' },
+  { name: 'Ruby', value: '#c0392b' },
+  { name: 'Moss', value: '#27ae60' },
+  { name: 'River', value: '#2c6fd1' },
+  { name: 'Violet', value: '#8e44ad' },
+  { name: 'Gold', value: '#e8b03a' },
+] as const;
 const PEN_WIDTHS = [2, 4, 8] as const;
-const DEFAULT_COLOR = COLORS[0];
+const DEFAULT_COLOR = COLORS[0].value;
 const DEFAULT_WIDTH = PEN_WIDTHS[1];
 const ERASER_WIDTH = 20;
 const CANVAS_W = 760;
 const CANVAS_H = 480;
+
+function colorName(color: string): string {
+  return COLORS.find((candidate) => candidate.value === color)?.name ?? 'Custom';
+}
 
 /**
  * Wave 3 #34 — collaborative whiteboard.
@@ -211,17 +222,34 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
         </div>
         {tool === 'pen' ? (
           <>
-            <div className="flex gap-1">
-              {COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className={`h-6 w-6 rounded-full border ${color === c ? 'border-ember' : 'border-subtle'}`}
-                  style={{ backgroundColor: c }}
-                  aria-label={`Color ${c}`}
-                />
-              ))}
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1" aria-label="Ink color">
+                {COLORS.map((c) => {
+                  const selected = color === c.value;
+                  return (
+                    <button
+                      key={c.value}
+                      type="button"
+                      onClick={() => setColor(c.value)}
+                      className={`grid h-7 w-7 place-items-center rounded-full border transition-colors ${
+                        selected
+                          ? 'border-ember bg-surface ring-2 ring-ember ring-offset-2 ring-offset-surface'
+                          : 'border-subtle hover:border-ember'
+                      }`}
+                      aria-label={`${c.name} ink`}
+                      aria-pressed={selected}
+                      title={`${c.name} ink`}
+                    >
+                      <span
+                        className="h-5 w-5 rounded-full"
+                        style={{ backgroundColor: c.value }}
+                        aria-hidden
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="min-w-12 text-xs text-fg-muted">{colorName(color)}</span>
             </div>
             <div className="flex gap-1">
               {PEN_WIDTHS.map((w) => (
@@ -266,6 +294,7 @@ export function Whiteboard({ channelId, serverId, onClose }: Props): JSX.Element
         ref={canvasRef}
         width={CANVAS_W}
         height={CANVAS_H}
+        aria-label="Shared whiteboard drawing area"
         className="block w-full touch-none rounded border border-subtle bg-canvas"
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}

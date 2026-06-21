@@ -15,6 +15,7 @@ export function BootstrapPage(): JSX.Element {
   const bootstrapAdmin = useAuth((s) => s.bootstrapAdmin);
   const status = useAuth((s) => s.status);
   const error = useAuth((s) => s.error);
+  const instanceError = useAuth((s) => s.instanceError);
   const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const refreshBootstrap = useAuth((s) => s.bootstrap);
   const navigate = useNavigate();
@@ -37,14 +38,15 @@ export function BootstrapPage(): JSX.Element {
 
   // If the instance is already initialised, bounce to /login.
   useEffect(() => {
+    if (instanceError) return;
     if (needsBootstrap === null) {
-      void refreshBootstrap();
+      if (status === 'idle') void refreshBootstrap();
       return;
     }
     if (needsBootstrap === false && status !== 'authenticated') {
       void navigate({ to: '/login', replace: true });
     }
-  }, [needsBootstrap, status, refreshBootstrap, navigate]);
+  }, [instanceError, needsBootstrap, status, refreshBootstrap, navigate]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
@@ -58,6 +60,33 @@ export function BootstrapPage(): JSX.Element {
 
   const busy = status === 'loading';
   const ready = needsBootstrap === true;
+
+  if (instanceError) {
+    return (
+      <div className="grid min-h-dvh place-items-center px-4">
+        <div className="w-full max-w-md">
+          <TavernLogo className="mb-8" />
+          <div className="card space-y-4">
+            <div>
+              <h1 className="font-serif text-xl font-medium">Tavern unavailable</h1>
+              <p className="mt-1 text-sm text-fg-muted">
+                We could not check whether this tavern needs first-run setup.
+              </p>
+            </div>
+            <ErrorAlert>{instanceError}</ErrorAlert>
+            <button
+              type="button"
+              className="btn-primary w-full"
+              onClick={() => void refreshBootstrap()}
+              disabled={busy}
+            >
+              {busy ? 'Checking…' : 'Try again'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (needsBootstrap === null) {
     return (

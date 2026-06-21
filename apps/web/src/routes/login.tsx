@@ -15,6 +15,7 @@ export function LoginPage(): JSX.Element {
   const refreshAuth = useAuth((s) => s.bootstrap);
   const status = useAuth((s) => s.status);
   const error = useAuth((s) => s.error);
+  const instanceError = useAuth((s) => s.instanceError);
   const needsBootstrap = useAuth((s) => s.needsBootstrap);
   const [identifier, setIdentifier] = useState('');
   const identifierRef = useRef<HTMLInputElement>(null);
@@ -100,6 +101,7 @@ export function LoginPage(): JSX.Element {
   }
 
   const busy = status === 'loading';
+  const displayedError = instanceError ?? error;
 
   return (
     <div className="grid min-h-dvh place-items-center px-4">
@@ -116,6 +118,7 @@ export function LoginPage(): JSX.Element {
               inputMode="numeric"
               autoComplete="one-time-code"
               autoFocus
+              aria-label="Two-factor code"
               maxLength={20}
               value={code}
               onChange={(e) => setCode(e.target.value)}
@@ -123,7 +126,7 @@ export function LoginPage(): JSX.Element {
               disabled={busy}
               aria-invalid={status === 'error'}
             />
-            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
+            {displayedError && status === 'error' ? <ErrorAlert>{displayedError}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Verifying…' : 'Verify'}
             </button>
@@ -147,6 +150,7 @@ export function LoginPage(): JSX.Element {
                 ref={identifierRef}
                 className="input"
                 autoComplete="username"
+                aria-label="Username or email"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 required
@@ -159,6 +163,7 @@ export function LoginPage(): JSX.Element {
                 className="input"
                 type="password"
                 autoComplete="current-password"
+                aria-label="Password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -166,7 +171,7 @@ export function LoginPage(): JSX.Element {
                 aria-invalid={status === 'error'}
               />
             </label>
-            {error && status === 'error' ? <ErrorAlert>{error}</ErrorAlert> : null}
+            {displayedError && status === 'error' ? <ErrorAlert>{displayedError}</ErrorAlert> : null}
             <button className="btn-primary w-full" type="submit" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
