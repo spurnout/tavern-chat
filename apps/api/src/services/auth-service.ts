@@ -593,11 +593,33 @@ export class AuthService {
       throw TavernError.unauthorized('Account no longer active');
     }
 
-    // Rotate: revoke this session and issue a new one.
-    await prisma.session.update({
-      where: { id: session.id },
+    // Rotate: revoke this session and issue a new one. The revoke is a
+    // CONDITIONAL updateMany (`revokedAt: null`), not an unconditional
+    // update, so it is single-winner: if two refreshes present the SAME
+    // still-valid token concurrently, both pass the reuse gate above (each
+    // reads `revokedAt === null` before either commits), but Postgres
+    // serializes the row UPDATE — only the first writer's predicate matches
+    // and `count` comes back 1. The loser gets `count === 0` and is rejected
+    // WITHOUT minting a second session, preserving the
+    // one-refresh-token-one-successor invariant the reuse-detection branch
+    // above relies on. An unconditional update would let both rotations
+    // "succeed" and spawn two parallel session lineages from one token.
+    const rotated = await prisma.session.updateMany({
+      where: { id: session.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (rotated.count === 0) {
+      // Lost a concurrent rotation race: another request rotated this exact
+      // session microseconds ago (e.g. two tabs refreshing at once). The
+      // winner already minted the sole successor, so reject this loser
+      // WITHOUT the revoke-all hammer used for sequential reuse above —
+      // nuking every session on a benign double-submit would log the user
+      // out everywhere. If this was actually a stolen-token race and the
+      // attacker won, the victim's next refresh presents the now-revoked
+      // token and trips the sequential reuse-detection above, revoking the
+      // attacker's lineage too.
+      throw new TavernError(ErrorCodes.INVALID_TOKEN, 'Refresh token already rotated', 401);
+    }
 
     return this.issueSession(session.userId, ctx);
   }

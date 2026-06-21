@@ -189,15 +189,29 @@ export function makeFakePrismaClient(db: FakeDb) {
         where,
         data,
       }: {
-        where: { userId: string; revokedAt: null };
+        // Mirrors the predicates the auth service actually uses:
+        //   { userId, revokedAt: null }     — reuse-detection / change- &
+        //                                      reset-password mass revoke
+        //   { id, revokedAt: null }          — single-winner refresh rotation
+        //   { id: { in: [...] } }            — pruneOldestSessions
+        where: {
+          id?: string | { in: string[] };
+          userId?: string;
+          revokedAt?: Date | null;
+        };
         data: Partial<SessionRow>;
       }) {
+        const idEq = typeof where.id === 'string' ? where.id : null;
+        const idIn =
+          where.id && typeof where.id === 'object' && 'in' in where.id ? where.id.in : null;
         let count = 0;
         for (const s of db.sessions.values()) {
-          if (s.userId === where.userId && s.revokedAt === null) {
-            db.sessions.set(s.id, { ...s, ...data });
-            count++;
-          }
+          if (idEq !== null && s.id !== idEq) continue;
+          if (idIn !== null && !idIn.includes(s.id)) continue;
+          if (where.userId !== undefined && s.userId !== where.userId) continue;
+          if (where.revokedAt === null && s.revokedAt !== null) continue;
+          db.sessions.set(s.id, { ...s, ...data });
+          count++;
         }
         return { count };
       },

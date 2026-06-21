@@ -1971,6 +1971,55 @@ describe.skipIf(!dockerOk)('P4-7 — POST /_federation/event (member.join_reques
     }
   });
 
+  // ─── 1b. Banned remote joiner → 403 (F5) ──────────────────────────────────
+
+  it('banned remote joiner → 403; no ServerMember created, invite not consumed', async () => {
+    const { fx, inviteCode, inviteId } = await makeJoinFixture({
+      remoteScope: 'any_peer',
+    });
+
+    // Ban the remote joiner. `ensureUserForRemoteUser` resolves the remote
+    // identity to fx.localUserId (the same synthetic row the happy path
+    // creates a membership for), and ServerBan is keyed on that local id —
+    // exactly how `banMember` records a federated ban.
+    await prisma.serverBan.create({
+      data: {
+        serverId: fx.serverId,
+        userId: fx.localUserId,
+        bannedByUserId: null,
+        reason: 'raid',
+      },
+    });
+
+    const envelope = buildJoinRequestEnvelope({ fx, inviteCode });
+    const app = await buildApp({ config: loadConfig(envFor(ctx!.databaseUrl)) });
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/_federation/event',
+        payload: envelope,
+      });
+      // Mirrors the local server-join path, which rejects a banned member
+      // with 403 — the ban must hold across the federation boundary so a
+      // replayed member.join_request can't re-admit a banned user.
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toMatch(/banned/i);
+
+      // No membership was created for the banned joiner.
+      const member = await prisma.serverMember.findUnique({
+        where: { serverId_userId: { serverId: fx.serverId, userId: fx.localUserId } },
+      });
+      expect(member).toBeNull();
+
+      // The invite was NOT consumed (the ban check precedes the consume).
+      const invite = await prisma.invite.findUniqueOrThrow({ where: { id: inviteId } });
+      expect(invite.uses).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   // ─── 2. Invalid invite code → 404 ─────────────────────────────────────────
 
   it('unknown invite code → 404', async () => {

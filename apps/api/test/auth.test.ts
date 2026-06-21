@@ -412,6 +412,65 @@ describe('POST /api/auth/refresh', () => {
     expect(replay.statusCode).toBe(401);
     await app.close();
   });
+
+  it('rejects the loser of a concurrent rotation race without minting a second session (F4)', async () => {
+    const app = await makeApp();
+    const reg = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: {
+        username: 'gus',
+        displayName: 'Gus',
+        email: 'gus@example.com',
+        password: 'hunter22hunter22',
+        inviteCode: 'TEST-INVITE',
+      },
+    });
+    const tokens1 = (reg.json() as { data: { tokens: { refreshToken: string } } }).data.tokens;
+    expect(fakeDb.sessions.size).toBe(1);
+
+    // Simulate the race the conditional revoke is meant to close: a concurrent
+    // refresh rotates (revokes) this exact session in the window between our
+    // read — which still sees revokedAt:null and passes the reuse gate — and
+    // our conditional revoke. The one-shot wrapper flips revokedAt on the
+    // STORED row after handing back the pre-revoke snapshot, so refresh()
+    // reads null but its `updateMany({ where: { id, revokedAt: null } })`
+    // matches 0 rows. Before the fix this used an unconditional update and the
+    // loser would have minted a second session lineage.
+    const origFindUnique = fakePrisma.session.findUnique;
+    let raced = false;
+    fakePrisma.session.findUnique = (async (args: {
+      where: { id: string };
+      select?: { user?: unknown };
+    }) => {
+      const row = await origFindUnique(args);
+      if (!raced && row && !args.select?.user) {
+        raced = true;
+        const stored = fakeDb.sessions.get(row.id);
+        if (stored) fakeDb.sessions.set(row.id, { ...stored, revokedAt: new Date() });
+      }
+      return row;
+    }) as typeof origFindUnique;
+
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        payload: { refreshToken: tokens1.refreshToken },
+      });
+      expect(res.statusCode).toBe(401);
+      expect((res.json() as { error: { code: string } }).error.code).toBe('INVALID_TOKEN');
+      // The loser must NOT have minted a successor session: still just the one
+      // original row, and it is revoked.
+      expect(fakeDb.sessions.size).toBe(1);
+      for (const s of fakeDb.sessions.values()) {
+        expect(s.revokedAt).not.toBeNull();
+      }
+    } finally {
+      fakePrisma.session.findUnique = origFindUnique;
+    }
+    await app.close();
+  });
 });
 
 describe('refresh-token cookie (SEC-001 / FE-02)', () => {

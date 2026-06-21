@@ -108,6 +108,7 @@ import {
 } from '@tavern/shared';
 import { z } from 'zod';
 import { ensureUserForRemoteUser } from './remote-user-upsert.js';
+import { isBanned } from './ban-service.js';
 import { federatedDmPairKey, serializeDmChannel } from './dm-service.js';
 import {
   computeEffectiveFederation,
@@ -2137,6 +2138,24 @@ async function handleMemberJoinRequest(input: {
     remoteUser,
     tx as unknown as PrismaClient,
   );
+
+  // Step 4b — ban gate. The LOCAL server-join path refuses a banned member
+  // both before and inside its consume transaction (routes/invites.ts). The
+  // federated path must enforce the same rule or a moderator's ban is
+  // silently defeated across the federation boundary: a banned remote user's
+  // home instance could replay `member.join_request` for any still-valid
+  // federated invite and be re-admitted (and re-receive a full snapshot).
+  // `ServerBan` is keyed on the local (synthetic) user id, and
+  // `ensureUserForRemoteUser` resolves the same remote identity to the SAME
+  // local row every time, so the check is meaningful here. Run against the
+  // transactional view (`tx`) so it shares the consume tx's snapshot, exactly
+  // like invites.ts:353. 403 (`forbidden`) mirrors the local MEMBER_BANNED.
+  if (await isBanned(invite.serverId, localJoiner.id, tx)) {
+    throw new FederationInboundError(
+      'forbidden',
+      'joiner is banned from this server',
+    );
+  }
 
   // Step 5 — create the ServerMember if not already present. Use a
   // findUnique check before the insert rather than catching P2002: a
